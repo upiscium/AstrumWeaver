@@ -60,6 +60,22 @@ class ControlRepository(Protocol):
         self, submission: JobSubmission, *, now: datetime | None = None
     ) -> JobRecord: ...
 
+    def get_worker(self, worker_id: str) -> WorkerRecord: ...
+
+    def set_worker_state(
+        self,
+        worker_id: str,
+        state: WorkerState,
+        *,
+        now: datetime | None = None,
+    ) -> WorkerRecord: ...
+
+    def expire_stale_workers(
+        self, *, now: datetime | None = None
+    ) -> list[WorkerRecord]: ...
+
+    def get_job(self, job_id: str) -> JobRecord: ...
+
     def claim_next_job(
         self, worker_id: str, *, now: datetime | None = None
     ) -> JobRecord | None: ...
@@ -83,6 +99,10 @@ class ControlRepository(Protocol):
         worker_id: str,
         lease_token: str,
         now: datetime | None = None,
+    ) -> JobRecord: ...
+
+    def cancel_job(
+        self, job_id: str, *, now: datetime | None = None
     ) -> JobRecord: ...
 
     def recover_expired_jobs(
