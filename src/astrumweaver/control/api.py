@@ -47,6 +47,18 @@ def _require_token(request: Request, expected: str, authority: str) -> None:
         )
 
 
+async def _json_v1(request: Request) -> dict[str, Any]:
+    body = await _json_v1(request)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="JSON object is required")
+    if body.get("protocol_version") != PROTOCOL_VERSION:
+        raise HTTPException(
+            status_code=409,
+            detail=f"unsupported protocol version; expected {PROTOCOL_VERSION}",
+        )
+    return body
+
+
 def create_app(
     repository: ControlRepository,
     *,
@@ -134,12 +146,13 @@ def create_app(
 
     @app.get("/v1/ready")
     async def ready() -> dict[str, Any]:
+        await asyncio.to_thread(repository.check_storage)
         return {"ready": True, "protocol_version": PROTOCOL_VERSION}
 
     @app.post("/v1/jobs", status_code=201, dependencies=[Depends(require_client)])
     async def submit_job(request: Request) -> dict[str, Any]:
         try:
-            submission = job_submission_from_dict(await request.json())
+            submission = job_submission_from_dict(await _json_v1(request))
         except (KeyError, TypeError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         record = await asyncio.to_thread(repository.submit_job, submission)
@@ -158,7 +171,7 @@ def create_app(
     @app.post("/v1/workers/register", status_code=201, dependencies=[Depends(require_worker)])
     async def register_worker(request: Request) -> dict[str, Any]:
         try:
-            registration = worker_registration_from_dict(await request.json())
+            registration = worker_registration_from_dict(await _json_v1(request))
         except (KeyError, TypeError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         record = await asyncio.to_thread(repository.register_worker, registration)
@@ -167,7 +180,7 @@ def create_app(
     @app.post("/v1/workers/{worker_id}/heartbeat", dependencies=[Depends(require_worker)])
     async def heartbeat_worker(worker_id: str, request: Request) -> dict[str, Any]:
         try:
-            heartbeat = worker_heartbeat_from_dict(await request.json())
+            heartbeat = worker_heartbeat_from_dict(await _json_v1(request))
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         record = await asyncio.to_thread(
@@ -178,7 +191,7 @@ def create_app(
     @app.post("/v1/workers/{worker_id}/state", dependencies=[Depends(require_worker)])
     async def set_worker_state(worker_id: str, request: Request) -> dict[str, Any]:
         try:
-            body = await request.json()
+            body = await _json_v1(request)
             state_value = body["state"]
             state = WorkerState(str(state_value))
         except (KeyError, TypeError, ValueError) as exc:
@@ -219,7 +232,7 @@ def create_app(
     )
     async def complete_job(worker_id: str, job_id: str, request: Request) -> dict[str, Any]:
         try:
-            body = await request.json()
+            body = await _json_v1(request)
             lease_token = str(body["lease_token"])
             result = job_result_from_dict(body["result"])
             if result is None:
@@ -241,7 +254,7 @@ def create_app(
     )
     async def fail_job(worker_id: str, job_id: str, request: Request) -> dict[str, Any]:
         try:
-            body = await request.json()
+            body = await _json_v1(request)
             lease_token = str(body["lease_token"])
             error = body.get("error", "executor failed")
             if not isinstance(error, (str, dict)):
