@@ -54,6 +54,11 @@ def _json(value: Any) -> Any:
 class PostgresControlRepository:
     """Transactional PostgreSQL control-plane repository."""
 
+    def check_storage(self) -> None:
+        with self._connection() as connection:
+            connection.execute("SELECT 1").fetchone()
+
+
     def __init__(
         self,
         database_url: str,
