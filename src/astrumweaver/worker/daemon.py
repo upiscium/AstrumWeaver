@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import os
 import signal
 import tomllib
-from pathlib import Path
 from typing import Any
 
 import uvicorn
@@ -131,6 +131,7 @@ async def run_worker(config_path: str) -> None:
             if exc is not None:
                 raise exc
 
+        forced_cancel = False
         if signal_task in done and runtime.registered:
             try:
                 await runtime.drain()
@@ -142,10 +143,18 @@ async def run_worker(config_path: str) -> None:
             while runtime.active_job_id is not None and loop.time() < deadline:
                 await asyncio.sleep(0.1)
 
+            if runtime.active_job_id is not None:
+                forced_cancel = True
+                with contextlib.suppress(Exception):
+                    await executor.cancel(runtime.active_job_id)
+
         runtime.request_stop()
         health_server.should_exit = True
 
-        await asyncio.gather(worker_task, health_task, return_exceptions=False)
+        if forced_cancel and not worker_task.done():
+            worker_task.cancel()
+
+        await asyncio.gather(worker_task, health_task, return_exceptions=True)
     finally:
         signal_task.cancel()
         await client.aclose()
