@@ -17,6 +17,8 @@ def create_health_app(runtime: WorkerRuntime) -> FastAPI:
         return {
             "status": "ok",
             "worker_id": runtime.spec.worker_id,
+            "registered": runtime.registered,
+            "ready": runtime.ready and runtime.registered and not runtime.draining,
             "active_job_id": runtime.active_job_id,
             "draining": runtime.draining,
         }
