@@ -23,7 +23,7 @@ def create_health_app(runtime: WorkerRuntime) -> FastAPI:
 
     @app.get("/ready")
     async def ready(response: Response) -> dict[str, Any]:
-        is_ready = runtime.ready and runtime.registered
+        is_ready = runtime.ready and runtime.registered and not runtime.draining
         if not is_ready:
             response.status_code = 503
         return {
