@@ -366,18 +366,50 @@ class BorrowableWorkerController:
         self,
         *,
         start_timeout_seconds: float = 60.0,
+        drain_timeout_seconds: float | None = None,
     ) -> ModeReport:
         if start_timeout_seconds <= 0:
             raise ValueError("start_timeout_seconds must be positive")
 
-        if not self.service.is_active():
-            busy = self.gpu.active_processes()
-            if busy:
-                raise ModeTransitionError(
-                    "GPU is in use by a development or unrelated compute process"
+        if self.service.is_active():
+            snapshot = self._worker_snapshot()
+            if snapshot and snapshot.get("draining") is True:
+                def drained() -> bool:
+                    if not self.service.is_active():
+                        return True
+                    current = self._worker_snapshot()
+                    return bool(
+                        current
+                        and current.get("draining") is True
+                        and current.get("active_job_id") is None
+                    )
+
+                self._wait(
+                    drained,
+                    timeout_seconds=drain_timeout_seconds,
+                    description="existing Worker drain",
                 )
-            self.gpu.require_exact_identity()
-            self.service.start()
+                if self.service.is_active():
+                    self.service.stop()
+            else:
+                def already_ready() -> bool:
+                    current = self._worker_snapshot()
+                    return bool(current and current.get("ready") is True)
+
+                self._wait(
+                    already_ready,
+                    timeout_seconds=start_timeout_seconds,
+                    description="existing Worker readiness",
+                )
+                return self._report()
+
+        self.gpu.require_exact_identity()
+        busy = self.gpu.active_processes()
+        if busy:
+            raise ModeTransitionError(
+                "GPU is in use by a development or unrelated process"
+            )
+        self.service.start()
 
         self._wait(
             self.service.is_active,
@@ -468,8 +500,14 @@ def main() -> None:
                 drain_timeout_seconds=timeout
             )
         elif args.mode == "astrumweaver":
+            timeout = (
+                None
+                if args.drain_timeout_seconds == 0
+                else args.drain_timeout_seconds
+            )
             report = controller.to_astrumweaver(
-                start_timeout_seconds=args.start_timeout_seconds
+                start_timeout_seconds=args.start_timeout_seconds,
+                drain_timeout_seconds=timeout,
             )
         else:
             report = controller.status()
