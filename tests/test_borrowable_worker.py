@@ -174,7 +174,7 @@ def test_astrumweaver_transition_rejects_development_gpu_process() -> None:
         controller.to_astrumweaver()
 
     assert service.actions == []
-    assert gpu.identity_checks == 0
+    assert gpu.identity_checks == 1
     assert not service.active
 
 
@@ -261,3 +261,52 @@ def test_nvidia_process_inspection_fails_closed(monkeypatch) -> None:
 
     with pytest.raises(ModeTransitionError, match="identity"):
         probe.active_processes()
+
+
+def test_astrumweaver_transition_recovers_from_existing_draining_worker() -> None:
+    health = FakeHealth()
+    health.payload["draining"] = True
+    health.payload["ready"] = False
+    health.payload["active_job_id"] = "job-1"
+    service = FakeService(health)
+    gpu = FakeGPU()
+    clock = FakeClock()
+    sleeps = 0
+
+    def sleep(seconds: float) -> None:
+        nonlocal sleeps
+        sleeps += 1
+        clock.sleep(seconds)
+        if sleeps == 1 and health.payload is not None:
+            health.payload["active_job_id"] = None
+
+    controller = BorrowableWorkerController(
+        service,
+        health,
+        gpu,
+        poll_interval_seconds=0.1,
+        monotonic=clock.monotonic,
+        sleep=sleep,
+    )
+
+    report = controller.to_astrumweaver(
+        start_timeout_seconds=2.0,
+        drain_timeout_seconds=2.0,
+    )
+
+    assert service.actions == ["stop", "start"]
+    assert gpu.identity_checks == 1
+    assert report.mode == "astrumweaver"
+
+
+def test_active_ready_astrumweaver_transition_is_idempotent() -> None:
+    health = FakeHealth()
+    service = FakeService(health)
+    gpu = FakeGPU()
+    controller = BorrowableWorkerController(service, health, gpu)
+
+    report = controller.to_astrumweaver(start_timeout_seconds=1.0)
+
+    assert service.actions == []
+    assert gpu.identity_checks == 0
+    assert report.mode == "astrumweaver"
