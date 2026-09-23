@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import timedelta
 from pathlib import Path
 
+import httpx
 import pytest
 
 psycopg = pytest.importorskip("psycopg")
 
 from astrumweaver import JobRequirements, JobResult, ResourceShape, WorkerSpec
+from astrumweaver.control.api import create_app
+from astrumweaver.transport import PROTOCOL_VERSION
+
 from astrumweaver.control import (
     ConflictError,
     JobStatus,
@@ -180,3 +185,133 @@ def test_postgres_idempotency_is_durable() -> None:
                 idempotency_key="durable-request-1",
             )
         )
+
+
+@pytest.mark.asyncio
+async def test_postgres_transport_fencing_and_non_text_result() -> None:
+    assert DATABASE_URL is not None
+    repo = PostgresControlRepository(DATABASE_URL, lease_seconds=1)
+    app = create_app(
+        repo,
+        client_token="client-secret",
+        worker_token="worker-secret",
+        maintenance_interval_seconds=60.0,
+    )
+    transport = httpx.ASGITransport(app=app)
+    client_headers = {"authorization": "Bearer client-secret"}
+    worker_headers = {"authorization": "Bearer worker-secret"}
+
+    registration = {
+        "protocol_version": PROTOCOL_VERSION,
+        "spec": {
+            "worker_id": "transport-worker",
+            "worker_class": "cpu-test",
+            "gpu_uuids": [],
+            "capabilities": ["decision.system_one"],
+            "labels": {},
+            "resources": {
+                "gpu_count": 0,
+                "total_vram_mb": 0,
+                "max_single_gpu_vram_mb": 0,
+            },
+        },
+        "max_concurrency": 1,
+        "metadata": {},
+    }
+    submission = {
+        "protocol_version": PROTOCOL_VERSION,
+        "capability": "decision.system_one",
+        "payload": {"question": "route"},
+        "requirements": {},
+        "priority": 0,
+        "max_attempts": 3,
+    }
+
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://control",
+    ) as client:
+        registered = await client.post(
+            "/v1/workers/register",
+            headers=worker_headers,
+            json=registration,
+        )
+        assert registered.status_code == 201
+
+        created = await client.post(
+            "/v1/jobs",
+            headers=client_headers,
+            json=submission,
+        )
+        assert created.status_code == 201
+        job_id = created.json()["job_id"]
+
+        first = await client.post(
+            "/v1/workers/transport-worker/jobs/claim",
+            headers=worker_headers,
+        )
+        assert first.status_code == 200
+        old_token = first.json()["lease_token"]
+
+        await asyncio.sleep(1.05)
+        expired = await client.post(
+            f"/v1/workers/transport-worker/jobs/{job_id}/complete",
+            headers=worker_headers,
+            json={
+                "protocol_version": PROTOCOL_VERSION,
+                "lease_token": old_token,
+                "result": {"outputs": {"stale": True}},
+            },
+        )
+        assert expired.status_code == 409
+
+        repo.recover_expired_jobs()
+
+        second = await client.post(
+            "/v1/workers/transport-worker/jobs/claim",
+            headers=worker_headers,
+        )
+        assert second.status_code == 200
+        new_token = second.json()["lease_token"]
+        assert new_token != old_token
+
+        stale = await client.post(
+            f"/v1/workers/transport-worker/jobs/{job_id}/complete",
+            headers=worker_headers,
+            json={
+                "protocol_version": PROTOCOL_VERSION,
+                "lease_token": old_token,
+                "result": {"outputs": {"stale": True}},
+            },
+        )
+        assert stale.status_code == 409
+
+        completed = await client.post(
+            f"/v1/workers/transport-worker/jobs/{job_id}/complete",
+            headers=worker_headers,
+            json={
+                "protocol_version": PROTOCOL_VERSION,
+                "lease_token": new_token,
+                "result": {
+                    "outputs": {
+                        "choice": "local",
+                        "probabilities": {"local": 0.8, "remote": 0.2},
+                    },
+                    "artifacts": [],
+                    "metrics": {"entropy": 0.5},
+                    "text": None,
+                    "metadata": {"executor": "decision-test"},
+                },
+            },
+        )
+        assert completed.status_code == 200
+
+        fetched = await client.get(
+            f"/v1/jobs/{job_id}",
+            headers=client_headers,
+        )
+
+    result = fetched.json()["result"]
+    assert result["text"] is None
+    assert result["outputs"]["choice"] == "local"
+    assert result["outputs"]["probabilities"]["remote"] == 0.2
