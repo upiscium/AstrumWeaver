@@ -70,6 +70,7 @@ Proxmox is a supported deployment environment, not an AstrumWeaver dependency. A
 - [Nix Packaging and NixOS Modules](docs/nix.md)
 - [Control / Worker Protocol v1](docs/protocol-v1.md)
 - [Borrowable GPU Worker](docs/borrowable-worker.md)
+- [Deployment Profiles and v0.1 Acceptance](docs/deployment-profiles.md)
 
 ## License
 
