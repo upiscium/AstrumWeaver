@@ -2,6 +2,12 @@
 
 let
   cfg = config.services.astrumweaver.worker;
+  astrumweaverPackage = pkgs.callPackage ../package.nix { };
+  integrationPackage = pkgs.callPackage ../integration-package.nix { };
+  defaultPackage = pkgs.callPackage ../worker-support.nix {
+    astrumweaver = astrumweaverPackage;
+    integration = integrationPackage;
+  };
   toml = pkgs.formats.toml { };
   generatedConfig = toml.generate "astrumweaver-worker.toml" cfg.settings;
   expectedGpuUuids = pkgs.writeText "astrumweaver-gpu-uuids" (
@@ -9,26 +15,32 @@ let
   );
   preflight = pkgs.writeShellApplication {
     name = "astrumweaver-gpu-preflight";
-    runtimeInputs = [ pkgs.coreutils pkgs.gawk ] ++ lib.optional (cfg.nvidiaSmiPackage != null) cfg.nvidiaSmiPackage;
+    runtimeInputs = [ pkgs.coreutils pkgs.gawk ]
+      ++ lib.optional (cfg.nvidiaSmiPackage != null) cfg.nvidiaSmiPackage;
     text = builtins.readFile ../../libexec/gpu-preflight;
   };
-  execStart = lib.escapeShellArgs ([ cfg.command "--config" generatedConfig ] ++ cfg.extraArgs);
+  effectiveCommand =
+    if cfg.command == null
+    then "${cfg.package}/bin/astrumweaver-worker"
+    else cfg.command;
+  execStart = lib.escapeShellArgs ([ effectiveCommand "--config" generatedConfig ] ++ cfg.extraArgs);
 in
 {
   options.services.astrumweaver.worker = {
-    enable = lib.mkEnableOption "AstrumWeaver GPU Worker service";
+    enable = lib.mkEnableOption "AstrumWeaver Worker service";
 
     package = lib.mkOption {
-      type = lib.types.nullOr lib.types.package;
-      default = null;
-      description = "Optional Worker runtime support package added to the service PATH.";
+      type = lib.types.package;
+      default = defaultPackage;
+      defaultText = lib.literalExpression "AstrumWeaver worker package from this module";
+      description = "Worker runtime package.";
     };
 
     command = lib.mkOption {
-      type = lib.types.str;
-      default = "";
-      example = "/run/current-system/sw/bin/astrumweaver-worker";
-      description = "Absolute Worker daemon executable path. Required while the daemon package is not yet part of v0.1.";
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "/custom/bin/astrumweaver-worker";
+      description = "Optional daemon executable override. Defaults to the packaged astrumweaver-worker entrypoint.";
     };
 
     settings = lib.mkOption {
@@ -46,14 +58,14 @@ in
       type = lib.types.listOf lib.types.str;
       default = [ ];
       example = [ "GPU-example-a" "GPU-example-b" ];
-      description = "Exact guest-visible NVIDIA GPU UUID set owned by this Worker.";
+      description = "Exact guest-visible NVIDIA GPU UUID set. Leave empty for a non-GPU Worker.";
     };
 
     nvidiaSmiPackage = lib.mkOption {
       type = lib.types.nullOr lib.types.package;
       default = null;
       example = lib.literalExpression "config.hardware.nvidia.package";
-      description = "Package providing nvidia-smi for exact GPU identity preflight. Set this explicitly on NixOS NVIDIA workers.";
+      description = "Package providing nvidia-smi. Required when gpuUuids is non-empty.";
     };
 
     user = lib.mkOption {
@@ -87,16 +99,12 @@ in
   config = lib.mkIf cfg.enable {
     assertions = [
       {
-        assertion = cfg.command != "";
-        message = "services.astrumweaver.worker.command must be set until a packaged Worker daemon exists.";
-      }
-      {
-        assertion = cfg.gpuUuids != [ ];
-        message = "services.astrumweaver.worker.gpuUuids must contain at least one expected GPU UUID.";
-      }
-      {
         assertion = builtins.length cfg.gpuUuids == builtins.length (lib.unique cfg.gpuUuids);
         message = "services.astrumweaver.worker.gpuUuids must not contain duplicates.";
+      }
+      {
+        assertion = cfg.gpuUuids == [ ] || cfg.nvidiaSmiPackage != null;
+        message = "services.astrumweaver.worker.nvidiaSmiPackage is required for GPU Workers.";
       }
     ];
 
@@ -109,15 +117,14 @@ in
       createHome = lib.mkDefault true;
     };
 
-    environment.systemPackages = lib.optional (cfg.package != null) cfg.package;
+    environment.systemPackages = [ cfg.package ];
 
     systemd.services.astrumweaver-worker = {
-      description = "AstrumWeaver GPU Worker";
+      description = "AstrumWeaver Worker";
       wantedBy = [ "multi-user.target" ];
       wants = [ "network-online.target" ];
       after = [ "network-online.target" ];
-      path = [ preflight ]
-        ++ lib.optional (cfg.package != null) cfg.package
+      path = [ cfg.package ]
         ++ lib.optional (cfg.nvidiaSmiPackage != null) cfg.nvidiaSmiPackage
         ++ cfg.extraPackages;
 
@@ -125,7 +132,6 @@ in
         Type = "simple";
         User = cfg.user;
         Group = cfg.group;
-        ExecStartPre = "+${preflight}/bin/astrumweaver-gpu-preflight ${expectedGpuUuids}";
         ExecStart = execStart;
         Restart = "on-failure";
         RestartSec = "5s";
@@ -141,7 +147,11 @@ in
         ProtectKernelModules = true;
         ProtectControlGroups = true;
         RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" ];
-      } // lib.optionalAttrs (cfg.environmentFile != null) {
+      }
+      // lib.optionalAttrs (cfg.gpuUuids != [ ]) {
+        ExecStartPre = "+${preflight}/bin/astrumweaver-gpu-preflight ${expectedGpuUuids}";
+      }
+      // lib.optionalAttrs (cfg.environmentFile != null) {
         EnvironmentFile = cfg.environmentFile;
       };
     };
