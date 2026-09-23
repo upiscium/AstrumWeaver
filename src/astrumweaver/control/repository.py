@@ -44,6 +44,8 @@ class StorageUnavailable(RepositoryError):
 
 
 class ControlRepository(Protocol):
+    def check_storage(self) -> None: ...
+
     def register_worker(
         self, registration: WorkerRegistration, *, now: datetime | None = None
     ) -> WorkerRecord: ...
@@ -156,6 +158,9 @@ class InMemoryControlRepository:
         self._idempotency: dict[str, str] = {}
         self._sequence = 0
         self._lock = RLock()
+
+    def check_storage(self) -> None:
+        return None
 
     def _active_job_count(self, worker_id: str) -> int:
         return sum(
