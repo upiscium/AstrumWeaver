@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -29,6 +30,14 @@ from ..worker.mode import (
 
 class HardwareAcceptanceError(RuntimeError):
     """Real-node acceptance failed without publishing private context."""
+
+
+PUBLIC_PROFILE_CLASSES = frozenset({
+    "modern-single",
+    "multi-gpu-large",
+    "legacy-single",
+})
+REVISION_PATTERN = re.compile(r"^[0-9a-fA-F]{7,64}$")
 
 
 class AcceptanceControl(Protocol):
@@ -169,10 +178,14 @@ class HardwareAcceptanceRunner:
             raise ValueError("expected GPU UUIDs must be unique")
         if deployment_path not in {"nixos", "systemd"}:
             raise ValueError("deployment_path must be nixos or systemd")
-        if not revision.strip():
-            raise ValueError("revision is required")
-        if not profile_class.strip():
-            raise ValueError("profile_class is required")
+        revision = revision.strip()
+        profile_class = profile_class.strip()
+        if not REVISION_PATTERN.fullmatch(revision):
+            raise ValueError("revision must be a public git commit SHA")
+        if profile_class not in PUBLIC_PROFILE_CLASSES:
+            raise ValueError(
+                "profile_class must be one of the public v0.1 GPU profiles"
+            )
         if not capability.strip():
             raise ValueError("capability is required")
         for value, name in (
@@ -189,9 +202,9 @@ class HardwareAcceptanceRunner:
         self.health = health
         self.gpu = gpu
         self.expected_gpu_uuids = expected_gpu_uuids
-        self.revision = revision.strip()
+        self.revision = revision
         self.deployment_path = deployment_path
-        self.profile_class = profile_class.strip()
+        self.profile_class = profile_class
         self.capability = capability.strip()
         self.poll_interval_seconds = poll_interval_seconds
         self.job_timeout_seconds = job_timeout_seconds
@@ -378,7 +391,11 @@ def main() -> None:
         choices=("nixos", "systemd"),
         required=True,
     )
-    parser.add_argument("--profile-class", required=True)
+    parser.add_argument(
+        "--profile-class",
+        choices=tuple(sorted(PUBLIC_PROFILE_CLASSES)),
+        required=True,
+    )
     parser.add_argument("--capability", default="debug.echo")
     parser.add_argument(
         "--health-url",
