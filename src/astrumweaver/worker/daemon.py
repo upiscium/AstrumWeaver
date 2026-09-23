@@ -107,9 +107,17 @@ async def run_worker(config_path: str) -> None:
 
     loop = asyncio.get_running_loop()
     stop_signal = asyncio.Event()
+    drain_signal = asyncio.Event()
 
     def request_shutdown() -> None:
         stop_signal.set()
+
+    def request_drain() -> None:
+        # Stop local claiming immediately; the async task mirrors DRAINING
+        # into durable Control state without requiring mode-switch tooling to
+        # hold the Worker authority token.
+        runtime.request_drain()
+        drain_signal.set()
 
     for signal_name in (signal.SIGTERM, signal.SIGINT):
         try:
@@ -117,9 +125,27 @@ async def run_worker(config_path: str) -> None:
         except NotImplementedError:
             pass
 
+    sigusr1 = getattr(signal, "SIGUSR1", None)
+    if sigusr1 is not None:
+        try:
+            loop.add_signal_handler(sigusr1, request_drain)
+        except NotImplementedError:
+            pass
+
+    async def drain_signal_loop() -> None:
+        while True:
+            await drain_signal.wait()
+            drain_signal.clear()
+            with contextlib.suppress(Exception):
+                await runtime.drain()
+
     worker_task = asyncio.create_task(runtime.run_forever(), name="astrumweaver-worker")
     health_task = asyncio.create_task(health_server.serve(), name="astrumweaver-worker-health")
     signal_task = asyncio.create_task(stop_signal.wait(), name="astrumweaver-worker-signal")
+    drain_task = asyncio.create_task(
+        drain_signal_loop(),
+        name="astrumweaver-worker-drain-signal",
+    )
 
     try:
         done, _ = await asyncio.wait(
@@ -163,6 +189,9 @@ async def run_worker(config_path: str) -> None:
         await asyncio.gather(worker_task, health_task, return_exceptions=True)
     finally:
         signal_task.cancel()
+        drain_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await drain_task
         await client.aclose()
 
 
