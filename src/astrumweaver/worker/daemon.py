@@ -126,8 +126,13 @@ class WorkerDaemon:
                 except ControlClientError:
                     remote = None
                 lease_lost.set()
-                if remote is None or remote.status is not JobStatus.RUNNING:
-                    await self._cancel_executor(claim.job_id)
+                self.last_error = (
+                    "job cancelled or lease ownership changed"
+                    if remote is None or remote.status is not JobStatus.RUNNING
+                    else "lease fencing token rejected"
+                )
+                self.write_status()
+                await self._cancel_executor(claim.job_id)
                 return
             except (ControlUnavailable, ControlUnauthorized, ControlNotFound):
                 # Fail closed. Without a confirmed lease renewal the local
