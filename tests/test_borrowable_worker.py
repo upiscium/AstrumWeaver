@@ -9,6 +9,7 @@ from astrumweaver.worker.mode import (
     GPUProcess,
     ModeTransitionError,
     NvidiaGPUProbe,
+    SystemdServiceManager,
 )
 
 
@@ -310,3 +311,34 @@ def test_active_ready_astrumweaver_transition_is_idempotent() -> None:
     assert service.actions == []
     assert gpu.identity_checks == 0
     assert report.mode == "astrumweaver"
+
+
+def test_systemd_drain_signal_targets_worker_main_process(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(arguments, **kwargs):
+        calls.append(tuple(arguments))
+        return Result()
+
+    monkeypatch.setattr("astrumweaver.worker.mode.subprocess.run", fake_run)
+
+    service = SystemdServiceManager(
+        "astrumweaver-worker.service",
+        systemctl="/bin/systemctl-test",
+    )
+    service.request_drain()
+
+    assert calls == [
+        (
+            "/bin/systemctl-test",
+            "kill",
+            "--kill-whom=main",
+            "--signal=SIGUSR1",
+            "astrumweaver-worker.service",
+        )
+    ]
