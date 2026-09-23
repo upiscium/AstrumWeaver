@@ -1,0 +1,78 @@
+acceptance_version = "v0.1"
+scope = "software-contract"
+description = "Canonical AstrumWeaver v0.1 software acceptance matrix. Hardware performance certification is out of scope."
+
+[[check]]
+id = "single-gpu-worker-registration"
+description = "A one-GPU Worker can register and participate in durable scheduling."
+evidence = [
+  "tests/test_v0_1_acceptance.py::test_v0_1_single_gpu_profile_registers_as_one_worker"
+]
+
+[[check]]
+id = "multi-gpu-worker-registration"
+description = "A multi-GPU Worker is represented as one Worker and can claim compatible work."
+evidence = [
+  "tests/test_v0_1_acceptance.py::test_v0_1_multi_gpu_profile_registers_as_one_worker"
+]
+
+[[check]]
+id = "exact-gpu-uuid-preflight"
+description = "GPU Worker startup requires exact expected-vs-observed UUID set equality."
+evidence = [
+  "tests/test_setup_scripts.py::test_gpu_preflight_requires_exact_set_equality"
+]
+
+[[check]]
+id = "multi-vs-single-vram-shape"
+description = "2 x 12 GiB does not satisfy a 20 GiB single-device requirement."
+evidence = [
+  "tests/test_scheduling.py::test_single_gpu_vram_requirement_does_not_treat_two_12gib_as_one_24gib"
+]
+
+[[check]]
+id = "capability-matching"
+description = "Scheduling is generic capability/resource matching, not application-specific routing."
+evidence = [
+  "tests/test_scheduling.py::test_capability_matching_is_generic_and_independent_from_worker_class",
+  "tests/test_transport_daemons.py::test_executor_capabilities_must_cover_worker_advertisement"
+]
+
+[[check]]
+id = "draining-offline-lifecycle"
+description = "DRAINING stops new claims and Worker ownership can transition safely to OFFLINE/development."
+evidence = [
+  "tests/test_control_repository.py::test_draining_worker_finishes_existing_work_but_claims_no_new_job",
+  "tests/test_borrowable_worker.py::test_development_transition_waits_for_active_job_then_stops"
+]
+
+[[check]]
+id = "existing-node-install"
+description = "Control and GPU Worker host integration can be staged idempotently without provisioning a VM/LXC."
+evidence = [
+  "tests/test_setup_scripts.py::test_control_setup_stages_existing_node_idempotently",
+  "tests/test_setup_scripts.py::test_worker_setup_stages_exact_gpu_identity_and_is_idempotent",
+  "tests/test_setup_scripts.py::test_setup_layer_contains_no_proxmox_creation_commands"
+]
+
+[[check]]
+id = "nixos-module-deployment"
+description = "Pinned NixOS Control/Worker modules evaluate with packaged daemons and GPU preflight."
+evidence = [
+  "flake.nix#checks.x86_64-linux.module-eval"
+]
+
+[[check]]
+id = "versioned-control-worker-transport"
+description = "The v1 transport enforces versioning and separate Client/Worker authority."
+evidence = [
+  "tests/test_transport_daemons.py::test_auth_boundaries_and_protocol_version"
+]
+
+[[check]]
+id = "borrowable-worker-handoff"
+description = "A development GPU can drain/release and return to AstrumWeaver without forced default termination or Proxmox mutation."
+evidence = [
+  "tests/test_borrowable_worker.py::test_drain_timeout_never_forces_worker_stop",
+  "tests/test_borrowable_worker.py::test_astrumweaver_transition_checks_identity_then_starts_and_waits_ready"
+]

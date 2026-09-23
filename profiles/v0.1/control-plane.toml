@@ -1,0 +1,26 @@
+profile_version = "v0.1"
+profile_id = "control-plane"
+role = "control"
+enforcement = "documentation-only"
+description = "Durable AstrumWeaver scheduling/API plane; no GPU required."
+
+[minimum]
+vcpu = 2
+ram_mib = 2048
+disk_gib = 10
+gpu_count = 0
+
+[recommended]
+vcpu = 4
+ram_mib = 4096
+disk_gib = 20
+notes = [
+  "Capacity-plan PostgreSQL storage separately when the database is remote.",
+  "Protect Control/Worker traffic when it leaves a trusted network boundary."
+]
+
+[[validated]]
+scope = "ci-contract"
+evidence = "tests/test_postgres_control_repository.py"
+claim = "PostgreSQL durability, migration, fencing, and transport are exercised in public CI."
+hardware_sizing_validated = false

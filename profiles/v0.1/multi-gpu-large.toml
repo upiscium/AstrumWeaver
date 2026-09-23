@@ -1,0 +1,36 @@
+profile_version = "v0.1"
+profile_id = "multi-gpu-large"
+role = "worker"
+enforcement = "documentation-only"
+description = "Two or more GPUs owned by one scheduler-visible Worker/executor."
+
+[minimum]
+vcpu = 4
+ram_mib = 8192
+disk_gib = 20
+gpu_count = 2
+notes = [
+  "Disk excludes executor/model/artifact storage.",
+  "The configured executor/runtime must explicitly support the intended multi-GPU strategy."
+]
+
+[recommended]
+vcpu = 8
+ram_mib = 16384
+disk_gib = 40
+notes = [
+  "Prefer homogeneous GPUs when the executor requires symmetric sharding.",
+  "Express both total and per-device memory constraints when workload topology requires them."
+]
+
+[example_resource_shape]
+gpu_count = 2
+total_vram_mb = 24576
+max_single_gpu_vram_mb = 12288
+gpu_uuids = ["GPU-example-multi-a", "GPU-example-multi-b"]
+
+[[validated]]
+scope = "ci-contract"
+evidence = "tests/test_scheduling.py::test_single_gpu_vram_requirement_does_not_treat_two_12gib_as_one_24gib"
+claim = "The 2 x 12 GiB shape is distinct from one 24 GiB device for single-device VRAM requirements."
+hardware_sizing_validated = false
