@@ -82,12 +82,12 @@ render_unit() {
   local template="$1" destination="$2" executable="$3" user="$4"
   local temporary
   temporary="$(mktemp)"
-  trap 'rm -f "$temporary"' RETURN
   sed \
     -e "s|@EXECUTABLE@|$executable|g" \
     -e "s|@USER@|$user|g" \
     "$template" >"$temporary"
   install_same_or_fail "$temporary" "$destination" 0644
+  rm -f "$temporary"
 }
 
 systemd_reload_and_maybe_start() {
