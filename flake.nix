@@ -87,6 +87,11 @@
       checks.${system} = {
         inherit astrumweaver control worker integration;
 
+        hardware-accept-cli = pkgs.runCommand "astrumweaver-hardware-accept-cli" { } ''
+          test -x ${worker}/bin/astrumweaver-hardware-accept
+          ${worker}/bin/astrumweaver-hardware-accept --help >/dev/null
+          touch "$out"
+        '';
         module-eval = pkgs.runCommand "astrumweaver-module-eval" {
           controlExec = moduleSmoke.config.systemd.services.astrumweaver-control.serviceConfig.ExecStart;
           workerExec = moduleSmoke.config.systemd.services.astrumweaver-worker.serviceConfig.ExecStart;
