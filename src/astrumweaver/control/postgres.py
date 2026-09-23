@@ -97,6 +97,10 @@ class PostgresControlRepository:
             except Exception as exc:
                 raise StorageUnavailable("postgresql transaction failed") from exc
 
+    def health(self) -> None:
+        with self._connection() as connection:
+            connection.execute("SELECT 1").fetchone()
+
     @staticmethod
     def _worker(row: dict[str, Any]) -> WorkerRecord:
         spec = WorkerSpec(
