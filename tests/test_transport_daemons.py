@@ -10,7 +10,11 @@ from astrumweaver.control.api import create_app
 from astrumweaver.control.repository import InMemoryControlRepository, StorageUnavailable
 from astrumweaver.executors.structured_echo import StructuredEchoExecutor
 from astrumweaver.transport import PROTOCOL_VERSION
-from astrumweaver.worker import ControlClient, WorkerRuntime
+from astrumweaver.worker import (
+    ControlClient,
+    WorkerRuntime,
+    require_executor_capabilities,
+)
 
 
 CLIENT_TOKEN = "client-secret"
@@ -470,3 +474,38 @@ async def test_worker_run_forever_register_claim_heartbeat_complete_loop() -> No
         await asyncio.wait_for(runtime_task, timeout=1.0)
 
     assert repository.get_worker(spec.worker_id).state.value == "offline"
+
+
+def test_executor_capabilities_must_cover_worker_advertisement() -> None:
+    executor = StructuredEchoExecutor()
+
+    require_executor_capabilities(
+        executor,
+        frozenset({"debug.echo"}),
+    )
+
+    with pytest.raises(RuntimeError, match="does not support advertised"):
+        require_executor_capabilities(
+            executor,
+            frozenset({"debug.echo", "image.generate"}),
+        )
+
+
+def test_executor_without_capability_declaration_is_rejected() -> None:
+    class UndeclaredExecutor:
+        async def execute(self, job):
+            return JobResult()
+
+        async def cancel(self, job_id: str) -> None:
+            return None
+
+        async def residency(self):
+            from astrumweaver import ResidencyReport
+
+            return ResidencyReport()
+
+    with pytest.raises(TypeError, match="must declare capabilities"):
+        require_executor_capabilities(
+            UndeclaredExecutor(),
+            frozenset({"custom.work"}),
+        )
