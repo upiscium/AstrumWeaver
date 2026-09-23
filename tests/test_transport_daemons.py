@@ -379,3 +379,94 @@ async def test_readiness_reflects_storage_failure() -> None:
     assert response.status_code == 503
     assert response.json() == {"detail": "storage unavailable"}
     assert "must-not-leak" not in response.text
+
+
+class DelayedStructuredExecutor:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+
+    async def execute(self, job):
+        self.started.set()
+        await asyncio.sleep(0.06)
+        return JobResult(
+            outputs={"value": job.payload.get("value"), "kind": "structured"},
+            text=None,
+        )
+
+    async def cancel(self, job_id: str) -> None:
+        return None
+
+    async def residency(self):
+        from astrumweaver import ResidencyReport
+
+        return ResidencyReport()
+
+
+@pytest.mark.asyncio
+async def test_worker_run_forever_register_claim_heartbeat_complete_loop() -> None:
+    repository = InMemoryControlRepository(lease_seconds=1)
+    app = create_app(
+        repository,
+        client_token=CLIENT_TOKEN,
+        worker_token=WORKER_TOKEN,
+        maintenance_interval_seconds=60.0,
+    )
+    transport = httpx.ASGITransport(app=app)
+    spec = WorkerSpec(
+        worker_id="loop-worker",
+        worker_class="cpu-test",
+        resources=ResourceShape(),
+        capabilities=frozenset({"structured.work"}),
+    )
+    executor = DelayedStructuredExecutor()
+
+    async with ControlClient("http://control", WORKER_TOKEN, transport=transport) as control:
+        runtime = WorkerRuntime(
+            spec=spec,
+            max_concurrency=1,
+            executor=executor,
+            client=control,
+            poll_interval_seconds=0.01,
+            heartbeat_interval_seconds=0.01,
+        )
+        runtime_task = asyncio.create_task(runtime.run_forever())
+
+        for _ in range(100):
+            if runtime.registered:
+                break
+            await asyncio.sleep(0.01)
+        assert runtime.registered
+
+        async with httpx.AsyncClient(transport=transport, base_url="http://control") as client:
+            created = await client.post(
+                "/v1/jobs",
+                headers=auth(CLIENT_TOKEN),
+                json={
+                    **job_submission(capability="structured.work"),
+                    "payload": {"value": 9},
+                },
+            )
+            assert created.status_code == 201
+            job_id = created.json()["job_id"]
+
+            await asyncio.wait_for(executor.started.wait(), timeout=1.0)
+
+            result = None
+            for _ in range(200):
+                fetched = await client.get(
+                    f"/v1/jobs/{job_id}",
+                    headers=auth(CLIENT_TOKEN),
+                )
+                if fetched.json()["status"] == "succeeded":
+                    result = fetched.json()["result"]
+                    break
+                await asyncio.sleep(0.01)
+
+            assert result is not None
+            assert result["text"] is None
+            assert result["outputs"] == {"value": 9, "kind": "structured"}
+
+        runtime.request_stop()
+        await asyncio.wait_for(runtime_task, timeout=1.0)
+
+    assert repository.get_worker(spec.worker_id).state.value == "offline"
