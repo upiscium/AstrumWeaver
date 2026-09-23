@@ -8,6 +8,8 @@ from ..execution import JobRequest, JobResult, ResidencyReport
 
 
 class StructuredEchoExecutor:
+    capabilities = frozenset({"debug.echo"})
+
     async def execute(self, job: JobRequest) -> JobResult:
         return JobResult(
             outputs={
