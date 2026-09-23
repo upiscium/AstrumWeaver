@@ -68,6 +68,7 @@ Proxmox is a supported deployment environment, not an AstrumWeaver dependency. A
 - [Durable Control Plane](docs/control-plane.md)
 - [Existing-Node Deployment](docs/deployment.md)
 - [Nix Packaging and NixOS Modules](docs/nix.md)
+- [Control / Worker Protocol v1](docs/protocol-v1.md)
 
 ## License
 
