@@ -20,7 +20,7 @@ Usage: setup-gpu-worker.sh --config FILE --executable ABSOLUTE_PATH \
   --gpu-uuid UUID [--gpu-uuid UUID ...] [options]
 
 Options:
-  --environment-file FILE   Optional systemd EnvironmentFile source.
+  --environment-file FILE   Optional systemd EnvironmentFile source.\n  --executable PATH         Optional absolute daemon override; defaults to astrumweaver-worker on PATH.
   --gpu-uuid UUID           Expected NVIDIA GPU UUID; may be repeated.
   --root DIR                Stage files below DIR instead of live /.
   --user NAME               Service account name (default: astrumweaver).
@@ -75,7 +75,7 @@ for uuid in "${GPU_UUIDS[@]}"; do
 done
 
 ROOT="$(normalize_root "$ROOT")"
-EXECUTABLE="$(resolve_executable "$EXECUTABLE" "$ROOT")"
+EXECUTABLE="$(resolve_executable "$EXECUTABLE" "$ROOT" astrumweaver-worker)"
 
 ETC_DIR="$(root_path "$ROOT" /etc/astrumweaver)"
 STATE_DIR="$(root_path "$ROOT" /var/lib/astrumweaver)"

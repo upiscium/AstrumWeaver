@@ -27,8 +27,16 @@ class TextGenerationRuntime(Protocol):
 class TextGenerationExecutor(JobExecutor):
     """Wrap a text runtime behind the generic JobExecutor boundary."""
 
-    def __init__(self, runtime: TextGenerationRuntime) -> None:
+    def __init__(
+        self,
+        runtime: TextGenerationRuntime,
+        *,
+        capabilities: frozenset[str] | None = None,
+    ) -> None:
         self.runtime = runtime
+        runtime_capabilities = getattr(runtime, "capabilities", None)
+        configured = capabilities if capabilities is not None else runtime_capabilities
+        self.capabilities = frozenset(configured or {"text.generate"})
 
     async def execute(self, job: JobRequest) -> JobResult:
         value = self.runtime.generate(job.payload)

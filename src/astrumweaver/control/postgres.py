@@ -54,6 +54,19 @@ def _json(value: Any) -> Any:
 class PostgresControlRepository:
     """Transactional PostgreSQL control-plane repository."""
 
+    def check_storage(self) -> None:
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    to_regclass('public.workers') AS workers,
+                    to_regclass('public.jobs') AS jobs
+                """
+            ).fetchone()
+        if not row or row.get("workers") is None or row.get("jobs") is None:
+            raise StorageUnavailable("postgresql schema is unavailable")
+
+
     def __init__(
         self,
         database_url: str,

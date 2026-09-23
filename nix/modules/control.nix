@@ -2,25 +2,36 @@
 
 let
   cfg = config.services.astrumweaver.control;
+  astrumweaverPackage = pkgs.callPackage ../package.nix { };
+  integrationPackage = pkgs.callPackage ../integration-package.nix { };
+  defaultPackage = pkgs.callPackage ../control-support.nix {
+    astrumweaver = astrumweaverPackage;
+    integration = integrationPackage;
+  };
   toml = pkgs.formats.toml { };
   generatedConfig = toml.generate "astrumweaver-control.toml" cfg.settings;
-  execStart = lib.escapeShellArgs ([ cfg.command "--config" generatedConfig ] ++ cfg.extraArgs);
+  effectiveCommand =
+    if cfg.command == null
+    then "${cfg.package}/bin/astrumweaver-control"
+    else cfg.command;
+  execStart = lib.escapeShellArgs ([ effectiveCommand "--config" generatedConfig ] ++ cfg.extraArgs);
 in
 {
   options.services.astrumweaver.control = {
     enable = lib.mkEnableOption "AstrumWeaver Control Plane service";
 
     package = lib.mkOption {
-      type = lib.types.nullOr lib.types.package;
-      default = null;
-      description = "Optional runtime support package added to the service PATH.";
+      type = lib.types.package;
+      default = defaultPackage;
+      defaultText = lib.literalExpression "AstrumWeaver control package from this module";
+      description = "Control Plane runtime package.";
     };
 
     command = lib.mkOption {
-      type = lib.types.str;
-      default = "";
-      example = "/run/current-system/sw/bin/astrumweaver-control";
-      description = "Absolute Control Plane daemon executable path. Required while the daemon package is not yet part of v0.1.";
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "/custom/bin/astrumweaver-control";
+      description = "Optional daemon executable override. Defaults to the packaged astrumweaver-control entrypoint.";
     };
 
     settings = lib.mkOption {
@@ -30,9 +41,16 @@ in
     };
 
     environmentFile = lib.mkOption {
-      type = lib.types.nullOr lib.types.path;
+      type = lib.types.nullOr lib.types.str;
       default = null;
-      description = "Optional protected EnvironmentFile containing secrets or deployment-only overrides.";
+      example = "/run/secrets/astrumweaver-control.env";
+      description = "Optional protected EnvironmentFile containing database URL and authority tokens.";
+    };
+
+    migrateOnStart = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Apply packaged PostgreSQL migrations before starting Control. Disabled by default because schema mutation is an explicit authority.";
     };
 
     user = lib.mkOption {
@@ -57,13 +75,6 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    assertions = [
-      {
-        assertion = cfg.command != "";
-        message = "services.astrumweaver.control.command must be set until a packaged Control daemon exists.";
-      }
-    ];
-
     users.groups.${cfg.group} = { };
     users.users.${cfg.user} = {
       isSystemUser = lib.mkDefault true;
@@ -72,14 +83,14 @@ in
       createHome = lib.mkDefault true;
     };
 
-    environment.systemPackages = lib.optional (cfg.package != null) cfg.package;
+    environment.systemPackages = [ cfg.package ];
 
     systemd.services.astrumweaver-control = {
       description = "AstrumWeaver Control Plane";
       wantedBy = [ "multi-user.target" ];
       wants = [ "network-online.target" ];
       after = [ "network-online.target" ];
-      path = lib.optional (cfg.package != null) cfg.package ++ cfg.extraPackages;
+      path = [ cfg.package ] ++ cfg.extraPackages;
 
       serviceConfig = {
         Type = "simple";
@@ -100,7 +111,11 @@ in
         ProtectKernelModules = true;
         ProtectControlGroups = true;
         RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" ];
-      } // lib.optionalAttrs (cfg.environmentFile != null) {
+      }
+      // lib.optionalAttrs cfg.migrateOnStart {
+        ExecStartPre = "${cfg.package}/bin/astrumweaver-migrate";
+      }
+      // lib.optionalAttrs (cfg.environmentFile != null) {
         EnvironmentFile = cfg.environmentFile;
       };
     };

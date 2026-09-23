@@ -9,7 +9,12 @@ description = "Deployment-agnostic compute fabric for heterogeneous compute node
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+  "fastapi>=0.117,<1",
+  "httpx>=0.28,<1",
+  "pydantic>=2.11,<3",
+  "uvicorn>=0.35,<1",
+]
 
 [project.optional-dependencies]
 postgres = [
@@ -17,10 +22,20 @@ postgres = [
 ]
 test = [
   "pytest>=8.3,<9",
+  "pytest-asyncio>=1.1,<2",
 ]
+
+[project.scripts]
+astrumweaver-control = "astrumweaver.control.daemon:main"
+astrumweaver-worker = "astrumweaver.worker.daemon:main"
+astrumweaver-migrate = "astrumweaver.control.migrate:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/astrumweaver"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"migrations" = "astrumweaver/migrations"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"

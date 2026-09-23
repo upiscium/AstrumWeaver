@@ -66,7 +66,7 @@ ensure_live_service_user() {
 }
 
 resolve_executable() {
-  local requested="$1" root="$2"
+  local requested="$1" root="$2" default_command="$3"
   if [[ -n "$requested" ]]; then
     [[ "$requested" == /* ]] || die "--executable must be an absolute path"
     if [[ "$root" == "/" ]]; then
@@ -75,7 +75,16 @@ resolve_executable() {
     printf '%s\n' "$requested"
     return 0
   fi
-  die "--executable is required until packaged role binaries are installed by #7"
+
+  if [[ "$root" != "/" ]]; then
+    die "--executable is required for staged --root installs"
+  fi
+
+  local resolved
+  resolved="$(command -v "$default_command" || true)"
+  [[ -n "$resolved" && -x "$resolved" ]] \
+    || die "packaged executable not found on PATH: $default_command"
+  printf '%s\n' "$resolved"
 }
 
 render_unit() {

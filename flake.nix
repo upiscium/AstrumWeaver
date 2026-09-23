@@ -18,11 +18,6 @@
       worker = pkgs.callPackage ./nix/worker-support.nix {
         inherit astrumweaver integration;
       };
-
-      fakeDaemon = pkgs.writeShellScript "astrumweaver-smoke-daemon" ''
-        exec ${pkgs.coreutils}/bin/sleep infinity
-      '';
-
       fakeNvidia = pkgs.writeShellScriptBin "nvidia-smi" ''
         if [ "$1" = "--query-gpu=uuid" ]; then
           echo GPU-example-smoke
@@ -46,17 +41,24 @@
             services.astrumweaver.control = {
               enable = true;
               package = control;
-              command = "${fakeDaemon}";
-              settings.control.listen = "127.0.0.1:9000";
+              settings.control = {
+                host = "127.0.0.1";
+                port = 9000;
+              };
             };
 
             services.astrumweaver.worker = {
               enable = true;
               package = worker;
-              command = "${fakeDaemon}";
+              workerId = "smoke-worker";
+              workerClass = "modern-single";
+              controlUrl = "http://127.0.0.1:9000";
+              capabilities = [ "debug.echo" ];
               gpuUuids = [ "GPU-example-smoke" ];
+              totalVramMb = 16384;
+              maxSingleGpuVramMb = 16384;
+              executorFactory = "astrumweaver.executors.structured_echo:create_executor";
               nvidiaSmiPackage = fakeNvidia;
-              settings.worker.class = "modern-single";
             };
           })
         ];
@@ -87,6 +89,8 @@
           test -n "$controlExec"
           test -n "$workerExec"
           test -n "$workerPreflight"
+          printf "%s" "$controlExec" | grep -q astrumweaver-control
+          printf "%s" "$workerExec" | grep -q astrumweaver-worker
           printf "%s\n%s\n%s\n" "$controlExec" "$workerExec" "$workerPreflight" > "$out"
         '';
       };
