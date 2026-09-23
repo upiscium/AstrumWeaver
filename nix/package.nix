@@ -16,6 +16,13 @@ python312Packages.buildPythonPackage {
 
   build-system = [ python312Packages.hatchling ];
 
+  dependencies = with python312Packages; [
+    fastapi
+    httpx
+    pydantic
+    uvicorn
+  ];
+
   pythonImportsCheck = [
     "astrumweaver"
     "astrumweaver.control"
