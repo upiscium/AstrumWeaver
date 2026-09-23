@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 from importlib import resources
+from pathlib import Path
 
 try:
     import psycopg
@@ -19,12 +20,24 @@ def apply_migrations(database_url: str) -> list[str]:
         raise RuntimeError("psycopg is required for PostgreSQL migrations")
 
     migration_root = resources.files("astrumweaver").joinpath("migrations")
-    migrations = sorted(
-        item for item in migration_root.iterdir()
-        if item.name.endswith(".sql")
-    )
+    migrations = []
+    try:
+        migrations = sorted(
+            item for item in migration_root.iterdir()
+            if item.name.endswith(".sql")
+        )
+    except (FileNotFoundError, NotADirectoryError):
+        migrations = []
+
     if not migrations:
-        raise RuntimeError("no packaged migrations were found")
+        # Editable/source-tree fallback. Installed wheels include migrations
+        # under the astrumweaver package through hatch force-include.
+        source_root = Path(__file__).resolve().parents[3] / "migrations"
+        if source_root.is_dir():
+            migrations = sorted(source_root.glob("*.sql"))
+
+    if not migrations:
+        raise RuntimeError("no AstrumWeaver migrations were found")
 
     applied: list[str] = []
     with psycopg.connect(database_url, autocommit=True) as connection:
