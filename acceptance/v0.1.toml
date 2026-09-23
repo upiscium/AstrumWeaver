@@ -6,14 +6,14 @@ description = "Canonical AstrumWeaver v0.1 software acceptance matrix. Hardware 
 id = "single-gpu-worker-registration"
 description = "A one-GPU Worker can register and participate in durable scheduling."
 evidence = [
-  "tests/test_control_repository.py::test_priority_then_fifo_sequence_is_explicit"
+  "tests/test_v0_1_acceptance.py::test_v0_1_single_gpu_profile_registers_as_one_worker"
 ]
 
 [[check]]
 id = "multi-gpu-worker-registration"
 description = "A multi-GPU Worker is represented as one Worker and can claim compatible work."
 evidence = [
-  "tests/test_control_repository.py::test_control_claim_uses_capability_and_new_resource_shape"
+  "tests/test_v0_1_acceptance.py::test_v0_1_multi_gpu_profile_registers_as_one_worker"
 ]
 
 [[check]]
