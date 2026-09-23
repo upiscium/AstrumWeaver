@@ -13,6 +13,7 @@ from astrumweaver import (
     ResidencyReport,
 )
 from astrumweaver.executors import TextGenerationExecutor
+from astrumweaver.executors.structured_echo import StructuredEchoExecutor
 
 
 def test_non_text_result_supports_structured_output_and_artifact() -> None:
@@ -131,3 +132,39 @@ def test_artifact_size_and_metric_types_are_validated() -> None:
 def test_residency_item_types_are_validated() -> None:
     with pytest.raises(TypeError, match="items"):
         ResidencyReport(items=("not-residency",))  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_structured_echo_acceptance_delay_is_async_and_bounded(
+    monkeypatch,
+) -> None:
+    slept: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr(
+        "astrumweaver.executors.structured_echo.asyncio.sleep",
+        fake_sleep,
+    )
+
+    executor = StructuredEchoExecutor()
+    result = await executor.execute(
+        JobRequest(
+            job_id="job-delay",
+            capability="debug.echo",
+            payload={"_debug_delay_seconds": 3},
+        )
+    )
+
+    assert slept == [3.0]
+    assert result.outputs["payload"]["_debug_delay_seconds"] == 3
+
+    with pytest.raises(ValueError, match="between 0 and 30"):
+        await executor.execute(
+            JobRequest(
+                job_id="job-delay-too-long",
+                capability="debug.echo",
+                payload={"_debug_delay_seconds": 31},
+            )
+        )

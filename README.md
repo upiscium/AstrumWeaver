@@ -71,6 +71,7 @@ Proxmox is a supported deployment environment, not an AstrumWeaver dependency. A
 - [Control / Worker Protocol v1](docs/protocol-v1.md)
 - [Borrowable GPU Worker](docs/borrowable-worker.md)
 - [Deployment Profiles and v0.1 Acceptance](docs/deployment-profiles.md)
+- [Hardware E2E Acceptance](docs/hardware-e2e.md)
 
 ## License
 
