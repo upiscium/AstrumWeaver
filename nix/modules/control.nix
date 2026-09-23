@@ -41,9 +41,16 @@ in
     };
 
     environmentFile = lib.mkOption {
-      type = lib.types.nullOr lib.types.path;
+      type = lib.types.nullOr lib.types.str;
       default = null;
+      example = "/run/secrets/astrumweaver-control.env";
       description = "Optional protected EnvironmentFile containing database URL and authority tokens.";
+    };
+
+    migrateOnStart = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Apply packaged PostgreSQL migrations before starting Control. Disabled by default because schema mutation is an explicit authority.";
     };
 
     user = lib.mkOption {
@@ -104,7 +111,11 @@ in
         ProtectKernelModules = true;
         ProtectControlGroups = true;
         RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" ];
-      } // lib.optionalAttrs (cfg.environmentFile != null) {
+      }
+      // lib.optionalAttrs cfg.migrateOnStart {
+        ExecStartPre = "${cfg.package}/bin/astrumweaver-migrate";
+      }
+      // lib.optionalAttrs (cfg.environmentFile != null) {
         EnvironmentFile = cfg.environmentFile;
       };
     };
