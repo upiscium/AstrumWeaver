@@ -51,6 +51,33 @@ def require_exact_gpu_set(
         )
 
 
+def executor_capabilities(executor: JobExecutor) -> frozenset[str]:
+    raw = getattr(executor, "capabilities", None)
+    if raw is None:
+        raise TypeError("configured executor must declare capabilities")
+    if isinstance(raw, str):
+        values = (raw,)
+    else:
+        values = tuple(raw)
+    capabilities = frozenset(str(value).strip() for value in values)
+    if not capabilities or any(not value for value in capabilities):
+        raise ValueError("executor capabilities must be non-empty non-blank strings")
+    return capabilities
+
+
+def require_executor_capabilities(
+    executor: JobExecutor,
+    advertised: frozenset[str],
+) -> None:
+    supported = executor_capabilities(executor)
+    missing = advertised - supported
+    if missing:
+        raise RuntimeError(
+            "executor does not support advertised capabilities: "
+            + ", ".join(sorted(missing))
+        )
+
+
 def load_executor(specifier: str, config: Mapping[str, Any] | None = None) -> JobExecutor:
     module_name, separator, attribute_name = specifier.partition(":")
     if not separator or not module_name or not attribute_name:
