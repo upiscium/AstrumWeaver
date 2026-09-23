@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "astrumweaver"
+version = "0.1.0.dev0"
+description = "Deployment-agnostic compute fabric for heterogeneous compute nodes"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.3,<9",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/astrumweaver"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
