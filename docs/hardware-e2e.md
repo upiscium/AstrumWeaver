@@ -128,15 +128,21 @@ Worker ONLINE/ready
         ↓
 generic job pinned to this GPU set → SUCCEEDED
         ↓
+submit bounded debug-delay anchor job
+        ↓
+verify anchor is RUNNING
+        ↓
 SIGUSR1 drain
         ↓
-DRAINING observed
+DRAINING observed while anchor is active
         ↓
-submit second pinned job
+submit later pinned probe job
         ↓
-verify it remains QUEUED while DRAINING
+verify later probe remains QUEUED
         ↓
-cancel probe job
+verify active anchor → SUCCEEDED while DRAINING
+        ↓
+cancel queued probe job
         ↓
 wait current job empty
         ↓
@@ -157,7 +163,9 @@ second generic pinned job → SUCCEEDED
 write redacted evidence
 ```
 
-The harness does not force-kill a long-running job. A finite drain timeout may fail the acceptance run, but does not convert that into forced termination.
+The harness does not force-kill a long-running job. It deliberately places a short bounded `debug.echo` anchor job in RUNNING before requesting drain, proving that the active attempt completes normally while later work is excluded. A finite drain timeout may fail the acceptance run, but does not convert that into forced termination.
+
+For canonical v0.1 hardware acceptance, use the default `debug.echo` capability. The built-in executor understands the private acceptance delay used by the harness. A custom `--capability` override must provide equivalent bounded-delay behavior or the harness will fail when it cannot observe the anchor in RUNNING state.
 
 ## Evidence handling
 
@@ -181,6 +189,7 @@ A successful file looks structurally like:
 | Worker registration / readiness | PASS |
 | First generic job round-trip | PASS |
 | DRAINING observed | PASS |
+| Active job completed while DRAINING | PASS |
 | No new claim while DRAINING | PASS |
 | Worker service stopped after drain | PASS |
 | GPU process contexts after release | 0 |
