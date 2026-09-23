@@ -59,6 +59,14 @@ The script:
 
 It does not provision PostgreSQL itself. The configured Control Plane must point at an already-available durable database.
 
+Before first Control startup, apply the packaged schema explicitly:
+
+```sh
+ASTRUMWEAVER_DATABASE_URL='postgresql://...' astrumweaver-migrate
+```
+
+NixOS deployments may instead opt in to `services.astrumweaver.control.migrateOnStart = true`; the default remains `false` because schema mutation is an explicit authority.
+
 ## GPU Worker
 
 Example:
