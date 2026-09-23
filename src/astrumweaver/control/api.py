@@ -48,7 +48,7 @@ def _require_token(request: Request, expected: str, authority: str) -> None:
 
 
 async def _json_v1(request: Request) -> dict[str, Any]:
-    body = await _json_v1(request)
+    body = await request.json()
     if not isinstance(body, dict):
         raise HTTPException(status_code=422, detail="JSON object is required")
     if body.get("protocol_version") != PROTOCOL_VERSION:
