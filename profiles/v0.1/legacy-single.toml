@@ -1,0 +1,36 @@
+profile_version = "v0.1"
+profile_id = "legacy-single"
+role = "worker"
+enforcement = "documentation-only"
+description = "One older NVIDIA GPU used only for explicitly compatible workloads."
+
+[minimum]
+vcpu = 2
+ram_mib = 4096
+disk_gib = 10
+gpu_count = 1
+notes = [
+  "Disk excludes executor/model/artifact storage.",
+  "The device must have a working driver/userspace combination and executor-specific compatibility."
+]
+
+[recommended]
+vcpu = 4
+ram_mib = 8192
+disk_gib = 20
+notes = [
+  "Pin the driver/runtime/executor versions known to work together.",
+  "Advertise only capabilities actually supported by the configured executor."
+]
+
+[example_resource_shape]
+gpu_count = 1
+total_vram_mb = 8192
+max_single_gpu_vram_mb = 8192
+gpu_uuids = ["GPU-example-legacy-single"]
+
+[[validated]]
+scope = "ci-contract"
+evidence = "tests/test_scheduling.py::test_capability_matching_is_generic_and_independent_from_worker_class"
+claim = "Legacy-class workers participate through generic capability/resource matching rather than application-specific routing."
+hardware_sizing_validated = false
