@@ -197,6 +197,8 @@ OFFLINE
 
 The Worker daemon uses DRAINING during graceful shutdown before moving OFFLINE.
 
+A local `SIGUSR1` is a non-terminating drain request: the process stops claiming locally and mirrors DRAINING into Control while allowing the current job to finish. This is the primitive used by [Borrowable GPU Worker](borrowable-worker.md).
+
 ## Control configuration
 
 Example non-secret TOML:
