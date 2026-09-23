@@ -28,9 +28,13 @@ test = [
 [project.scripts]
 astrumweaver-control = "astrumweaver.control.daemon:main"
 astrumweaver-worker = "astrumweaver.worker.daemon:main"
+astrumweaver-migrate = "astrumweaver.control.migrate:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/astrumweaver"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"migrations" = "astrumweaver/migrations"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
