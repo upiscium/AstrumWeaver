@@ -298,6 +298,8 @@ The attribute may be:
 - an existing object satisfying `JobExecutor`, or
 - a synchronous factory receiving an executor-settings mapping and returning `JobExecutor`
 
+The resulting executor must also expose a non-empty `capabilities` collection. Before registration, the Worker verifies that every capability it intends to advertise is included in that executor declaration. A mismatch fails startup rather than allowing the Worker to claim unsupported work.
+
 The Worker never imports application-specific executors in Control.
 
 The built-in `structured_echo` executor exists for smoke/integration validation, not as a workload-specific scheduler rule.
