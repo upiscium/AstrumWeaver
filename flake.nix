@@ -41,14 +41,14 @@
             services.astrumweaver.control = {
               enable = true;
               package = control;
-              command = fakeDaemon;
+              command = "${fakeDaemon}";
               settings.control.listen = "127.0.0.1:9000";
             };
 
             services.astrumweaver.worker = {
               enable = true;
               package = worker;
-              command = fakeDaemon;
+              command = "${fakeDaemon}";
               gpuUuids = [ "GPU-example-smoke" ];
               nvidiaSmiPackage = fakeNvidia;
               settings.worker.class = "modern-single";
