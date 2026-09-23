@@ -105,9 +105,9 @@ A consuming flake may import it with:
 
 ## Worker module
 
-Until #15 provides the real daemon, the module requires the reviewed Worker executable explicitly.
+The module defaults to the packaged `astrumweaver-worker` daemon. `command` remains available only as an explicit development/testing override.
 
-Example shape:
+Example GPU Worker:
 
 ```nix
 { config, inputs, pkgs, ... }:
@@ -154,7 +154,7 @@ The module manages:
 - service hardening
 - exact GPU UUID preflight before Worker startup
 
-`gpuUuids` must be nonempty and unique.
+`gpuUuids` must be unique. Leave it empty for a CPU/non-GPU Worker; when it is non-empty, `nvidiaSmiPackage`, `totalVramMb`, and `maxSingleGpuVramMb` must describe the GPU resource shape consistently.
 
 The module deliberately does not infer the GPU set from PCI ordinals or Proxmox configuration.
 
@@ -171,13 +171,15 @@ Example shape:
 
     package = inputs.astrumweaver.packages.${pkgs.system}.control;
 
-    settings = {
-      control = {
-        listen = "127.0.0.1:9000";
-      };
+    settings.control = {
+      host = "127.0.0.1";
+      port = 9000;
     };
 
     environmentFile = "/run/secrets/astrumweaver-control.env";
+
+    # Optional explicit schema authority:
+    # migrateOnStart = true;
   };
 }
 ```
@@ -206,7 +208,6 @@ Then an existing systemd Linux node can use the packaged wrappers, for example:
 sudo ./result/bin/astrumweaver-setup-gpu-worker \
   --config ./worker.toml \
   --environment-file ./worker.env \
-  --executable /absolute/path/to/astrumweaver-worker \
   --gpu-uuid GPU-example-a
 ```
 
