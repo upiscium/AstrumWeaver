@@ -56,7 +56,15 @@ class PostgresControlRepository:
 
     def check_storage(self) -> None:
         with self._connection() as connection:
-            connection.execute("SELECT 1").fetchone()
+            row = connection.execute(
+                """
+                SELECT
+                    to_regclass('public.workers') AS workers,
+                    to_regclass('public.jobs') AS jobs
+                """
+            ).fetchone()
+        if not row or row.get("workers") is None or row.get("jobs") is None:
+            raise StorageUnavailable("postgresql schema is unavailable")
 
 
     def __init__(
