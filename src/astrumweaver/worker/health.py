@@ -18,6 +18,7 @@ def create_health_app(runtime: WorkerRuntime) -> FastAPI:
             "status": "ok",
             "worker_id": runtime.spec.worker_id,
             "active_job_id": runtime.active_job_id,
+            "draining": runtime.draining,
         }
 
     @app.get("/ready")
@@ -29,6 +30,7 @@ def create_health_app(runtime: WorkerRuntime) -> FastAPI:
             "ready": is_ready,
             "worker_id": runtime.spec.worker_id,
             "active_job_id": runtime.active_job_id,
+            "draining": runtime.draining,
         }
 
     return app
