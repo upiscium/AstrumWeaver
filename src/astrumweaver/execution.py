@@ -79,10 +79,15 @@ class JobResult:
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        artifacts = tuple(self.artifacts)
+        if not all(isinstance(artifact, ArtifactRef) for artifact in artifacts):
+            raise TypeError("artifacts must contain only ArtifactRef values")
+
         object.__setattr__(self, "outputs", _mapping(self.outputs))
-        object.__setattr__(self, "artifacts", tuple(self.artifacts))
+        object.__setattr__(self, "artifacts", artifacts)
         object.__setattr__(self, "metrics", MappingProxyType(dict(self.metrics)))
         object.__setattr__(self, "metadata", _mapping(self.metadata))
+
         if self.text is not None and not isinstance(self.text, str):
             raise TypeError("text must be a string or None")
         for key, value in self.metrics.items():
@@ -118,11 +123,16 @@ class ResidencyReport:
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "items", tuple(self.items))
-        observed_at = self.observed_at
-        if observed_at.tzinfo is None:
+        items = tuple(self.items)
+        if not all(isinstance(item, ResidencyItem) for item in items):
+            raise TypeError("items must contain only ResidencyItem values")
+        if not isinstance(self.observed_at, datetime):
+            raise TypeError("observed_at must be a datetime")
+        if self.observed_at.tzinfo is None:
             raise ValueError("observed_at must be timezone-aware")
-        object.__setattr__(self, "observed_at", observed_at.astimezone(UTC))
+
+        object.__setattr__(self, "items", items)
+        object.__setattr__(self, "observed_at", self.observed_at.astimezone(UTC))
         object.__setattr__(self, "metadata", _mapping(self.metadata))
 
     @property
