@@ -9,7 +9,30 @@ let
     integration = integrationPackage;
   };
   toml = pkgs.formats.toml { };
-  generatedConfig = toml.generate "astrumweaver-worker.toml" cfg.settings;
+  coreSettings = {
+    worker = {
+      id = cfg.workerId;
+      class = cfg.workerClass;
+      control_url = cfg.controlUrl;
+      gpu_uuids = cfg.gpuUuids;
+      gpu_count = builtins.length cfg.gpuUuids;
+      total_vram_mb = cfg.totalVramMb;
+      max_single_gpu_vram_mb = cfg.maxSingleGpuVramMb;
+      capabilities = cfg.capabilities;
+      labels = cfg.labels;
+      max_concurrency = cfg.maxConcurrency;
+      gpu_preflight = cfg.gpuUuids != [ ];
+      health_host = cfg.healthHost;
+      health_port = cfg.healthPort;
+    };
+    executor = {
+      factory = cfg.executorFactory;
+      settings = cfg.executorSettings;
+    };
+  };
+  generatedConfig = toml.generate "astrumweaver-worker.toml" (
+    lib.recursiveUpdate cfg.settings coreSettings
+  );
   expectedGpuUuids = pkgs.writeText "astrumweaver-gpu-uuids" (
     lib.concatStringsSep "\n" (lib.sort builtins.lessThan cfg.gpuUuids) + "\n"
   );
@@ -43,15 +66,38 @@ in
       description = "Optional daemon executable override. Defaults to the packaged astrumweaver-worker entrypoint.";
     };
 
-    settings = lib.mkOption {
-      type = lib.types.attrs;
-      default = { };
-      description = "Non-secret Worker TOML settings. Secrets must not be stored in the Nix store.";
+    workerId = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      example = "worker-1";
+      description = "Stable scheduler-visible Worker identity.";
     };
 
-    environmentFile = lib.mkOption {
-      type = lib.types.nullOr lib.types.path;
-      default = null;
+    workerClass = lib.mkOption {
+      type = lib.types.str;
+      default = "generic";
+      example = "modern-single";
+      description = "Hardware/runtime topology class; not an application role.";
+    };
+
+    controlUrl = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      example = "https://control.example.invalid";
+      description = "AstrumWeaver Control API base URL.";
+    };
+
+    capabilities = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [ "llm.chat" "image.generate" ];
+      description = "Capabilities advertised by this Worker.";
+    };
+
+    labels = lib.mkOption {
+      type = lib.types.attrsOf lib.types.str;
+      default = { };
+      example = { runtime_family = "modern"; };
     };
 
     gpuUuids = lib.mkOption {
@@ -61,11 +107,60 @@ in
       description = "Exact guest-visible NVIDIA GPU UUID set. Leave empty for a non-GPU Worker.";
     };
 
+    totalVramMb = lib.mkOption {
+      type = lib.types.ints.unsigned;
+      default = 0;
+    };
+
+    maxSingleGpuVramMb = lib.mkOption {
+      type = lib.types.ints.unsigned;
+      default = 0;
+    };
+
+    maxConcurrency = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 1;
+      description = "Maximum concurrent jobs. The v1 daemon currently supports 1.";
+    };
+
+    executorFactory = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      example = "my_executor:create_executor";
+      description = "Configured JobExecutor factory in module:attribute form.";
+    };
+
+    executorSettings = lib.mkOption {
+      type = lib.types.attrs;
+      default = { };
+      description = "Executor-specific non-secret configuration.";
+    };
+
+    settings = lib.mkOption {
+      type = lib.types.attrs;
+      default = { };
+      description = "Additional non-secret Worker TOML settings. Core module-owned fields override conflicting values.";
+    };
+
+    environmentFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "/run/secrets/astrumweaver-worker.env";
+      description = "Protected EnvironmentFile containing ASTRUMWEAVER_WORKER_TOKEN and other secret overrides.";
+    };
+
     nvidiaSmiPackage = lib.mkOption {
       type = lib.types.nullOr lib.types.package;
       default = null;
       example = lib.literalExpression "config.hardware.nvidia.package";
       description = "Package providing nvidia-smi. Required when gpuUuids is non-empty.";
+    };
+
+    supplementaryGroups = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [ "video" "render" ];
+      description = "Host-specific groups needed for accelerator device access.";
     };
 
     user = lib.mkOption {
@@ -78,11 +173,14 @@ in
       default = "astrumweaver";
     };
 
-    supplementaryGroups = lib.mkOption {
-      type = lib.types.listOf lib.types.str;
-      default = [ ];
-      example = [ "video" "render" ];
-      description = "Host-specific groups needed for accelerator device access.";
+    healthHost = lib.mkOption {
+      type = lib.types.str;
+      default = "127.0.0.1";
+    };
+
+    healthPort = lib.mkOption {
+      type = lib.types.port;
+      default = 9100;
     };
 
     extraArgs = lib.mkOption {
@@ -99,12 +197,41 @@ in
   config = lib.mkIf cfg.enable {
     assertions = [
       {
+        assertion = cfg.workerId != "";
+        message = "services.astrumweaver.worker.workerId must be set.";
+      }
+      {
+        assertion = cfg.controlUrl != "";
+        message = "services.astrumweaver.worker.controlUrl must be set.";
+      }
+      {
+        assertion = cfg.capabilities != [ ];
+        message = "services.astrumweaver.worker.capabilities must not be empty.";
+      }
+      {
+        assertion = cfg.executorFactory != "";
+        message = "services.astrumweaver.worker.executorFactory must be set.";
+      }
+      {
+        assertion = cfg.maxConcurrency == 1;
+        message = "AstrumWeaver v1 Worker daemon currently requires maxConcurrency = 1.";
+      }
+      {
         assertion = builtins.length cfg.gpuUuids == builtins.length (lib.unique cfg.gpuUuids);
         message = "services.astrumweaver.worker.gpuUuids must not contain duplicates.";
       }
       {
         assertion = cfg.gpuUuids == [ ] || cfg.nvidiaSmiPackage != null;
         message = "services.astrumweaver.worker.nvidiaSmiPackage is required for GPU Workers.";
+      }
+      {
+        assertion =
+          if cfg.gpuUuids == [ ]
+          then cfg.totalVramMb == 0 && cfg.maxSingleGpuVramMb == 0
+          else cfg.totalVramMb > 0
+            && cfg.maxSingleGpuVramMb > 0
+            && cfg.maxSingleGpuVramMb <= cfg.totalVramMb;
+        message = "Worker VRAM shape must be zero for non-GPU Workers and positive/consistent for GPU Workers.";
       }
     ];
 
