@@ -26,16 +26,16 @@ AstrumWeaver setup never invokes `qm create`, `pct create`, or equivalent infras
 
 ## Package/runtime prerequisite
 
-Issue #6 intentionally owns **host integration**, not package distribution.
+Issue #6 owns **host integration**, while the Nix/release package supplies the daemon executable.
 
-The role executable must already be available on the target node and is passed explicitly:
+The packaged role executable must already be available on the target node:
 
 - `astrumweaver-control`
 - `astrumweaver-worker`
 
-The Nix flake now provides immutable AstrumWeaver runtime-support and integration packages; see [Nix Packaging and NixOS Modules](nix.md). The long-running Control/Worker daemon entrypoints are tracked separately in #15.
+The Nix flake provides immutable AstrumWeaver Control/Worker daemon packages and integration assets; see [Nix Packaging and NixOS Modules](nix.md).
 
-Keeping these concerns separate allows the same setup contract to work with a Nix package, a release artifact, or another reviewed packaging mechanism without inventing placeholder service daemons.
+Keeping these concerns separate allows the same setup contract to work with a Nix package, a release artifact, or another reviewed packaging mechanism.
 
 ## Control Plane
 
@@ -45,7 +45,6 @@ Example:
 sudo ./setup/setup-control-plane.sh \
   --config ./control.toml \
   --environment-file ./control.env \
-  --executable /usr/local/bin/astrumweaver-control \
   --start
 ```
 
@@ -68,7 +67,6 @@ Example:
 sudo ./setup/setup-gpu-worker.sh \
   --config ./worker.toml \
   --environment-file ./worker.env \
-  --executable /usr/local/bin/astrumweaver-worker \
   --gpu-uuid GPU-example-a \
   --gpu-uuid GPU-example-b \
   --start
