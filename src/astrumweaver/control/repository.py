@@ -44,6 +44,8 @@ class StorageUnavailable(RepositoryError):
 
 
 class ControlRepository(Protocol):
+    def health(self) -> None: ...
+
     def register_worker(
         self, registration: WorkerRegistration, *, now: datetime | None = None
     ) -> WorkerRecord: ...
@@ -56,8 +58,28 @@ class ControlRepository(Protocol):
         now: datetime | None = None,
     ) -> WorkerRecord: ...
 
+    def get_worker(self, worker_id: str) -> WorkerRecord: ...
+
+    def set_worker_state(
+        self,
+        worker_id: str,
+        state: WorkerState,
+        *,
+        now: datetime | None = None,
+    ) -> WorkerRecord: ...
+
+    def expire_stale_workers(
+        self, *, now: datetime | None = None
+    ) -> list[WorkerRecord]: ...
+
     def submit_job(
         self, submission: JobSubmission, *, now: datetime | None = None
+    ) -> JobRecord: ...
+
+    def get_job(self, job_id: str) -> JobRecord: ...
+
+    def cancel_job(
+        self, job_id: str, *, now: datetime | None = None
     ) -> JobRecord: ...
 
     def claim_next_job(
@@ -136,6 +158,9 @@ class InMemoryControlRepository:
         self._idempotency: dict[str, str] = {}
         self._sequence = 0
         self._lock = RLock()
+
+    def health(self) -> None:
+        return None
 
     def _active_job_count(self, worker_id: str) -> int:
         return sum(
