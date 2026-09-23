@@ -7,6 +7,7 @@ import pytest
 
 from astrumweaver import ArtifactRef, JobResult, ResourceShape, WorkerSpec
 from astrumweaver.control.api import create_app
+from astrumweaver.control.daemon import build_app
 from astrumweaver.control.repository import InMemoryControlRepository, StorageUnavailable
 from astrumweaver.executors.structured_echo import StructuredEchoExecutor
 from astrumweaver.transport import PROTOCOL_VERSION
@@ -509,3 +510,40 @@ def test_executor_without_capability_declaration_is_rejected() -> None:
             UndeclaredExecutor(),
             frozenset({"custom.work"}),
         )
+
+
+def test_control_daemon_requires_explicit_postgres_and_authority(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    config = tmp_path / "control.toml"
+    config.write_text(
+        "[control]\nhost = \"127.0.0.1\"\nport = 9000\n",
+        encoding="utf-8",
+    )
+
+    for name in (
+        "ASTRUMWEAVER_DATABASE_URL",
+        "ASTRUMWEAVER_CLIENT_TOKEN",
+        "ASTRUMWEAVER_WORKER_TOKEN",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    with pytest.raises(RuntimeError, match="ASTRUMWEAVER_DATABASE_URL is required"):
+        build_app(str(config))
+
+    monkeypatch.setenv(
+        "ASTRUMWEAVER_DATABASE_URL",
+        "postgresql://example.invalid/astrumweaver",
+    )
+    with pytest.raises(RuntimeError, match="ASTRUMWEAVER_CLIENT_TOKEN is required"):
+        build_app(str(config))
+
+    monkeypatch.setenv("ASTRUMWEAVER_CLIENT_TOKEN", "client")
+    with pytest.raises(RuntimeError, match="ASTRUMWEAVER_WORKER_TOKEN is required"):
+        build_app(str(config))
+
+    monkeypatch.setenv("ASTRUMWEAVER_WORKER_TOKEN", "worker")
+    app = build_app(str(config))
+
+    assert app.title == "AstrumWeaver Control API"
