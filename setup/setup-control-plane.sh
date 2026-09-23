@@ -15,10 +15,10 @@ SERVICE_USER='astrumweaver'
 
 usage() {
   cat <<'USAGE'
-Usage: setup-control-plane.sh --config FILE --executable ABSOLUTE_PATH [options]
+Usage: setup-control-plane.sh --config FILE [options]
 
 Options:
-  --environment-file FILE   Optional systemd EnvironmentFile source.
+  --environment-file FILE   Optional systemd EnvironmentFile source.\n  --executable PATH         Optional absolute daemon override; defaults to astrumweaver-control on PATH.
   --root DIR                Stage files below DIR instead of live /.
   --user NAME               Service account name (default: astrumweaver).
   --start                   Enable and start the service after installation.
@@ -63,7 +63,7 @@ fi
 [[ "$SERVICE_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "invalid service user"
 
 ROOT="$(normalize_root "$ROOT")"
-EXECUTABLE="$(resolve_executable "$EXECUTABLE" "$ROOT")"
+EXECUTABLE="$(resolve_executable "$EXECUTABLE" "$ROOT" astrumweaver-control)"
 
 ETC_DIR="$(root_path "$ROOT" /etc/astrumweaver)"
 STATE_DIR="$(root_path "$ROOT" /var/lib/astrumweaver)"
