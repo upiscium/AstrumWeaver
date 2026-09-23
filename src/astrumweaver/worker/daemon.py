@@ -15,7 +15,12 @@ import uvicorn
 from ..contracts import ResourceShape, WorkerSpec
 from .client import ControlClient
 from .health import create_health_app
-from .runtime import WorkerRuntime, load_executor, require_exact_gpu_set
+from .runtime import (
+    WorkerRuntime,
+    load_executor,
+    require_exact_gpu_set,
+    require_executor_capabilities,
+)
 
 
 def _load_toml(path: str) -> dict[str, Any]:
@@ -71,6 +76,7 @@ async def run_worker(config_path: str) -> None:
         executor_factory,
         dict(executor_section.get("settings") or {}),
     )
+    require_executor_capabilities(executor, spec.capabilities)
 
     client = ControlClient(
         str(worker_section["control_url"]),
