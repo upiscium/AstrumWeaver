@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 
 import pytest
 
@@ -70,7 +69,13 @@ class FakeTextRuntime:
         self.cancelled: list[str] = []
         self.payloads: list[dict[str, object]] = []
         self.report = ResidencyReport(
-            items=(ResidencyItem(name="example-model", kind="model", accelerator_memory_bytes=4096),)
+            items=(
+                ResidencyItem(
+                    name="example-model",
+                    kind="model",
+                    accelerator_memory_bytes=4096,
+                ),
+            )
         )
 
     async def generate(self, payload):
@@ -116,5 +121,13 @@ def test_artifact_size_and_metric_types_are_validated() -> None:
     with pytest.raises(ValueError, match="size_bytes"):
         ArtifactRef(uri="artifact://x", size_bytes=-1)
 
+    with pytest.raises(TypeError, match="artifacts"):
+        JobResult(artifacts=("not-an-artifact",))  # type: ignore[arg-type]
+
     with pytest.raises(TypeError, match="metric values"):
         JobResult(metrics={"ok": True})
+
+
+def test_residency_item_types_are_validated() -> None:
+    with pytest.raises(TypeError, match="items"):
+        ResidencyReport(items=("not-residency",))  # type: ignore[arg-type]
