@@ -1,0 +1,29 @@
+[Unit]
+Description=AstrumWeaver GPU Worker
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=@USER@
+EnvironmentFile=-/etc/astrumweaver/worker.env
+ExecStartPre=+/usr/local/libexec/astrumweaver/gpu-preflight /etc/astrumweaver/gpu-uuids
+ExecStart=@EXECUTABLE@ --config /etc/astrumweaver/worker.toml
+Restart=on-failure
+RestartSec=5s
+RuntimeDirectory=astrumweaver-worker
+RuntimeDirectoryMode=0750
+StateDirectory=astrumweaver
+StateDirectoryMode=0750
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
