@@ -179,16 +179,28 @@ class PostgresControlRepository:
         timestamp = _aware(now)
         spec = registration.spec
         with self._transaction() as connection:
+            existing = connection.execute(
+                "SELECT * FROM workers WHERE id = %s FOR UPDATE",
+                (spec.worker_id,),
+            ).fetchone()
+            if existing is not None:
+                current = self._worker(existing)
+                if current.active_jobs > 0:
+                    if registration.spec != current.spec:
+                        raise ConflictError(
+                            "worker resource/topology cannot change while jobs are active"
+                        )
+                    if registration.max_concurrency < current.active_jobs:
+                        raise ConflictError(
+                            "max_concurrency cannot be lower than active job count"
+                        )
+
             conflicting = self._gpu_overlap(connection, registration)
             if conflicting:
                 raise ConflictError(
                     f"GPU identity overlaps with worker {conflicting}"
                 )
 
-            existing = connection.execute(
-                "SELECT registered_at FROM workers WHERE id = %s FOR UPDATE",
-                (spec.worker_id,),
-            ).fetchone()
             registered_at = existing["registered_at"] if existing else timestamp
             active_jobs = connection.execute(
                 """
