@@ -38,3 +38,18 @@ jobs:
         run: python -m pip install -e '.[test,postgres]'
       - name: Test
         run: python -m pytest -q
+
+  nix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - name: Generate flake lock
+        run: nix flake lock
+      - name: Check flake
+        run: nix flake check --print-build-logs
+      - name: Emit flake lock
+        run: |
+          printf 'FLAKE_LOCK_BASE64='
+          base64 -w0 flake.lock
+          printf '\n'
