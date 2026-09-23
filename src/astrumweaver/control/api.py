@@ -108,18 +108,6 @@ def create_app(
     def require_worker(request: Request) -> None:
         _require_token(request, worker_token, "worker")
 
-    def require_either(request: Request) -> None:
-        supplied = _bearer_token(request)
-        if supplied and (
-            secrets.compare_digest(supplied, client_token)
-            or secrets.compare_digest(supplied, worker_token)
-        ):
-            return
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="authorization required",
-        )
-
     @app.exception_handler(NotFoundError)
     async def not_found_handler(_: Request, exc: NotFoundError) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
@@ -158,7 +146,7 @@ def create_app(
         record = await asyncio.to_thread(repository.submit_job, submission)
         return job_record_to_dict(record)
 
-    @app.get("/v1/jobs/{job_id}", dependencies=[Depends(require_either)])
+    @app.get("/v1/jobs/{job_id}", dependencies=[Depends(require_client)])
     async def get_job(job_id: str) -> dict[str, Any]:
         record = await asyncio.to_thread(repository.get_job, job_id)
         return job_record_to_dict(record)
