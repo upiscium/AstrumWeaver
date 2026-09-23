@@ -50,24 +50,15 @@
             services.astrumweaver.worker = {
               enable = true;
               package = worker;
+              workerId = "smoke-worker";
+              workerClass = "modern-single";
+              controlUrl = "http://127.0.0.1:9000";
+              capabilities = [ "debug.echo" ];
               gpuUuids = [ "GPU-example-smoke" ];
+              totalVramMb = 16384;
+              maxSingleGpuVramMb = 16384;
+              executorFactory = "astrumweaver.executors.structured_echo:create_executor";
               nvidiaSmiPackage = fakeNvidia;
-              settings = {
-                worker = {
-                  id = "smoke-worker";
-                  class = "modern-single";
-                  control_url = "http://127.0.0.1:9000";
-                  gpu_uuids = [ "GPU-example-smoke" ];
-                  gpu_count = 1;
-                  total_vram_mb = 16384;
-                  max_single_gpu_vram_mb = 16384;
-                  capabilities = [ "debug.echo" ];
-                };
-                executor = {
-                  factory = "astrumweaver.executors.structured_echo:create_executor";
-                  settings = { };
-                };
-              };
             };
           })
         ];
