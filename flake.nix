@@ -59,10 +59,16 @@
               maxSingleGpuVramMb = 16384;
               executorFactory = "astrumweaver.executors.structured_echo:create_executor";
               nvidiaSmiPackage = fakeNvidia;
+              borrowable.enable = true;
             };
           })
         ];
       };
+      borrowableModePackages = builtins.filter (
+        package:
+          nixpkgs.lib.getName package == "astrumweaver-gpu-mode"
+      ) moduleSmoke.config.environment.systemPackages;
+      borrowableMode = builtins.head borrowableModePackages;
     in
     {
       packages.${system} = {
@@ -85,13 +91,15 @@
           controlExec = moduleSmoke.config.systemd.services.astrumweaver-control.serviceConfig.ExecStart;
           workerExec = moduleSmoke.config.systemd.services.astrumweaver-worker.serviceConfig.ExecStart;
           workerPreflight = moduleSmoke.config.systemd.services.astrumweaver-worker.serviceConfig.ExecStartPre;
+          modeTool = borrowableMode;
         } ''
           test -n "$controlExec"
           test -n "$workerExec"
           test -n "$workerPreflight"
+          test -x "$modeTool/bin/astrumweaver-gpu-mode"
           printf "%s" "$controlExec" | grep -q astrumweaver-control
           printf "%s" "$workerExec" | grep -q astrumweaver-worker
-          printf "%s\n%s\n%s\n" "$controlExec" "$workerExec" "$workerPreflight" > "$out"
+          printf "%s\n%s\n%s\n%s\n" "$controlExec" "$workerExec" "$workerPreflight" "$modeTool" > "$out"
         '';
       };
     };

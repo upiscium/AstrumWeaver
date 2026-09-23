@@ -220,3 +220,22 @@ Both NixOS modules default to their packaged daemon entrypoint.
 The optional `command` setting remains available only for reviewed development/testing overrides.
 
 Control also exposes `migrateOnStart`, defaulting to `false`, for deployments that explicitly authorize schema migration as part of service startup.
+
+
+## Borrowable development GPU
+
+A GPU Worker hosted on a development machine may enable the ownership-switch wrapper:
+
+```nix
+services.astrumweaver.worker.borrowable.enable = true;
+```
+
+The module then installs `astrumweaver-gpu-mode`, preconfigured from the Worker's declared GPU UUID set and local health endpoint.
+
+```sh
+sudo astrumweaver-gpu-mode development
+sudo astrumweaver-gpu-mode astrumweaver
+sudo astrumweaver-gpu-mode status
+```
+
+`borrowable.drainTimeoutSeconds = 0` is the default and means wait indefinitely for the active job rather than forcing it. See [Borrowable GPU Worker](borrowable-worker.md) for the complete handoff contract.

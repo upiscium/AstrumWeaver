@@ -28,6 +28,7 @@ test = [
 [project.scripts]
 astrumweaver-control = "astrumweaver.control.daemon:main"
 astrumweaver-worker = "astrumweaver.worker.daemon:main"
+astrumweaver-worker-mode = "astrumweaver.worker.mode:main"
 astrumweaver-migrate = "astrumweaver.control.migrate:main"
 
 [tool.hatch.build.targets.wheel]

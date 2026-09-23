@@ -132,11 +132,18 @@ class WorkerRuntime:
         return self._registered
 
     @property
+    def draining(self) -> bool:
+        return self._draining
+
+    @property
     def active_job_id(self) -> str | None:
         return None if self._active is None else self._active.request.job_id
 
-    def request_stop(self) -> None:
+    def request_drain(self) -> None:
         self._draining = True
+
+    def request_stop(self) -> None:
+        self.request_drain()
         self._stop.set()
 
     async def register(self) -> None:
@@ -146,6 +153,8 @@ class WorkerRuntime:
             metadata={"runtime": "astrumweaver-worker"},
         )
         self._registered = True
+        if self._draining:
+            await self.client.set_state(self.spec.worker_id, WorkerState.DRAINING)
 
     async def run_forever(self) -> None:
         await self.register()
@@ -175,8 +184,9 @@ class WorkerRuntime:
             self._registered = False
 
     async def drain(self) -> None:
-        self._draining = True
-        await self.client.set_state(self.spec.worker_id, WorkerState.DRAINING)
+        self.request_drain()
+        if self._registered:
+            await self.client.set_state(self.spec.worker_id, WorkerState.DRAINING)
 
     async def _execute_claim(self, claimed: ClaimedJob) -> None:
         execution = asyncio.create_task(self.executor.execute(claimed.request))

@@ -17,18 +17,22 @@ def create_health_app(runtime: WorkerRuntime) -> FastAPI:
         return {
             "status": "ok",
             "worker_id": runtime.spec.worker_id,
+            "registered": runtime.registered,
+            "ready": runtime.ready and runtime.registered and not runtime.draining,
             "active_job_id": runtime.active_job_id,
+            "draining": runtime.draining,
         }
 
     @app.get("/ready")
     async def ready(response: Response) -> dict[str, Any]:
-        is_ready = runtime.ready and runtime.registered
+        is_ready = runtime.ready and runtime.registered and not runtime.draining
         if not is_ready:
             response.status_code = 503
         return {
             "ready": is_ready,
             "worker_id": runtime.spec.worker_id,
             "active_job_id": runtime.active_job_id,
+            "draining": runtime.draining,
         }
 
     return app

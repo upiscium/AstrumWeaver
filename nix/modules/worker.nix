@@ -47,6 +47,30 @@ let
     then "${cfg.package}/bin/astrumweaver-worker"
     else cfg.command;
   execStart = lib.escapeShellArgs ([ effectiveCommand "--config" generatedConfig ] ++ cfg.extraArgs);
+  gpuUuidArgs = lib.concatMapStringsSep " " (uuid:
+    "--gpu-uuid ${lib.escapeShellArg uuid}"
+  ) cfg.gpuUuids;
+  nvidiaSmiCommand =
+    if cfg.nvidiaSmiPackage == null
+    then "nvidia-smi"
+    else "${cfg.nvidiaSmiPackage}/bin/nvidia-smi";
+  borrowableMode = pkgs.writeShellApplication {
+    name = "astrumweaver-gpu-mode";
+    text = ''
+      if [ "$#" -ne 1 ]; then
+        echo "usage: astrumweaver-gpu-mode {development|astrumweaver|status}" >&2
+        exit 2
+      fi
+      exec ${cfg.package}/bin/astrumweaver-worker-mode "$1" \
+        --service astrumweaver-worker.service \
+        ${gpuUuidArgs} \
+        --health-url ${lib.escapeShellArg "http://${cfg.healthHost}:${toString cfg.healthPort}"} \
+        --systemctl ${pkgs.systemd}/bin/systemctl \
+        --nvidia-smi ${nvidiaSmiCommand} \
+        --drain-timeout-seconds ${toString cfg.borrowable.drainTimeoutSeconds} \
+        --start-timeout-seconds ${toString cfg.borrowable.startTimeoutSeconds}
+    '';
+  };
 in
 {
   options.services.astrumweaver.worker = {
@@ -183,6 +207,21 @@ in
       default = 9100;
     };
 
+    borrowable = {
+      enable = lib.mkEnableOption "borrowable GPU ownership mode for a development node";
+
+      drainTimeoutSeconds = lib.mkOption {
+        type = lib.types.ints.unsigned;
+        default = 0;
+        description = "Seconds to wait for the current job to drain. 0 waits indefinitely and never forces the job.";
+      };
+
+      startTimeoutSeconds = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 60;
+        description = "Seconds to wait for the Worker service and local readiness when returning GPU ownership to AstrumWeaver.";
+      };
+    };
     extraArgs = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
@@ -225,6 +264,18 @@ in
         message = "services.astrumweaver.worker.nvidiaSmiPackage is required for GPU Workers.";
       }
       {
+        assertion = !cfg.borrowable.enable || cfg.gpuUuids != [ ];
+        message = "services.astrumweaver.worker.borrowable requires at least one GPU UUID.";
+      }
+      {
+        assertion = !cfg.borrowable.enable || cfg.nvidiaSmiPackage != null;
+        message = "services.astrumweaver.worker.borrowable requires nvidiaSmiPackage.";
+      }
+      {
+        assertion = !cfg.borrowable.enable || builtins.elem cfg.healthHost [ "127.0.0.1" "localhost" ];
+        message = "borrowable Worker healthHost must remain local (127.0.0.1 or localhost).";
+      }
+      {
         assertion =
           if cfg.gpuUuids == [ ]
           then cfg.totalVramMb == 0 && cfg.maxSingleGpuVramMb == 0
@@ -244,7 +295,7 @@ in
       createHome = lib.mkDefault true;
     };
 
-    environment.systemPackages = [ cfg.package ];
+    environment.systemPackages = [ cfg.package ] ++ lib.optional cfg.borrowable.enable borrowableMode;
 
     systemd.services.astrumweaver-worker = {
       description = "AstrumWeaver Worker";
