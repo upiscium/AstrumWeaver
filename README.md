@@ -66,6 +66,7 @@ Proxmox is a supported deployment environment, not an AstrumWeaver dependency. A
 - [Worker and Resource Contract](docs/worker-contract.md)
 - [Job Execution Contract](docs/executor-contract.md)
 - [Durable Control Plane](docs/control-plane.md)
+- [Existing-Node Deployment](docs/deployment.md)
 
 ## License
 
