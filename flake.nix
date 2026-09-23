@@ -37,6 +37,11 @@
           self.nixosModules.default
           ({ ... }: {
             system.stateVersion = "26.05";
+            boot.isContainer = true;
+            fileSystems."/" = {
+              device = "none";
+              fsType = "tmpfs";
+            };
 
             services.astrumweaver.control = {
               enable = true;
