@@ -1,0 +1,36 @@
+profile_version = "v0.1"
+profile_id = "modern-single"
+role = "worker"
+enforcement = "documentation-only"
+description = "One modern/current NVIDIA GPU exclusively owned by one Worker."
+
+[minimum]
+vcpu = 2
+ram_mib = 4096
+disk_gib = 10
+gpu_count = 1
+notes = [
+  "Disk excludes executor/model/artifact storage.",
+  "No universal VRAM minimum is implied; capability and JobRequirements decide workload fit."
+]
+
+[recommended]
+vcpu = 4
+ram_mib = 8192
+disk_gib = 20
+notes = [
+  "Size local cache for the largest expected resident artifact/model plus operational headroom.",
+  "Use a driver/runtime supported by the configured executor."
+]
+
+[example_resource_shape]
+gpu_count = 1
+total_vram_mb = 16384
+max_single_gpu_vram_mb = 16384
+gpu_uuids = ["GPU-example-modern-single"]
+
+[[validated]]
+scope = "ci-contract"
+evidence = "flake.nix#nixosConfigurations.smoke"
+claim = "A generic one-GPU 16 GiB resource shape is evaluated through the NixOS Worker module."
+hardware_sizing_validated = false
