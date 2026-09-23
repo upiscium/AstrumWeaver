@@ -195,12 +195,21 @@ class WorkerRuntime:
 
             if not isinstance(result, JobResult):
                 raise TypeError("executor returned a non-JobResult value")
-            await self.client.complete(
-                self.spec.worker_id,
-                claimed.request.job_id,
-                claimed.lease_token,
-                result,
-            )
+            try:
+                await self.client.complete(
+                    self.spec.worker_id,
+                    claimed.request.job_id,
+                    claimed.lease_token,
+                    result,
+                )
+            except ControlTransportError as exc:
+                if exc.status_code != 409:
+                    raise
+                status = await self.client.inspect_job(
+                    self.spec.worker_id, claimed.request.job_id
+                )
+                if status.get("status") != "cancelled":
+                    raise
         finally:
             if not execution.done():
                 execution.cancel()
