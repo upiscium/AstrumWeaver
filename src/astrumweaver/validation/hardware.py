@@ -47,6 +47,7 @@ class AcceptanceControl(Protocol):
         capability: str,
         gpu_uuids: tuple[str, ...],
         marker: str,
+        delay_seconds: float = 0.0,
     ) -> str: ...
 
     def job_status(self, job_id: str) -> str: ...
@@ -92,17 +93,22 @@ class HTTPAcceptanceControl:
         capability: str,
         gpu_uuids: tuple[str, ...],
         marker: str,
+        delay_seconds: float = 0.0,
     ) -> str:
+        payload = {
+            "acceptance": "v0.1-hardware-e2e",
+            "marker": marker,
+        }
+        if delay_seconds:
+            payload["_debug_delay_seconds"] = delay_seconds
+
         response = self._request(
             "POST",
             "/v1/jobs",
             json={
                 "protocol_version": PROTOCOL_VERSION,
                 "capability": capability,
-                "payload": {
-                    "acceptance": "v0.1-hardware-e2e",
-                    "marker": marker,
-                },
+                "payload": payload,
                 "requirements": {
                     "required_gpu_uuids": list(gpu_uuids),
                 },
@@ -142,6 +148,7 @@ class HardwareAcceptanceEvidence:
     worker_registration: str
     first_job_round_trip: str
     drain_state_observed: str
+    active_job_completed_while_draining: str
     drain_no_new_claims: str
     service_stopped_after_drain: str
     gpu_processes_after_release: int
@@ -166,6 +173,7 @@ class HardwareAcceptanceRunner:
         capability: str,
         poll_interval_seconds: float = 0.5,
         job_timeout_seconds: float = 60.0,
+        drain_anchor_seconds: float = 3.0,
         drain_probe_seconds: float = 2.0,
         mode_start_timeout_seconds: float = 60.0,
         mode_drain_timeout_seconds: float | None = None,
@@ -191,6 +199,7 @@ class HardwareAcceptanceRunner:
         for value, name in (
             (poll_interval_seconds, "poll_interval_seconds"),
             (job_timeout_seconds, "job_timeout_seconds"),
+            (drain_anchor_seconds, "drain_anchor_seconds"),
             (drain_probe_seconds, "drain_probe_seconds"),
             (mode_start_timeout_seconds, "mode_start_timeout_seconds"),
         ):
@@ -206,8 +215,12 @@ class HardwareAcceptanceRunner:
         self.deployment_path = deployment_path
         self.profile_class = profile_class
         self.capability = capability.strip()
+        if drain_anchor_seconds > 30:
+            raise ValueError("drain_anchor_seconds must not exceed 30")
+
         self.poll_interval_seconds = poll_interval_seconds
         self.job_timeout_seconds = job_timeout_seconds
+        self.drain_anchor_seconds = drain_anchor_seconds
         self.drain_probe_seconds = drain_probe_seconds
         self.mode_start_timeout_seconds = mode_start_timeout_seconds
         self.mode_drain_timeout_seconds = mode_drain_timeout_seconds
@@ -232,6 +245,22 @@ class HardwareAcceptanceRunner:
                 return status
             if self._monotonic() >= deadline:
                 raise HardwareAcceptanceError("validation job did not reach terminal state")
+            self._sleep(self.poll_interval_seconds)
+
+    def _wait_job_running(self, job_id: str) -> None:
+        deadline = self._monotonic() + self.job_timeout_seconds
+        while True:
+            status = self.control.job_status(job_id)
+            if status == "running":
+                return
+            if status in {"succeeded", "failed", "cancelled"}:
+                raise HardwareAcceptanceError(
+                    "drain-anchor job reached terminal state before RUNNING was observed"
+                )
+            if self._monotonic() >= deadline:
+                raise HardwareAcceptanceError(
+                    "drain-anchor job did not become RUNNING"
+                )
             self._sleep(self.poll_interval_seconds)
 
     def _submit_round_trip(self) -> None:
@@ -281,8 +310,16 @@ class HardwareAcceptanceRunner:
 
         self._submit_round_trip()
 
-        # Request drain without stopping the service yet so hardware-e2e can
-        # prove that a pinned job remains queued while the Worker is draining.
+        # Put a real job in RUNNING first, then request DRAINING. This proves
+        # the current attempt can finish normally while no later job is claimed.
+        anchor_job = self.control.submit_pinned_job(
+            capability=self.capability,
+            gpu_uuids=self.expected_gpu_uuids,
+            marker=uuid4().hex,
+            delay_seconds=self.drain_anchor_seconds,
+        )
+        self._wait_job_running(anchor_job)
+
         self.service.request_drain()
         self._wait_drain_state()
 
@@ -296,6 +333,12 @@ class HardwareAcceptanceRunner:
             if self.control.job_status(probe_job) != "queued":
                 raise HardwareAcceptanceError(
                     "a new pinned job was claimed while Worker was draining"
+                )
+
+            anchor_status = self._wait_job_terminal(anchor_job)
+            if anchor_status != "succeeded":
+                raise HardwareAcceptanceError(
+                    f"active drain-anchor job terminal state was {anchor_status}"
                 )
         finally:
             self.control.cancel_job(probe_job)
@@ -331,6 +374,7 @@ class HardwareAcceptanceRunner:
             worker_registration="PASS",
             first_job_round_trip="PASS",
             drain_state_observed="PASS",
+            active_job_completed_while_draining="PASS",
             drain_no_new_claims="PASS",
             service_stopped_after_drain="PASS",
             gpu_processes_after_release=0,
@@ -357,6 +401,10 @@ def render_markdown(evidence: HardwareAcceptanceEvidence) -> str:
         ("Worker registration / readiness", evidence.worker_registration),
         ("First generic job round-trip", evidence.first_job_round_trip),
         ("DRAINING observed", evidence.drain_state_observed),
+        (
+            "Active job completed while DRAINING",
+            evidence.active_job_completed_while_draining,
+        ),
         ("No new claim while DRAINING", evidence.drain_no_new_claims),
         ("Worker service stopped after drain", evidence.service_stopped_after_drain),
         ("GPU process contexts after release", str(evidence.gpu_processes_after_release)),
@@ -408,6 +456,7 @@ def main() -> None:
     parser.add_argument("--systemctl", default="systemctl")
     parser.add_argument("--nvidia-smi", default="nvidia-smi")
     parser.add_argument("--job-timeout-seconds", type=float, default=60.0)
+    parser.add_argument("--drain-anchor-seconds", type=float, default=3.0)
     parser.add_argument("--drain-probe-seconds", type=float, default=2.0)
     parser.add_argument("--drain-timeout-seconds", type=float, default=0.0)
     parser.add_argument("--start-timeout-seconds", type=float, default=60.0)
@@ -454,6 +503,7 @@ def main() -> None:
             profile_class=args.profile_class,
             capability=args.capability,
             job_timeout_seconds=args.job_timeout_seconds,
+            drain_anchor_seconds=args.drain_anchor_seconds,
             drain_probe_seconds=args.drain_probe_seconds,
             mode_start_timeout_seconds=args.start_timeout_seconds,
             mode_drain_timeout_seconds=(
