@@ -51,9 +51,9 @@ in
 
     nvidiaSmiPackage = lib.mkOption {
       type = lib.types.nullOr lib.types.package;
-      default = config.hardware.nvidia.package;
-      defaultText = lib.literalExpression "config.hardware.nvidia.package";
-      description = "Package providing nvidia-smi for exact GPU identity preflight.";
+      default = null;
+      example = lib.literalExpression "config.hardware.nvidia.package";
+      description = "Package providing nvidia-smi for exact GPU identity preflight. Set this explicitly on NixOS NVIDIA workers.";
     };
 
     user = lib.mkOption {
@@ -102,11 +102,11 @@ in
 
     users.groups.${cfg.group} = { };
     users.users.${cfg.user} = {
-      isSystemUser = true;
-      group = cfg.group;
+      isSystemUser = lib.mkDefault true;
+      group = lib.mkDefault cfg.group;
       extraGroups = cfg.supplementaryGroups;
-      home = "/var/lib/astrumweaver";
-      createHome = true;
+      home = lib.mkDefault "/var/lib/astrumweaver";
+      createHome = lib.mkDefault true;
     };
 
     environment.systemPackages = lib.optional (cfg.package != null) cfg.package;
@@ -127,7 +127,6 @@ in
         Group = cfg.group;
         ExecStartPre = "+${preflight}/bin/astrumweaver-gpu-preflight ${expectedGpuUuids}";
         ExecStart = execStart;
-        EnvironmentFile = lib.optional (cfg.environmentFile != null) cfg.environmentFile;
         Restart = "on-failure";
         RestartSec = "5s";
         RuntimeDirectory = "astrumweaver-worker";
@@ -142,6 +141,8 @@ in
         ProtectKernelModules = true;
         ProtectControlGroups = true;
         RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" ];
+      } // lib.optionalAttrs (cfg.environmentFile != null) {
+        EnvironmentFile = cfg.environmentFile;
       };
     };
   };
