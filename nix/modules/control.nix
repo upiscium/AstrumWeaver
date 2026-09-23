@@ -66,10 +66,10 @@ in
 
     users.groups.${cfg.group} = { };
     users.users.${cfg.user} = {
-      isSystemUser = true;
-      group = cfg.group;
-      home = "/var/lib/astrumweaver";
-      createHome = true;
+      isSystemUser = lib.mkDefault true;
+      group = lib.mkDefault cfg.group;
+      home = lib.mkDefault "/var/lib/astrumweaver";
+      createHome = lib.mkDefault true;
     };
 
     environment.systemPackages = lib.optional (cfg.package != null) cfg.package;
@@ -86,7 +86,6 @@ in
         User = cfg.user;
         Group = cfg.group;
         ExecStart = execStart;
-        EnvironmentFile = lib.optional (cfg.environmentFile != null) cfg.environmentFile;
         Restart = "on-failure";
         RestartSec = "5s";
         RuntimeDirectory = "astrumweaver-control";
@@ -101,6 +100,8 @@ in
         ProtectKernelModules = true;
         ProtectControlGroups = true;
         RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" ];
+      } // lib.optionalAttrs (cfg.environmentFile != null) {
+        EnvironmentFile = cfg.environmentFile;
       };
     };
   };
