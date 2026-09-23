@@ -93,11 +93,16 @@ class WorkerRuntime:
         self.heartbeat_interval_seconds = heartbeat_interval_seconds
         self._stop = asyncio.Event()
         self._draining = False
+        self._registered = False
         self._active: ClaimedJob | None = None
 
     @property
     def ready(self) -> bool:
         return not self._stop.is_set()
+
+    @property
+    def registered(self) -> bool:
+        return self._registered
 
     @property
     def active_job_id(self) -> str | None:
@@ -113,6 +118,7 @@ class WorkerRuntime:
             max_concurrency=self.max_concurrency,
             metadata={"runtime": "astrumweaver-worker"},
         )
+        self._registered = True
 
     async def run_forever(self) -> None:
         await self.register()
@@ -139,6 +145,7 @@ class WorkerRuntime:
         finally:
             with contextlib.suppress(ControlTransportError):
                 await self.client.set_state(self.spec.worker_id, WorkerState.OFFLINE)
+            self._registered = False
 
     async def drain(self) -> None:
         self._draining = True
