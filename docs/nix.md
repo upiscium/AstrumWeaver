@@ -2,15 +2,15 @@
 
 AstrumWeaver provides a pinned Nix flake for reproducible packaging and NixOS host integration.
 
-## Current runtime boundary
+## Runtime boundary
 
-As of this v0.1 bootstrap, AstrumWeaver contains the durable Control Plane domain/repository, Worker/resource contracts, generic JobExecutor boundary, setup scripts, and systemd integration.
+AstrumWeaver now ships real long-running entrypoints:
 
-It does **not yet** contain the long-running Control and Worker daemon entrypoints.
+- `astrumweaver-control`
+- `astrumweaver-worker`
+- `astrumweaver-migrate`
 
-That operational runtime is tracked in #15.
-
-For this reason, the current `control` and `worker` flake packages are **runtime support closures**, not fake service daemons, and the NixOS modules require an explicit `command` while #15 is open.
+The `control` and `worker` flake packages include these packaged entrypoints together with their role-specific runtime closure.
 
 ## Flake outputs
 
@@ -37,7 +37,7 @@ Control Plane support closure containing:
 - PostgreSQL migration assets
 - existing-node integration/setup assets
 
-It currently does not claim to contain `astrumweaver-control`; #15 will add the real daemon.
+It includes the packaged `astrumweaver-control` and `astrumweaver-migrate` entrypoints.
 
 ### worker
 
@@ -46,7 +46,7 @@ Worker support closure containing:
 - AstrumWeaver Python package
 - GPU preflight/setup integration assets
 
-It currently does not claim to contain `astrumweaver-worker`; #15 will add the real daemon.
+It includes the packaged `astrumweaver-worker` entrypoint.
 
 ### integration
 
@@ -118,26 +118,25 @@ Example shape:
 
     package = inputs.astrumweaver.packages.${pkgs.system}.worker;
 
-    # Temporary explicit boundary until #15 provides the packaged daemon.
-    command = "/absolute/path/to/astrumweaver-worker";
+    workerId = "worker-example";
+    workerClass = "multi-gpu";
+    controlUrl = "https://control.example.invalid";
+    capabilities = [ "llm.chat" ];
 
     gpuUuids = [
       "GPU-example-a"
       "GPU-example-b"
     ];
-
+    totalVramMb = 24576;
+    maxSingleGpuVramMb = 12288;
     nvidiaSmiPackage = config.hardware.nvidia.package;
+
+    executorFactory = "my_executor:create_executor";
 
     supplementaryGroups = [
       "video"
       "render"
     ];
-
-    settings = {
-      worker = {
-        class = "multi-gpu";
-      };
-    };
 
     # Secret values belong outside the Nix store.
     environmentFile = "/run/secrets/astrumweaver-worker.env";
@@ -171,9 +170,6 @@ Example shape:
     enable = true;
 
     package = inputs.astrumweaver.packages.${pkgs.system}.control;
-
-    # Temporary explicit boundary until #15 provides the packaged daemon.
-    command = "/absolute/path/to/astrumweaver-control";
 
     settings = {
       control = {
@@ -216,13 +212,10 @@ sudo ./result/bin/astrumweaver-setup-gpu-worker \
 
 The setup layer still does not create a VM/LXC, configure Proxmox, configure IOMMU, or install host GPU drivers.
 
-## Relationship to #15
+## Runtime entrypoint overrides
 
-When #15 lands:
+Both NixOS modules default to their packaged daemon entrypoint.
 
-- `control` will include the real `astrumweaver-control` entrypoint
-- `worker` will include the real `astrumweaver-worker` entrypoint
-- the NixOS modules can default `command` to their packaged executables
-- the existing module/service/preflight contracts remain reusable
+The optional `command` setting remains available only for reviewed development/testing overrides.
 
-Keeping that work separate prevents packaging from defining runtime semantics that do not yet exist.
+Control also exposes `migrateOnStart`, defaulting to `false`, for deployments that explicitly authorize schema migration as part of service startup.
