@@ -12,6 +12,7 @@ psycopg = pytest.importorskip("psycopg")
 
 from astrumweaver import JobRequirements, JobResult, ResourceShape, WorkerSpec
 from astrumweaver.control.api import create_app
+from astrumweaver.control.migrate import apply_migrations
 from astrumweaver.transport import PROTOCOL_VERSION
 
 from astrumweaver.control import (
@@ -315,3 +316,13 @@ async def test_postgres_transport_fencing_and_non_text_result() -> None:
     assert result["text"] is None
     assert result["outputs"]["choice"] == "local"
     assert result["outputs"]["probabilities"]["remote"] == 0.2
+
+
+def test_packaged_migration_entrypoint_is_idempotent() -> None:
+    assert DATABASE_URL is not None
+    applied = apply_migrations(DATABASE_URL)
+
+    assert "001_control_plane.sql" in applied
+
+    repo = PostgresControlRepository(DATABASE_URL)
+    repo.check_storage()
