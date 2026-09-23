@@ -27,17 +27,17 @@ stdenvNoCC.mkDerivation {
 
     cat >"$out/bin/astrumweaver-setup-control-plane" <<EOF
     #!${bash}/bin/bash
-    exec ${bash}/bin/bash "$assetRoot/setup/setup-control-plane.sh" "$@"
+    exec ${bash}/bin/bash "$assetRoot/setup/setup-control-plane.sh" "\$@"
     EOF
 
     cat >"$out/bin/astrumweaver-setup-gpu-worker" <<EOF
     #!${bash}/bin/bash
-    exec ${bash}/bin/bash "$assetRoot/setup/setup-gpu-worker.sh" "$@"
+    exec ${bash}/bin/bash "$assetRoot/setup/setup-gpu-worker.sh" "\$@"
     EOF
 
     cat >"$out/bin/astrumweaver-gpu-preflight" <<EOF
     #!${bash}/bin/bash
-    exec ${bash}/bin/bash "$assetRoot/libexec/gpu-preflight" "$@"
+    exec ${bash}/bin/bash "$assetRoot/libexec/gpu-preflight" "\$@"
     EOF
 
     chmod +x "$out/bin/"*
