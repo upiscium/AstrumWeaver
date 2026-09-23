@@ -96,6 +96,18 @@ Executors may implement, for example:
 
 The Control Plane schedules by generic capabilities and resource constraints. It must not contain workload-specific branches such as "if TTS, choose worker X".
 
+### Runtime Provider
+
+A Runtime Provider manages a concrete local model-serving runtime such as Ollama, llama.cpp, vLLM, FreeToken, or ExLlamaV3.
+
+It is Worker-local and sits above the generic JobExecutor boundary.
+
+Runtime selection is an operator decision. AstrumWeaver may report compatibility and recommendations, but an explicit provider choice must never be silently substituted.
+
+Runtime Providers own runtime package/process/model preparation and expose a generic JobExecutor to the Worker. Control remains runtime-agnostic.
+
+See [Runtime Providers and Execution Demand](runtime-providers.md).
+
 ### Optional edge/artifact services
 
 Gateway, artifact, dataset, or capture services may exist where the use case requires them, but they are not part of the virtualization/provisioning boundary.
