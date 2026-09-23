@@ -2,6 +2,12 @@
 
 let
   cfg = config.services.astrumweaver.control;
+  astrumweaverPackage = pkgs.callPackage ../package.nix { };
+  integrationPackage = pkgs.callPackage ../integration-package.nix { };
+  defaultPackage = pkgs.callPackage ../control-support.nix {
+    astrumweaver = astrumweaverPackage;
+    integration = integrationPackage;
+  };
   toml = pkgs.formats.toml { };
   generatedConfig = toml.generate "astrumweaver-control.toml" cfg.settings;
   execStart = lib.escapeShellArgs ([ cfg.command "--config" generatedConfig ] ++ cfg.extraArgs);
@@ -11,16 +17,16 @@ in
     enable = lib.mkEnableOption "AstrumWeaver Control Plane service";
 
     package = lib.mkOption {
-      type = lib.types.nullOr lib.types.package;
-      default = null;
-      description = "Optional runtime support package added to the service PATH.";
+      type = lib.types.package;
+      default = defaultPackage;
+      description = "AstrumWeaver Control runtime package.";
     };
 
     command = lib.mkOption {
       type = lib.types.str;
-      default = "";
-      example = "/run/current-system/sw/bin/astrumweaver-control";
-      description = "Absolute Control Plane daemon executable path. Required while the daemon package is not yet part of v0.1.";
+      default = "${cfg.package}/bin/astrumweaver-control";
+      defaultText = lib.literalExpression ''"${config.services.astrumweaver.control.package}/bin/astrumweaver-control"'';
+      description = "Absolute Control Plane daemon executable path.";
     };
 
     settings = lib.mkOption {
@@ -57,13 +63,6 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    assertions = [
-      {
-        assertion = cfg.command != "";
-        message = "services.astrumweaver.control.command must be set until a packaged Control daemon exists.";
-      }
-    ];
-
     users.groups.${cfg.group} = { };
     users.users.${cfg.user} = {
       isSystemUser = lib.mkDefault true;
@@ -72,14 +71,14 @@ in
       createHome = lib.mkDefault true;
     };
 
-    environment.systemPackages = lib.optional (cfg.package != null) cfg.package;
+    environment.systemPackages = [ cfg.package ];
 
     systemd.services.astrumweaver-control = {
       description = "AstrumWeaver Control Plane";
       wantedBy = [ "multi-user.target" ];
       wants = [ "network-online.target" ];
       after = [ "network-online.target" ];
-      path = lib.optional (cfg.package != null) cfg.package ++ cfg.extraPackages;
+      path = [ cfg.package ] ++ cfg.extraPackages;
 
       serviceConfig = {
         Type = "simple";
