@@ -15,9 +15,12 @@ from astrumweaver.worker.mode import GPUProcess
 class FakeControl:
     def __init__(self, *, probe_claimed: bool = False) -> None:
         self.probe_claimed = probe_claimed
-        self.submissions: list[tuple[str, tuple[str, ...], str]] = []
+        self.submissions: list[
+            tuple[str, tuple[str, ...], str, float]
+        ] = []
         self.cancelled: list[str] = []
         self._counter = 0
+        self._status_calls: dict[str, int] = {}
 
     def submit_pinned_job(
         self,
@@ -25,15 +28,31 @@ class FakeControl:
         capability: str,
         gpu_uuids: tuple[str, ...],
         marker: str,
+        delay_seconds: float = 0.0,
     ) -> str:
         self._counter += 1
         job_id = f"job-{self._counter}"
-        self.submissions.append((capability, gpu_uuids, marker))
+        self.submissions.append(
+            (capability, gpu_uuids, marker, delay_seconds)
+        )
         return job_id
 
     def job_status(self, job_id: str) -> str:
+        self._status_calls[job_id] = self._status_calls.get(job_id, 0) + 1
+
+        # job-2 is the active drain anchor. The first poll proves RUNNING;
+        # the later poll proves it completed normally while DRAINING.
         if job_id == "job-2":
+            return (
+                "running"
+                if self._status_calls[job_id] == 1
+                else "succeeded"
+            )
+
+        # job-3 is submitted only after DRAINING is observed.
+        if job_id == "job-3":
             return "running" if self.probe_claimed else "queued"
+
         return "succeeded"
 
     def cancel_job(self, job_id: str) -> None:
@@ -147,6 +166,7 @@ def test_hardware_acceptance_runner_covers_full_real_node_contract() -> None:
     assert evidence.worker_registration == "PASS"
     assert evidence.first_job_round_trip == "PASS"
     assert evidence.drain_state_observed == "PASS"
+    assert evidence.active_job_completed_while_draining == "PASS"
     assert evidence.drain_no_new_claims == "PASS"
     assert evidence.service_stopped_after_drain == "PASS"
     assert evidence.gpu_processes_after_release == 0
@@ -154,12 +174,14 @@ def test_hardware_acceptance_runner_covers_full_real_node_contract() -> None:
     assert evidence.return_online == "PASS"
     assert evidence.second_job_round_trip == "PASS"
 
-    assert len(control.submissions) == 3
+    assert len(control.submissions) == 4
     assert all(
         gpu_uuids == ("GPU-private-real-value",)
-        for _, gpu_uuids, _ in control.submissions
+        for _, gpu_uuids, _, _ in control.submissions
     )
-    assert control.cancelled == ["job-2"]
+    assert control.submissions[1][3] == 3.0
+    assert control.submissions[2][3] == 0.0
+    assert control.cancelled == ["job-3"]
 
     assert service.actions == ["drain", "drain", "stop", "start"]
     assert service.active
@@ -177,7 +199,7 @@ def test_hardware_acceptance_rejects_new_claim_while_draining() -> None:
     ):
         runner.run()
 
-    assert control.cancelled == ["job-2"]
+    assert control.cancelled == ["job-3"]
     assert service.active
     assert "stop" not in service.actions
 
@@ -201,6 +223,7 @@ def test_redacted_evidence_does_not_contain_private_runtime_values() -> None:
     assert "deadbeef1234567890" in markdown
     assert "| GPU count | 1 |" in markdown
     assert "| Private values omitted | true |" in markdown
+    assert "| Active job completed while DRAINING | PASS |" in markdown
     assert "| Overall | PASS |" in markdown
 
 
