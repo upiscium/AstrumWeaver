@@ -33,9 +33,9 @@ The role executable must already be available on the target node and is passed e
 - `astrumweaver-control`
 - `astrumweaver-worker`
 
-Issue #7 provides the preferred Nix/NixOS packaging path for those binaries.
+The Nix flake now provides immutable AstrumWeaver runtime-support and integration packages; see [Nix Packaging and NixOS Modules](nix.md). The long-running Control/Worker daemon entrypoints are tracked separately in #15.
 
-Keeping these concerns separate allows the same setup contract to work with a Nix package, a release artifact, or another reviewed packaging mechanism.
+Keeping these concerns separate allows the same setup contract to work with a Nix package, a release artifact, or another reviewed packaging mechanism without inventing placeholder service daemons.
 
 ## Control Plane
 
