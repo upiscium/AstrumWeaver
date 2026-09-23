@@ -216,3 +216,33 @@ def test_evidence_schema_cannot_carry_uuid_hostname_or_control_url() -> None:
     assert "control_url" not in fields
     assert "worker_id" not in fields
     assert "gpu_model" not in fields
+
+
+@pytest.mark.parametrize(
+    ("revision", "profile_class"),
+    [
+        ("not-a-sha", "modern-single"),
+        ("deadbeef1234567", "private-lab-profile"),
+    ],
+)
+def test_public_evidence_metadata_rejects_freeform_private_values(
+    revision: str,
+    profile_class: str,
+) -> None:
+    control = FakeControl()
+    health = FakeHealth()
+    service = FakeService(health)
+    gpu = FakeGPU()
+
+    with pytest.raises(ValueError):
+        HardwareAcceptanceRunner(
+            control=control,
+            service=service,
+            health=health,
+            gpu=gpu,
+            expected_gpu_uuids=("GPU-private-real-value",),
+            revision=revision,
+            deployment_path="nixos",
+            profile_class=profile_class,
+            capability="debug.echo",
+        )
