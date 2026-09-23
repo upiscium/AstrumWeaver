@@ -110,6 +110,7 @@ class JobRecord:
     payload: Mapping[str, Any]
     requirements: JobRequirements
     priority: int
+    sequence: int
     status: JobStatus
     attempts: int
     max_attempts: int
@@ -126,6 +127,8 @@ class JobRecord:
     error: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
+        if self.sequence < 1:
+            raise ValueError("sequence must be positive")
         object.__setattr__(self, "payload", _mapping(self.payload))
         if self.error is not None:
             object.__setattr__(self, "error", _mapping(self.error))
