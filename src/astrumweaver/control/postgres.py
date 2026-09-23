@@ -317,15 +317,8 @@ class PostgresControlRepository:
         timestamp = _aware(now)
         heartbeat = heartbeat or WorkerHeartbeat()
         with self._transaction() as connection:
-            worker_row = connection.execute(
-                "SELECT * FROM workers WHERE id = %s FOR UPDATE", (worker_id,)
-            ).fetchone()
-            if worker_row is None:
-                raise NotFoundError(f"worker not found: {worker_id}")
-            current = self._worker(worker_row)
-            if current.state is WorkerState.OFFLINE and heartbeat.state is WorkerState.ONLINE:
-                raise ConflictError("offline worker must be explicitly returned online")
-
+            # Keep the global lock order job -> worker whenever a job is
+            # involved. Claim/completion/recovery use the same order.
             if heartbeat.active_job_id is not None or heartbeat.lease_token is not None:
                 if not heartbeat.active_job_id or not heartbeat.lease_token:
                     raise ConflictError(
@@ -357,6 +350,15 @@ class PostgresControlRepository:
                         job_row["id"],
                     ),
                 )
+
+            worker_row = connection.execute(
+                "SELECT * FROM workers WHERE id = %s FOR UPDATE", (worker_id,)
+            ).fetchone()
+            if worker_row is None:
+                raise NotFoundError(f"worker not found: {worker_id}")
+            current = self._worker(worker_row)
+            if current.state is WorkerState.OFFLINE and heartbeat.state is WorkerState.ONLINE:
+                raise ConflictError("offline worker must be explicitly returned online")
 
             active_jobs = connection.execute(
                 """
