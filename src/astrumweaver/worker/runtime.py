@@ -191,17 +191,45 @@ class WorkerRuntime:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                await self.client.fail(
-                    self.spec.worker_id,
-                    claimed.request.job_id,
-                    claimed.lease_token,
-                    error={"type": type(exc).__name__, "message": str(exc)},
-                    retryable=True,
-                )
+                try:
+                    await self.client.fail(
+                        self.spec.worker_id,
+                        claimed.request.job_id,
+                        claimed.lease_token,
+                        error={"type": type(exc).__name__, "message": str(exc)},
+                        retryable=True,
+                    )
+                except ControlTransportError as transport_exc:
+                    if transport_exc.status_code != 409:
+                        raise
+                    status = await self.client.inspect_job(
+                        self.spec.worker_id, claimed.request.job_id
+                    )
+                    if status.get("status") != "cancelled":
+                        raise
                 return
 
             if not isinstance(result, JobResult):
-                raise TypeError("executor returned a non-JobResult value")
+                try:
+                    await self.client.fail(
+                        self.spec.worker_id,
+                        claimed.request.job_id,
+                        claimed.lease_token,
+                        error={
+                            "type": "ExecutorProtocolError",
+                            "message": "executor returned a non-JobResult value",
+                        },
+                        retryable=False,
+                    )
+                except ControlTransportError as transport_exc:
+                    if transport_exc.status_code != 409:
+                        raise
+                    status = await self.client.inspect_job(
+                        self.spec.worker_id, claimed.request.job_id
+                    )
+                    if status.get("status") != "cancelled":
+                        raise
+                return
             try:
                 await self.client.complete(
                     self.spec.worker_id,
