@@ -18,11 +18,6 @@
       worker = pkgs.callPackage ./nix/worker-support.nix {
         inherit astrumweaver integration;
       };
-
-      fakeDaemon = pkgs.writeShellScript "astrumweaver-smoke-daemon" ''
-        exec ${pkgs.coreutils}/bin/sleep infinity
-      '';
-
       fakeNvidia = pkgs.writeShellScriptBin "nvidia-smi" ''
         if [ "$1" = "--query-gpu=uuid" ]; then
           echo GPU-example-smoke
@@ -46,17 +41,33 @@
             services.astrumweaver.control = {
               enable = true;
               package = control;
-              command = "${fakeDaemon}";
-              settings.control.listen = "127.0.0.1:9000";
+              settings.control = {
+                host = "127.0.0.1";
+                port = 9000;
+              };
             };
 
             services.astrumweaver.worker = {
               enable = true;
               package = worker;
-              command = "${fakeDaemon}";
               gpuUuids = [ "GPU-example-smoke" ];
               nvidiaSmiPackage = fakeNvidia;
-              settings.worker.class = "modern-single";
+              settings = {
+                worker = {
+                  id = "smoke-worker";
+                  class = "modern-single";
+                  control_url = "http://127.0.0.1:9000";
+                  gpu_uuids = [ "GPU-example-smoke" ];
+                  gpu_count = 1;
+                  total_vram_mb = 16384;
+                  max_single_gpu_vram_mb = 16384;
+                  capabilities = [ "debug.echo" ];
+                };
+                executor = {
+                  factory = "astrumweaver.executors.structured_echo:create_executor";
+                  settings = { };
+                };
+              };
             };
           })
         ];
@@ -87,6 +98,8 @@
           test -n "$controlExec"
           test -n "$workerExec"
           test -n "$workerPreflight"
+          printf "%s" "$controlExec" | grep -q astrumweaver-control
+          printf "%s" "$workerExec" | grep -q astrumweaver-worker
           printf "%s\n%s\n%s\n" "$controlExec" "$workerExec" "$workerPreflight" > "$out"
         '';
       };
