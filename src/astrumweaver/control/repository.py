@@ -164,10 +164,19 @@ class InMemoryControlRepository:
     ) -> WorkerRecord:
         timestamp = _aware(now)
         with self._lock:
+            existing = self._workers.get(registration.spec.worker_id)
+            if existing and existing.active_jobs > 0:
+                if registration.spec != existing.spec:
+                    raise ConflictError(
+                        "worker resource/topology cannot change while jobs are active"
+                    )
+                if registration.max_concurrency < existing.active_jobs:
+                    raise ConflictError(
+                        "max_concurrency cannot be lower than active job count"
+                    )
             self._assert_gpu_ownership_available(
                 registration, ignore_worker_id=registration.spec.worker_id
             )
-            existing = self._workers.get(registration.spec.worker_id)
             registered_at = existing.registered_at if existing else timestamp
             record = WorkerRecord(
                 spec=registration.spec,
