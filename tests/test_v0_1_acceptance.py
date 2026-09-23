@@ -4,6 +4,9 @@ import re
 import tomllib
 from pathlib import Path
 
+from astrumweaver import ResourceShape, WorkerSpec
+from astrumweaver.control import InMemoryControlRepository, WorkerRegistration
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE_ROOT = ROOT / "profiles" / "v0.1"
@@ -154,3 +157,45 @@ def test_v0_1_profiles_preserve_multi_gpu_single_device_distinction() -> None:
     }
     assert shape["total_vram_mb"] >= 20_000
     assert shape["max_single_gpu_vram_mb"] < 20_000
+
+
+def _worker_from_profile(profile_name: str) -> WorkerSpec:
+    profile = load_toml(PROFILE_ROOT / f"{profile_name}.toml")
+    shape = profile["example_resource_shape"]
+    return WorkerSpec(
+        worker_id=f"acceptance-{profile_name}",
+        worker_class=profile_name,
+        resources=ResourceShape(
+            gpu_count=shape["gpu_count"],
+            total_vram_mb=shape["total_vram_mb"],
+            max_single_gpu_vram_mb=shape["max_single_gpu_vram_mb"],
+        ),
+        gpu_uuids=tuple(shape["gpu_uuids"]),
+        capabilities=frozenset({"acceptance.example"}),
+        labels={"profile": profile_name},
+    )
+
+
+def test_v0_1_single_gpu_profile_registers_as_one_worker() -> None:
+    repo = InMemoryControlRepository()
+    worker = _worker_from_profile("modern-single")
+
+    registered = repo.register_worker(WorkerRegistration(spec=worker))
+
+    assert registered.worker_id == "acceptance-modern-single"
+    assert registered.spec.resources.gpu_count == 1
+    assert registered.spec.gpu_uuids == ("GPU-example-modern-single",)
+
+
+def test_v0_1_multi_gpu_profile_registers_as_one_worker() -> None:
+    repo = InMemoryControlRepository()
+    worker = _worker_from_profile("multi-gpu-large")
+
+    registered = repo.register_worker(WorkerRegistration(spec=worker))
+
+    assert registered.worker_id == "acceptance-multi-gpu-large"
+    assert registered.spec.resources.gpu_count == 2
+    assert registered.spec.gpu_uuids == (
+        "GPU-example-multi-a",
+        "GPU-example-multi-b",
+    )
