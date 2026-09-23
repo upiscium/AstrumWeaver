@@ -22,6 +22,7 @@ class ModeTransitionError(RuntimeError):
 class GPUProcess:
     pid: int
     gpu_uuid: str
+    process_type: str
     process_name: str
 
 
@@ -171,12 +172,12 @@ class NvidiaGPUProbe:
             command=self.nvidia_smi,
         )
 
-    def active_processes(self) -> tuple[GPUProcess, ...]:
+    def _gpu_index_map(self) -> dict[str, str]:
         try:
             result = subprocess.run(
                 [
                     self.nvidia_smi,
-                    "--query-compute-apps=pid,gpu_uuid,process_name",
+                    "--query-gpu=index,uuid",
                     "--format=csv,noheader,nounits",
                 ],
                 check=False,
@@ -186,19 +187,50 @@ class NvidiaGPUProbe:
         except OSError as exc:
             raise ModeTransitionError("nvidia-smi is unavailable") from exc
         if result.returncode != 0:
-            raise ModeTransitionError("cannot inspect NVIDIA GPU processes")
+            raise ModeTransitionError("cannot inspect NVIDIA GPU identity")
 
-        expected = set(self.expected_gpu_uuids)
-        processes: list[GPUProcess] = []
+        mapping: dict[str, str] = {}
         for raw_line in result.stdout.splitlines():
             line = raw_line.strip()
             if not line:
                 continue
-            parts = [part.strip() for part in line.split(",", 2)]
-            if len(parts) != 3:
-                raise ModeTransitionError("unexpected nvidia-smi process output")
-            raw_pid, gpu_uuid, process_name = parts
-            if gpu_uuid not in expected:
+            parts = [part.strip() for part in line.split(",", 1)]
+            if len(parts) != 2:
+                raise ModeTransitionError("unexpected nvidia-smi GPU output")
+            index, gpu_uuid = parts
+            mapping[gpu_uuid] = index
+        return mapping
+
+    def active_processes(self) -> tuple[GPUProcess, ...]:
+        index_map = self._gpu_index_map()
+        expected_indexes = {
+            index_map[gpu_uuid]: gpu_uuid
+            for gpu_uuid in self.expected_gpu_uuids
+            if gpu_uuid in index_map
+        }
+
+        try:
+            result = subprocess.run(
+                [self.nvidia_smi, "pmon", "-c", "1"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError as exc:
+            raise ModeTransitionError("nvidia-smi is unavailable") from exc
+        if result.returncode != 0:
+            raise ModeTransitionError("cannot inspect NVIDIA GPU processes")
+
+        processes: list[GPUProcess] = []
+        for raw_line in result.stdout.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split(maxsplit=7)
+            if len(parts) < 3:
+                raise ModeTransitionError("unexpected nvidia-smi pmon output")
+            gpu_index, raw_pid, process_type = parts[:3]
+            if gpu_index not in expected_indexes or raw_pid == "-":
                 continue
             try:
                 pid = int(raw_pid)
@@ -209,8 +241,9 @@ class NvidiaGPUProbe:
             processes.append(
                 GPUProcess(
                     pid=pid,
-                    gpu_uuid=gpu_uuid,
-                    process_name=process_name,
+                    gpu_uuid=expected_indexes[gpu_index],
+                    process_type=process_type,
+                    process_name=parts[7] if len(parts) >= 8 else "",
                 )
             )
         return tuple(processes)
@@ -261,7 +294,7 @@ class BorrowableWorkerController:
     def _report(self) -> ModeReport:
         active = self.service.is_active()
         snapshot = self._worker_snapshot() if active else None
-        ready = bool(snapshot and snapshot.get("status") == "ok" and not snapshot.get("draining"))
+        ready = bool(snapshot and snapshot.get("ready") is True)
         draining = bool(snapshot and snapshot.get("draining"))
         active_job_id = (
             str(snapshot["active_job_id"])
@@ -321,6 +354,7 @@ class BorrowableWorkerController:
         if self.service.is_active():
             raise ModeTransitionError("Worker service is still active")
 
+        self.gpu.require_exact_identity()
         busy = self.gpu.active_processes()
         if busy:
             raise ModeTransitionError(
@@ -353,11 +387,7 @@ class BorrowableWorkerController:
 
         def ready() -> bool:
             snapshot = self._worker_snapshot()
-            return bool(
-                snapshot
-                and snapshot.get("status") == "ok"
-                and snapshot.get("draining") is not True
-            )
+            return bool(snapshot and snapshot.get("ready") is True)
 
         self._wait(
             ready,
