@@ -51,7 +51,11 @@ __all__ = [
     "RuntimeSelectionError",
     "RuntimeSelectionMode",
     "RuntimeSetupIntent",
+    "RuntimeLifecycleError",
+    "RuntimeLifecycleManager",
     "evaluate_catalog",
     "evaluate_provider",
     "resolve_runtime",
 ]
+
+from .lifecycle import RuntimeLifecycleError, RuntimeLifecycleManager
