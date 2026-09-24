@@ -23,7 +23,22 @@ def _nonblank(value: str, field_name: str) -> str:
     return normalized
 
 
+@dataclass(frozen=True, slots=True)
+class SecretReference:
+    """Reference to protected secret material; never stores the secret value."""
+
+    name: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", _nonblank(self.name, "name"))
+
+    def to_dict(self) -> dict[str, str]:
+        return {"$secret_ref": self.name}
+
+
 def _freeze_json(value: Any) -> Any:
+    if isinstance(value, SecretReference):
+        return MappingProxyType(value.to_dict())
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     if isinstance(value, Mapping):
@@ -203,6 +218,22 @@ class SetupAction:
         }
 
 
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "SetupAction":
+        return cls(
+            action_id=str(value["action_id"]),
+            kind=SetupActionKind(str(value["kind"])),
+            description=str(value["description"]),
+            payload=dict(value.get("payload") or {}),
+            requires_privilege=bool(value.get("requires_privilege", False)),
+            requires_network=bool(value.get("requires_network", False)),
+            requires_confirmation=bool(
+                value.get("requires_confirmation", False)
+            ),
+            reversible=bool(value.get("reversible", False)),
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class SetupPlan:
     provider_id: str
@@ -269,6 +300,31 @@ class SetupPlan:
     def digest(self) -> str:
         return hashlib.sha256(self.to_json().encode("utf-8")).hexdigest()
 
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "SetupPlan":
+        plan = cls(
+            schema_version=str(value.get("schema_version", "v1")),
+            provider_id=str(value["provider_id"]),
+            deployment_path=DeploymentPath(str(value["deployment_path"])),
+            goal=SetupPlanGoal(str(value["goal"])),
+            actions=tuple(
+                SetupAction.from_dict(action)
+                for action in value.get("actions") or ()
+            ),
+            metadata=dict(value.get("metadata") or {}),
+        )
+        supplied_digest = value.get("digest")
+        if supplied_digest is not None and str(supplied_digest) != plan.digest:
+            raise ValueError("SetupPlan digest does not match content")
+        return plan
+
+    @classmethod
+    def from_json(cls, payload: str) -> "SetupPlan":
+        value = json.loads(payload)
+        if not isinstance(value, dict):
+            raise ValueError("SetupPlan JSON must contain an object")
+        return cls.from_dict(value)
+
     @property
     def requires_privilege(self) -> bool:
         return any(action.requires_privilege for action in self.actions)
@@ -296,10 +352,16 @@ class ActionInspection:
 class ActionReceipt:
     changed: bool
     detail: str = ""
+    evidence: Mapping[str, Any] = field(default_factory=dict)
     rollback_data: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "detail", str(self.detail).strip())
+        object.__setattr__(
+            self,
+            "evidence",
+            _freeze_json(self.evidence),
+        )
         object.__setattr__(
             self,
             "rollback_data",
@@ -328,6 +390,7 @@ class SetupActionPreview:
             "requires_network": self.requires_network,
             "requires_confirmation": self.requires_confirmation,
             "detail": self.detail,
+            "evidence": thaw_json(self.evidence),
         }
 
 
@@ -366,6 +429,7 @@ class SetupActionResult:
     status: SetupActionResultStatus
     changed: bool
     detail: str = ""
+    evidence: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "kind", SetupActionKind(self.kind))
@@ -375,6 +439,7 @@ class SetupActionResult:
             SetupActionResultStatus(self.status),
         )
         object.__setattr__(self, "detail", str(self.detail).strip())
+        object.__setattr__(self, "evidence", _freeze_json(self.evidence))
 
     def to_dict(self) -> dict[str, Any]:
         return {
