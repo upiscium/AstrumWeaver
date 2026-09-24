@@ -234,7 +234,7 @@ AstrumWeaver must not download arbitrary models merely because a provider suppor
 | --- | --- |
 | [Ollama](runtime-ollama.md) | easy/general local serving |
 | [llama.cpp](runtime-llama-cpp.md) | GGUF, CPU/GPU hybrid, heterogeneous multi-GPU |
-| vLLM | GPU-resident/high-throughput, tensor/expert parallel |
+| [vLLM](runtime-vllm.md) | GPU-resident/high-throughput, tensor/expert parallel |
 | FreeToken | RAM-heavy / VRAM-constrained MoE |
 | ExLlamaV3 | quantized consumer-NVIDIA VRAM-resident serving |
 

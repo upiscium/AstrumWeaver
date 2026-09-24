@@ -34,6 +34,18 @@ __all__ = [
     "LlamaCppProviderConfig",
     "LlamaCppSplitMode",
     "LlamaCppSubprocessController",
+    "VLLM_CAPABILITIES",
+    "VLLM_MODEL_FORMATS",
+    "VLLM_PROVIDER_ID",
+    "HttpVllmApi",
+    "VllmApi",
+    "VllmExecutor",
+    "VllmLaunchPolicy",
+    "VllmManagedRuntime",
+    "VllmProcessController",
+    "VllmProvider",
+    "VllmProviderConfig",
+    "VllmSubprocessController",
 ]
 
 
@@ -50,4 +62,20 @@ from .llama_cpp import (
     LlamaCppProviderConfig,
     LlamaCppSplitMode,
     LlamaCppSubprocessController,
+)
+
+
+from .vllm import (
+    VLLM_CAPABILITIES,
+    VLLM_MODEL_FORMATS,
+    VLLM_PROVIDER_ID,
+    HttpVllmApi,
+    VllmApi,
+    VllmExecutor,
+    VllmLaunchPolicy,
+    VllmManagedRuntime,
+    VllmProcessController,
+    VllmProvider,
+    VllmProviderConfig,
+    VllmSubprocessController,
 )
