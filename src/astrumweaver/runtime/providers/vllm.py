@@ -56,7 +56,6 @@ class VllmProviderConfig:
     tensor_parallel_size: int | None = None
     enable_expert_parallel: bool | None = None
     cpu_offload_gb: float = 0.0
-    cpu_offload_params: tuple[str, ...] = ()
     generation_config: str = "vllm"
     trust_remote_code: bool = False
     enforce_eager: bool = False
@@ -108,13 +107,6 @@ class VllmProviderConfig:
             raise ValueError("tensor_parallel_size must be positive")
         if self.cpu_offload_gb < 0:
             raise ValueError("cpu_offload_gb must not be negative")
-        params = tuple(
-            _nonblank(value, "cpu_offload_param")
-            for value in self.cpu_offload_params
-        )
-        if len(params) != len(set(params)):
-            raise ValueError("cpu_offload_params must not contain duplicates")
-        object.__setattr__(self, "cpu_offload_params", params)
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,7 +115,6 @@ class VllmLaunchPolicy:
     enable_expert_parallel: bool
     gpu_memory_utilization: float
     cpu_offload_gb: float
-    cpu_offload_params: tuple[str, ...]
     device_ids: tuple[str, ...]
 
 
@@ -152,7 +143,6 @@ def _launch_policy(
         enable_expert_parallel=enable_ep,
         gpu_memory_utilization=config.gpu_memory_utilization,
         cpu_offload_gb=config.cpu_offload_gb,
-        cpu_offload_params=config.cpu_offload_params,
         device_ids=context.worker.gpu_uuids,
     )
 
@@ -331,14 +321,6 @@ class VllmSubprocessController:
                     str(self.launch_policy.cpu_offload_gb),
                 ]
             )
-            if self.launch_policy.cpu_offload_params:
-                args.extend(
-                    [
-                        "--cpu-offload-params",
-                        ",".join(self.launch_policy.cpu_offload_params),
-                    ]
-                )
-
         if self.trust_remote_code:
             args.append("--trust-remote-code")
         if self.enforce_eager:
@@ -861,7 +843,6 @@ class VllmProvider(RuntimeProvider):
                 ),
                 "gpu_memory_utilization": policy.gpu_memory_utilization,
                 "cpu_offload_gb": policy.cpu_offload_gb,
-                "cpu_offload_params": list(policy.cpu_offload_params),
                 "generation_config": self.config.generation_config,
                 "trust_remote_code": self.config.trust_remote_code,
                 "enforce_eager": self.config.enforce_eager,
@@ -923,13 +904,6 @@ class VllmProvider(RuntimeProvider):
             ),
             cpu_offload_gb=float(
                 cfg.get("cpu_offload_gb", self.config.cpu_offload_gb)
-            ),
-            cpu_offload_params=tuple(
-                str(value)
-                for value in cfg.get(
-                    "cpu_offload_params",
-                    self.config.cpu_offload_params,
-                )
             ),
             device_ids=context.worker.gpu_uuids,
         )
