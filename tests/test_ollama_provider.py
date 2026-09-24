@@ -17,6 +17,7 @@ from astrumweaver.runtime import (
     RuntimeCatalog,
     RuntimeCompatibilityContext,
     RuntimeHostFacts,
+    RuntimeHealthState,
     RuntimeSelection,
     RuntimeSelectionMode,
 )
