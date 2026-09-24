@@ -78,6 +78,14 @@ def preview_plan(
     )
 
 
+def dry_run_plan(
+    plan: SetupPlan,
+    driver: SetupActionDriver,
+) -> SetupPreview:
+    """Inspect the exact plan without mutating the target."""
+    return preview_plan(plan, driver)
+
+
 def explain_plan(plan: SetupPlan) -> str:
     lines = [
         f"SetupPlan {plan.digest}",
@@ -174,6 +182,7 @@ def _rollback(
                 status=SetupActionResultStatus.ROLLED_BACK,
                 changed=rollback_receipt.changed,
                 detail=rollback_receipt.detail,
+                evidence=rollback_receipt.evidence,
             )
         )
     return tuple(results)
@@ -294,6 +303,7 @@ def apply_plan(
                 status=status,
                 changed=receipt.changed,
                 detail=receipt.detail,
+                evidence=receipt.evidence,
             )
         )
 
