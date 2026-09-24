@@ -51,6 +51,16 @@ def _nonblank(value: str, field_name: str) -> str:
     return normalized
 
 
+def _model_matches(configured: str, observed: str) -> bool:
+    configured = configured.strip()
+    observed = observed.strip()
+    if configured == observed:
+        return True
+    if ":" not in configured and observed == f"{configured}:latest":
+        return True
+    return False
+
+
 @dataclass(frozen=True, slots=True)
 class OllamaRuntimeConfig:
     model: str
@@ -477,7 +487,7 @@ class OllamaManagedRuntime(ManagedRuntime):
                 await asyncio.sleep(0.25)
 
         models = await self.api.list_models()
-        if self.config.model not in models:
+        if not any(_model_matches(self.config.model, model) for model in models):
             raise RuntimeError(
                 "configured Ollama model is not installed; "
                 "apply the reviewed model setup plan first"
@@ -493,7 +503,10 @@ class OllamaManagedRuntime(ManagedRuntime):
     async def _require_full_vram_residency(self) -> None:
         for raw in await self.api.running_models():
             name = raw.get("name") or raw.get("model")
-            if name != self.config.model:
+            if not isinstance(name, str) or not _model_matches(
+                self.config.model,
+                name,
+            ):
                 continue
             size = raw.get("size")
             size_vram = raw.get("size_vram")
@@ -539,7 +552,7 @@ class OllamaManagedRuntime(ManagedRuntime):
                 metadata={"version": version},
             )
 
-        if self.config.model not in models:
+        if not any(_model_matches(self.config.model, model) for model in models):
             return RuntimeHealth(
                 state=RuntimeHealthState.DEGRADED,
                 ready=False,
