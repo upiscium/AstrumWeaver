@@ -787,22 +787,38 @@ class LlamaCppProvider(RuntimeProvider):
                     )
                 )
 
+        if (
+            demand.gpu_topology is not GPUTopology.MULTI_GPU
+            and policy.tensor_split is not None
+        ):
+            reasons.append(
+                CompatibilityReason(
+                    code="tensor-split-requires-multi-gpu",
+                    message="tensor_split is only valid for multi_gpu execution",
+                )
+            )
+
+        if (
+            resources.gpu_count > 0
+            and policy.split_mode
+            in {LlamaCppSplitMode.NONE, LlamaCppSplitMode.ROW}
+            and policy.main_gpu >= resources.gpu_count
+        ):
+            reasons.append(
+                CompatibilityReason(
+                    code="main-gpu-outside-visible-set",
+                    message=(
+                        "main_gpu must refer to a GPU inside the Worker-visible set"
+                    ),
+                )
+            )
+
         if demand.gpu_topology is GPUTopology.SINGLE_GPU:
             if policy.split_mode is not LlamaCppSplitMode.NONE:
                 reasons.append(
                     CompatibilityReason(
                         code="single-gpu-split-mode-invalid",
                         message="single_gpu requires split_mode=none",
-                    )
-                )
-            if policy.main_gpu != 0:
-                reasons.append(
-                    CompatibilityReason(
-                        code="main-gpu-outside-visible-set",
-                        message=(
-                            "AstrumWeaver exposes exactly one GPU to a "
-                            "single-GPU Worker, so main_gpu must be 0"
-                        ),
                     )
                 )
 
