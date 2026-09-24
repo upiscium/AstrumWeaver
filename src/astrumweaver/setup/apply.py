@@ -217,7 +217,7 @@ def apply_plan(
                     kind=action.kind,
                     status=SetupActionResultStatus.FAILED,
                     changed=False,
-                    detail=f"inspection failed: {type(exc).__name__}: {exc}",
+                    detail=f"inspection failed: {type(exc).__name__}",
                 )
             )
             rollback = (
