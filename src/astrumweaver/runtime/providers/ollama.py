@@ -41,6 +41,14 @@ def _nonblank(value: str, field_name: str) -> str:
     return normalized
 
 
+def _model_matches(configured: str, observed: str) -> bool:
+    configured = configured.strip()
+    observed = observed.strip()
+    if configured == observed:
+        return True
+    return ":" not in configured and observed == f"{configured}:latest"
+
+
 @dataclass(frozen=True, slots=True)
 class OllamaProviderConfig:
     base_url: str = "http://127.0.0.1:11434"
@@ -48,6 +56,7 @@ class OllamaProviderConfig:
     package_reference: str = "ollama"
     keep_alive: str = "5m"
     startup_timeout_seconds: float = 30.0
+    no_cloud: bool = True
 
     def __post_init__(self) -> None:
         base_url = _nonblank(self.base_url, "base_url").rstrip("/")
@@ -169,10 +178,16 @@ class OllamaSubprocessController:
         executable: str,
         base_url: str,
         gpu_uuids: tuple[str, ...],
+        keep_alive: str,
+        no_cloud: bool,
+        sched_spread: bool,
     ) -> None:
         self.executable = executable
         self.base_url = base_url
         self.gpu_uuids = gpu_uuids
+        self.keep_alive = keep_alive
+        self.no_cloud = no_cloud
+        self.sched_spread = sched_spread
         self._process: asyncio.subprocess.Process | None = None
 
     @property
@@ -187,8 +202,12 @@ class OllamaSubprocessController:
         env["OLLAMA_HOST"] = host
         env["OLLAMA_NUM_PARALLEL"] = "1"
         env["OLLAMA_MAX_LOADED_MODELS"] = "1"
+        env["OLLAMA_KEEP_ALIVE"] = self.keep_alive
+        env["OLLAMA_NO_CLOUD"] = "true" if self.no_cloud else "false"
         if self.gpu_uuids:
             env["CUDA_VISIBLE_DEVICES"] = ",".join(self.gpu_uuids)
+        if self.sched_spread:
+            env["OLLAMA_SCHED_SPREAD"] = "true"
         self._process = await asyncio.create_subprocess_exec(
             self.executable,
             "serve",
@@ -229,7 +248,10 @@ class OllamaExecutor(JobExecutor):
     def _payload(self, job: JobRequest) -> dict[str, Any]:
         payload = dict(job.payload)
         supplied_model = payload.pop("model", None)
-        if supplied_model is not None and str(supplied_model) != self.model:
+        if supplied_model is not None and not _model_matches(
+            self.model,
+            str(supplied_model),
+        ):
             raise ValueError(
                 "job model does not match the model bound to this Ollama runtime"
             )
@@ -311,7 +333,7 @@ class OllamaExecutor(JobExecutor):
         items: list[ResidencyItem] = []
         for model in models:
             name = model.get("model") or model.get("name")
-            if not isinstance(name, str) or name != self.model:
+            if not isinstance(name, str) or not _model_matches(self.model, name):
                 continue
             size_vram = model.get("size_vram")
             size = model.get("size")
@@ -386,7 +408,7 @@ class OllamaManagedRuntime(ManagedRuntime):
     async def _resident_entry(self) -> Mapping[str, Any] | None:
         for entry in await self.api.running_models():
             name = entry.get("model") or entry.get("name")
-            if name == self.model:
+            if isinstance(name, str) and _model_matches(self.model, name):
                 return entry
         return None
 
@@ -421,12 +443,10 @@ class OllamaManagedRuntime(ManagedRuntime):
                     "Ollama loaded part of the model outside VRAM under vram_only policy"
                 )
 
-        if demand.gpu_topology is GPUTopology.MULTI_GPU:
-            single_capacity = self.context.worker.resources.max_single_gpu_vram_mb * MIB
-            if size_vram <= single_capacity:
-                raise RuntimeError(
-                    "Ollama residency does not prove use of more than one GPU"
-                )
+        # Multi-GPU intent is enforced by limiting CUDA_VISIBLE_DEVICES to the
+        # Worker-owned UUID set and enabling OLLAMA_SCHED_SPREAD. /api/ps
+        # exposes total VRAM residency but not a per-device split, so do not
+        # claim a stronger post-load proof than Ollama exposes.
 
     async def start(self) -> None:
         if self._closed:
@@ -448,7 +468,7 @@ class OllamaManagedRuntime(ManagedRuntime):
             await asyncio.sleep(0.1)
 
         available = await self._available_models()
-        if self.model not in available:
+        if not any(_model_matches(self.model, model) for model in available):
             raise RuntimeError(
                 "configured Ollama model is not available after setup"
             )
@@ -493,7 +513,7 @@ class OllamaManagedRuntime(ManagedRuntime):
                 metadata={"runtime_provider": OLLAMA_PROVIDER_ID},
             )
 
-        if self.model not in available:
+        if not any(_model_matches(self.model, model) for model in available):
             return RuntimeHealth(
                 state=RuntimeHealthState.FAILED,
                 ready=False,
@@ -539,10 +559,13 @@ class OllamaProvider(RuntimeProvider):
             lambda base_url: HttpOllamaApi(base_url)
         )
         self._process_factory = process_factory or (
-            lambda *, executable, base_url, gpu_uuids: OllamaSubprocessController(
+            lambda *, executable, base_url, gpu_uuids, keep_alive, no_cloud, sched_spread: OllamaSubprocessController(
                 executable=executable,
                 base_url=base_url,
                 gpu_uuids=gpu_uuids,
+                keep_alive=keep_alive,
+                no_cloud=no_cloud,
+                sched_spread=sched_spread,
             )
         )
         self._info = RuntimeProviderInfo(
@@ -622,37 +645,17 @@ class OllamaProvider(RuntimeProvider):
                 )
 
         if demand.gpu_topology is GPUTopology.MULTI_GPU:
-            if model.estimated_size_mb is None:
-                reasons.append(
-                    CompatibilityReason(
-                        code="multi-gpu-model-size-required",
-                        message=(
-                            "Ollama cannot guarantee use of multiple GPUs without "
-                            "model-size evidence that exceeds one device"
-                        ),
-                    )
+            reasons.append(
+                CompatibilityReason(
+                    code="ollama-multi-gpu-spread",
+                    message=(
+                        "Ollama will be restricted to the Worker GPU UUID set and "
+                        "OLLAMA_SCHED_SPREAD will request distribution across all "
+                        "selected GPUs"
+                    ),
+                    blocking=False,
                 )
-            elif model.estimated_size_mb <= resources.max_single_gpu_vram_mb:
-                reasons.append(
-                    CompatibilityReason(
-                        code="multi-gpu-not-forced",
-                        message=(
-                            "Ollama may keep this model on one GPU because its estimated "
-                            "size fits the largest single device"
-                        ),
-                    )
-                )
-            else:
-                reasons.append(
-                    CompatibilityReason(
-                        code="multi-gpu-runtime-verified",
-                        message=(
-                            "Ollama multi-GPU residency will be verified after load; "
-                            "Ollama chooses the split automatically"
-                        ),
-                        blocking=False,
-                    )
-                )
+            )
 
         return RuntimeCompatibility(
             provider_id=OLLAMA_PROVIDER_ID,
@@ -682,6 +685,10 @@ class OllamaProvider(RuntimeProvider):
                 "capabilities": sorted(OLLAMA_CAPABILITIES),
                 "num_parallel": 1,
                 "max_loaded_models": 1,
+                "no_cloud": self.config.no_cloud,
+                "sched_spread": (
+                    context.demand.gpu_topology is GPUTopology.MULTI_GPU
+                ),
             },
             model_preparation=ModelPreparationPolicy.DOWNLOAD,
             model_ref=context.demand.model.model_ref,
@@ -721,6 +728,9 @@ class OllamaProvider(RuntimeProvider):
             executable=executable,
             base_url=base_url,
             gpu_uuids=context.worker.gpu_uuids,
+            keep_alive=keep_alive,
+            no_cloud=bool(configuration.get("no_cloud", self.config.no_cloud)),
+            sched_spread=bool(configuration.get("sched_spread", False)),
         )
 
         return OllamaManagedRuntime(
