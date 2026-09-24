@@ -29,7 +29,6 @@ from ..contracts import (
 )
 
 
-MIB = 1024 * 1024
 OLLAMA_PROVIDER_ID = "ollama"
 OLLAMA_CAPABILITIES = frozenset({"llm.chat", "text.generate"})
 
@@ -458,23 +457,40 @@ class OllamaManagedRuntime(ManagedRuntime):
                 "an external Ollama server is already using the configured endpoint"
             )
 
+        started_here = False
         if not self.process.running:
             await self.process.start()
+            started_here = True
 
-        deadline = asyncio.get_running_loop().time() + self.startup_timeout_seconds
-        while not await self._server_reachable():
-            if asyncio.get_running_loop().time() >= deadline:
-                raise RuntimeError("Ollama server did not become ready")
-            await asyncio.sleep(0.1)
-
-        available = await self._available_models()
-        if not any(_model_matches(self.model, model) for model in available):
-            raise RuntimeError(
-                "configured Ollama model is not available after setup"
+        try:
+            deadline = (
+                asyncio.get_running_loop().time()
+                + self.startup_timeout_seconds
             )
+            while not await self._server_reachable():
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise RuntimeError("Ollama server did not become ready")
+                await asyncio.sleep(0.1)
 
-        await self._load_model()
-        await self._verify_loaded_topology()
+            available = await self._available_models()
+            if not any(
+                _model_matches(self.model, model)
+                for model in available
+            ):
+                raise RuntimeError(
+                    "configured Ollama model is not available after setup"
+                )
+
+            await self._load_model()
+            await self._verify_loaded_topology()
+        except Exception:
+            if await self._server_reachable():
+                with contextlib.suppress(Exception):
+                    await self.api.unload(self.model)
+            if started_here:
+                with contextlib.suppress(Exception):
+                    await self.process.stop()
+            raise
 
     async def stop(self) -> None:
         if await self._server_reachable():
