@@ -57,7 +57,7 @@ def preview_plan(
         except Exception as exc:
             inspection = ActionInspection(
                 state=SetupActionState.BLOCKED,
-                detail=f"inspection failed: {type(exc).__name__}: {exc}",
+                detail=f"inspection failed: {type(exc).__name__}",
             )
         previews.append(
             SetupActionPreview(
@@ -169,7 +169,7 @@ def _rollback(
                     status=SetupActionResultStatus.ROLLBACK_FAILED,
                     changed=False,
                     detail=(
-                        f"rollback failed: {type(exc).__name__}: {exc}"
+                        f"rollback failed: {type(exc).__name__}"
                     ),
                 )
             )
@@ -275,7 +275,7 @@ def apply_plan(
                     kind=action.kind,
                     status=SetupActionResultStatus.FAILED,
                     changed=False,
-                    detail=f"apply failed: {type(exc).__name__}: {exc}",
+                    detail=f"apply failed: {type(exc).__name__}",
                 )
             )
             rollback = (
