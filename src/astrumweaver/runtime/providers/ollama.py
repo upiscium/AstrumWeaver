@@ -8,6 +8,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -49,7 +50,13 @@ class OllamaProviderConfig:
     startup_timeout_seconds: float = 30.0
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "base_url", _nonblank(self.base_url, "base_url").rstrip("/"))
+        base_url = _nonblank(self.base_url, "base_url").rstrip("/")
+        parsed = urlsplit(base_url)
+        if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"}:
+            raise ValueError(
+                "Ollama provider currently requires a local loopback HTTP endpoint"
+            )
+        object.__setattr__(self, "base_url", base_url)
         object.__setattr__(self, "executable", _nonblank(self.executable, "executable"))
         object.__setattr__(
             self,
