@@ -509,3 +509,37 @@ async def test_runtime_lifecycle_is_idempotent_and_releases_once() -> None:
 
     await lifecycle.restart(timeout_seconds=1.0)
     assert runtime.start_count == 2
+
+
+
+def test_setup_plan_rejects_tampered_digest() -> None:
+    plan = setup_plan()
+    encoded = plan.to_dict()
+    encoded["digest"] = "0" * 64
+
+    with pytest.raises(ValueError, match="digest"):
+        SetupPlan.from_dict(encoded)
+
+
+class LeakyDriver(FakeDriver):
+    def inspect(self, action):
+        raise RuntimeError("token=super-secret-value")
+
+
+def test_unexpected_driver_errors_do_not_leak_exception_text() -> None:
+    plan = setup_plan()
+    driver = LeakyDriver()
+
+    preview = dry_run_plan(plan, driver)
+    assert preview.blocked
+    assert "super-secret-value" not in preview.actions[0].detail
+    assert "RuntimeError" in preview.actions[0].detail
+
+    result = apply_plan(
+        plan,
+        driver,
+        approval=full_approval(plan),
+    )
+    assert not result.succeeded
+    assert "super-secret-value" not in result.actions[0].detail
+    assert "RuntimeError" in result.actions[0].detail
