@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .contracts import (
     ManagedRuntime,
@@ -20,11 +20,11 @@ class RuntimeLifecycleError(RuntimeError):
 class RuntimeLifecycleManager:
     runtime: ManagedRuntime
     poll_interval_seconds: float = 0.25
+    _released: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.poll_interval_seconds <= 0:
             raise ValueError("poll_interval_seconds must be positive")
-        self._released = False
 
     async def ensure_ready(
         self,
