@@ -47,7 +47,6 @@ class OllamaProviderConfig:
     package_reference: str = "ollama"
     keep_alive: str = "5m"
     startup_timeout_seconds: float = 30.0
-    manage_process: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "base_url", _nonblank(self.base_url, "base_url").rstrip("/"))
@@ -345,7 +344,6 @@ class OllamaManagedRuntime(ManagedRuntime):
         model: str,
         keep_alive: str,
         startup_timeout_seconds: float,
-        manage_process: bool,
     ) -> None:
         self.api = api
         self.process = process
@@ -353,7 +351,6 @@ class OllamaManagedRuntime(ManagedRuntime):
         self.model = model
         self.keep_alive = keep_alive
         self.startup_timeout_seconds = startup_timeout_seconds
-        self.manage_process = manage_process
         self._executor = OllamaExecutor(
             api=api,
             model=model,
@@ -428,12 +425,12 @@ class OllamaManagedRuntime(ManagedRuntime):
             raise RuntimeError("Ollama runtime has already been released")
 
         reachable = await self._server_reachable()
-        if reachable and self.manage_process and not self.process.running:
+        if reachable and not self.process.running:
             raise RuntimeError(
                 "an external Ollama server is already using the configured endpoint"
             )
 
-        if self.manage_process and not self.process.running:
+        if not self.process.running:
             await self.process.start()
 
         deadline = asyncio.get_running_loop().time() + self.startup_timeout_seconds
@@ -455,8 +452,7 @@ class OllamaManagedRuntime(ManagedRuntime):
         if await self._server_reachable():
             with contextlib.suppress(Exception):
                 await self.api.unload(self.model)
-        if self.manage_process:
-            await self.process.stop()
+        await self.process.stop()
 
     async def health(self) -> RuntimeHealth:
         reachable = await self._server_reachable()
@@ -464,14 +460,14 @@ class OllamaManagedRuntime(ManagedRuntime):
             return RuntimeHealth(
                 state=(
                     RuntimeHealthState.STARTING
-                    if self.manage_process and self.process.running
+                    if self.process.running
                     else RuntimeHealthState.STOPPED
                 ),
                 ready=False,
                 metadata={"runtime_provider": OLLAMA_PROVIDER_ID},
             )
 
-        if self.manage_process and not self.process.running:
+        if not self.process.running:
             return RuntimeHealth(
                 state=RuntimeHealthState.FAILED,
                 ready=False,
@@ -674,7 +670,6 @@ class OllamaProvider(RuntimeProvider):
                 "model": context.demand.model.model_ref,
                 "keep_alive": self.config.keep_alive,
                 "startup_timeout_seconds": self.config.startup_timeout_seconds,
-                "manage_process": self.config.manage_process,
                 "gpu_uuids": list(context.worker.gpu_uuids),
                 "capabilities": sorted(OLLAMA_CAPABILITIES),
                 "num_parallel": 1,
@@ -713,10 +708,6 @@ class OllamaProvider(RuntimeProvider):
                 self.config.startup_timeout_seconds,
             )
         )
-        manage_process = bool(
-            configuration.get("manage_process", self.config.manage_process)
-        )
-
         api = self._api_factory(base_url)
         process = self._process_factory(
             executable=executable,
@@ -731,5 +722,4 @@ class OllamaProvider(RuntimeProvider):
             model=model,
             keep_alive=keep_alive,
             startup_timeout_seconds=startup_timeout_seconds,
-            manage_process=manage_process,
         )
