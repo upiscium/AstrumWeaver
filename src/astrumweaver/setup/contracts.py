@@ -390,7 +390,6 @@ class SetupActionPreview:
             "requires_network": self.requires_network,
             "requires_confirmation": self.requires_confirmation,
             "detail": self.detail,
-            "evidence": thaw_json(self.evidence),
         }
 
 
@@ -448,6 +447,7 @@ class SetupActionResult:
             "status": self.status.value,
             "changed": self.changed,
             "detail": self.detail,
+            "evidence": thaw_json(self.evidence),
         }
 
 
