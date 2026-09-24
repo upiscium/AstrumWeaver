@@ -115,6 +115,7 @@ def demand(
             else 0
         ),
         min_host_ram_mb=min_host_ram_mb,
+        preferred_host_ram_mb=min_host_ram_mb,
     )
 
 
