@@ -1001,3 +1001,30 @@ async def test_managed_runtime_release_closes_api_once() -> None:
     await runtime.release()
 
     assert api.closed
+
+
+
+def test_single_gpu_rejects_tensor_split_override() -> None:
+    provider = LlamaCppProvider(
+        LlamaCppProviderConfig(tensor_split=(1.0,))
+    )
+
+    report = provider.compatibility(context())
+
+    assert not report.compatible
+    assert "tensor-split-requires-multi-gpu" in {
+        reason.code for reason in report.reasons
+    }
+
+
+def test_main_gpu_must_be_inside_visible_set() -> None:
+    provider = LlamaCppProvider(
+        LlamaCppProviderConfig(main_gpu=1)
+    )
+
+    report = provider.compatibility(context())
+
+    assert not report.compatible
+    assert "main-gpu-outside-visible-set" in {
+        reason.code for reason in report.reasons
+    }
