@@ -191,6 +191,8 @@ Constructing setup intent does not execute anything.
 
 Issue #24 converts this into a deterministic reviewed `SetupPlan`.
 
+See [Runtime Setup Backend](runtime-setup.md) for the canonical planning, approval, dry-run, apply, and rollback contract.
+
 ### `create_runtime`
 
 Creates a `ManagedRuntime` after setup has materialized the provider.
