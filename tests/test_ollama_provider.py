@@ -23,6 +23,7 @@ from astrumweaver.runtime.providers.ollama import (
     OllamaManagedRuntime,
     OllamaProvider,
     OllamaProviderConfig,
+    OllamaSubprocessController,
 )
 
 
@@ -259,7 +260,7 @@ def test_ollama_vram_only_rejects_estimate_larger_than_total_vram() -> None:
     }
 
 
-def test_ollama_multi_gpu_is_not_claimed_when_model_fits_one_device() -> None:
+def test_ollama_multi_gpu_uses_explicit_spread_even_if_model_fits_one_device() -> None:
     report = OllamaProvider().compatibility(
         context(
             worker=multi_worker(),
@@ -270,27 +271,31 @@ def test_ollama_multi_gpu_is_not_claimed_when_model_fits_one_device() -> None:
         )
     )
 
-    assert not report.compatible
-    assert "multi-gpu-not-forced" in {
-        reason.code for reason in report.reasons
-    }
-
-
-def test_ollama_multi_gpu_candidate_requires_runtime_residency_verification() -> None:
-    report = OllamaProvider().compatibility(
-        context(
-            worker=multi_worker(),
-            execution=demand(
-                estimated_size_mb=18000,
-                topology=GPUTopology.MULTI_GPU,
-            ),
-        )
-    )
-
     assert report.compatible
-    assert "multi-gpu-runtime-verified" in {
-        reason.code for reason in report.reasons
-    }
+    reason = next(
+        reason
+        for reason in report.reasons
+        if reason.code == "ollama-multi-gpu-spread"
+    )
+    assert not reason.blocking
+
+
+def test_ollama_multi_gpu_setup_intent_requests_spread() -> None:
+    ctx = context(
+        worker=multi_worker(),
+        execution=demand(
+            estimated_size_mb=18000,
+            topology=GPUTopology.MULTI_GPU,
+        ),
+    )
+    intent = OllamaProvider().setup_intent(ctx)
+
+    assert intent.configuration["gpu_uuids"] == [
+        "GPU-example-a",
+        "GPU-example-b",
+    ]
+    assert intent.configuration["sched_spread"] is True
+    assert intent.configuration["no_cloud"] is True
 
 
 def test_ollama_cpu_gpu_hybrid_is_automatic_and_advisory() -> None:
@@ -331,6 +336,8 @@ def test_ollama_setup_intent_uses_reviewed_download_and_exact_gpu_identity() -> 
     assert intent.configuration["gpu_uuids"] == ["GPU-example-one"]
     assert intent.configuration["num_parallel"] == 1
     assert intent.configuration["max_loaded_models"] == 1
+    assert intent.configuration["no_cloud"] is True
+    assert intent.configuration["sched_spread"] is False
     assert intent.configuration["capabilities"] == [
         "llm.chat",
         "text.generate",
@@ -486,7 +493,7 @@ async def test_managed_runtime_vram_only_fails_when_api_ps_shows_cpu_offload() -
 
 
 @pytest.mark.asyncio
-async def test_managed_runtime_multi_gpu_requires_residency_larger_than_one_gpu() -> None:
+async def test_managed_runtime_multi_gpu_does_not_invent_per_device_proof() -> None:
     api = FakeApi(
         reachable=False,
         model_size=18 * 1024 * 1024 * 1024,
@@ -508,8 +515,10 @@ async def test_managed_runtime_multi_gpu_requires_residency_larger_than_one_gpu(
         startup_timeout_seconds=1.0,
     )
 
-    with pytest.raises(RuntimeError, match="more than one GPU"):
-        await runtime.start()
+    await runtime.start()
+
+    assert (await runtime.health()).ready
+    await runtime.stop()
 
 
 @pytest.mark.asyncio
@@ -614,3 +623,77 @@ async def test_http_ollama_api_uses_documented_local_endpoints() -> None:
     assert requests[2][1] == "/api/chat"
     assert requests[3][1] == "/api/generate"
     assert requests[3][2]["keep_alive"] == 0
+
+
+
+@pytest.mark.asyncio
+async def test_ollama_latest_tag_alias_is_accepted_for_health_and_residency() -> None:
+    api = FakeApi(model="qwen3:latest", reachable=False)
+    process = FakeProcess(api)
+    runtime = OllamaManagedRuntime(
+        api=api,
+        process=process,
+        context=context(),
+        model="qwen3",
+        keep_alive="5m",
+        startup_timeout_seconds=1.0,
+    )
+
+    await runtime.start()
+
+    assert (await runtime.health()).ready
+    residency = await runtime.residency()
+    assert len(residency.items) == 1
+    assert residency.items[0].name == "qwen3"
+
+
+@pytest.mark.asyncio
+async def test_ollama_subprocess_environment_pins_uuid_set_and_spread(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class Process:
+        returncode = None
+
+        def terminate(self) -> None:
+            self.returncode = 0
+
+        async def wait(self) -> int:
+            return 0
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        captured["args"] = args
+        captured["env"] = dict(kwargs["env"])
+        return Process()
+
+    monkeypatch.setattr(
+        asyncio,
+        "create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    controller = OllamaSubprocessController(
+        executable="/opt/ollama/bin/ollama",
+        base_url="http://127.0.0.1:11434",
+        gpu_uuids=("GPU-a", "GPU-b"),
+        keep_alive="15m",
+        no_cloud=True,
+        sched_spread=True,
+    )
+    await controller.start()
+
+    assert captured["args"] == ("/opt/ollama/bin/ollama", "serve")
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["CUDA_VISIBLE_DEVICES"] == "GPU-a,GPU-b"
+    assert env["OLLAMA_SCHED_SPREAD"] == "true"
+    assert env["OLLAMA_KEEP_ALIVE"] == "15m"
+    assert env["OLLAMA_NO_CLOUD"] == "true"
+    assert env["OLLAMA_NUM_PARALLEL"] == "1"
+    assert env["OLLAMA_MAX_LOADED_MODELS"] == "1"
+
+    await controller.stop()
