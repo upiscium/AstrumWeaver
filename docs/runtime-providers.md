@@ -83,7 +83,7 @@ dense
 moe
 ```
 
-This lets providers such as FreeToken reject unsupported dense-model requests without encoding that rule in Control.
+This lets provider-local scopes distinguish dense and MoE execution without encoding runtime-specific rules in Control.
 
 ### Model format
 
@@ -235,7 +235,7 @@ AstrumWeaver must not download arbitrary models merely because a provider suppor
 | [Ollama](runtime-ollama.md) | easy/general local serving |
 | [llama.cpp](runtime-llama-cpp.md) | GGUF, CPU/GPU hybrid, heterogeneous multi-GPU |
 | [vLLM](runtime-vllm.md) | GPU-resident/high-throughput, tensor/expert parallel |
-| FreeToken | RAM-heavy / VRAM-constrained MoE |
+| [FreeToken](runtime-freetoken.md) | RAM-heavy / VRAM-constrained MoE |
 | ExLlamaV3 | quantized consumer-NVIDIA VRAM-resident serving |
 
 This table is product intent, not hard-coded planner logic.
