@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import platform
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Mapping
 
@@ -16,7 +16,7 @@ class SetupDiscoverySnapshot:
     host: RuntimeHostFacts
     observed_gpu_uuids: tuple[str, ...] = ()
     installed_provider_ids: frozenset[str] = frozenset()
-    metadata: Mapping[str, str] = MappingProxyType({})
+    metadata: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not isinstance(self.host, RuntimeHostFacts):
