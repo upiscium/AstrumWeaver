@@ -25,6 +25,8 @@ def _nonblank(value: str, field_name: str) -> str:
 
 
 def _json_compatible(value: Any) -> Any:
+    if isinstance(value, SecretReference):
+        return value.to_dict()
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     if isinstance(value, Mapping):
