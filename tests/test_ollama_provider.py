@@ -14,8 +14,18 @@ from astrumweaver.runtime import (
     ModelDemand,
     ModelTopology,
     ResidencyPolicy,
+    RuntimeCatalog,
     RuntimeCompatibilityContext,
     RuntimeHostFacts,
+    RuntimeSelection,
+    RuntimeSelectionMode,
+)
+from astrumweaver.setup import (
+    DeploymentPath,
+    PrivilegeMode,
+    SetupActionKind,
+    SetupHostSnapshot,
+    build_runtime_setup_plan,
 )
 from astrumweaver.runtime.providers.ollama import (
     HttpOllamaApi,
@@ -344,6 +354,47 @@ def test_ollama_setup_intent_uses_reviewed_download_and_exact_gpu_identity() -> 
     ]
 
 
+def test_ollama_setup_intent_builds_shared_reviewable_setup_plan() -> None:
+    ctx = context()
+    provider = OllamaProvider()
+    plan = build_runtime_setup_plan(
+        catalog=RuntimeCatalog([provider]),
+        context=ctx,
+        selection=RuntimeSelection(
+            mode=RuntimeSelectionMode.EXPLICIT,
+            provider_id="ollama",
+        ),
+        snapshot=SetupHostSnapshot(
+            runtime_host=ctx.host,
+            deployment_path=DeploymentPath.NIXOS,
+            os_id="nixos",
+            os_version="26.11",
+            service_manager="systemd",
+            package_manager="nix",
+            available_commands=frozenset(
+                {"nix", "systemctl", "nvidia-smi"}
+            ),
+            privilege_mode=PrivilegeMode.SUDO,
+        ),
+    )
+
+    assert plan.provider_id == "ollama"
+    assert plan.requires_privilege
+    assert plan.requires_network
+    assert plan.requires_confirmation
+    assert any(
+        action.kind is SetupActionKind.ENSURE_PACKAGE
+        and action.payload["package_reference"] == "ollama"
+        for action in plan.actions
+    )
+    assert any(
+        action.kind is SetupActionKind.DOWNLOAD_MODEL
+        and action.payload["model_ref"] == "qwen3:8b"
+        for action in plan.actions
+    )
+
+
+
 @pytest.mark.asyncio
 async def test_ollama_executor_chat_generate_metrics_and_model_binding() -> None:
     api = FakeApi()
@@ -490,6 +541,9 @@ async def test_managed_runtime_vram_only_fails_when_api_ps_shows_cpu_offload() -
 
     with pytest.raises(RuntimeError, match="outside VRAM"):
         await runtime.start()
+
+    assert process.stops == 1
+    assert api.unloaded == ["qwen3:8b"]
 
 
 @pytest.mark.asyncio
