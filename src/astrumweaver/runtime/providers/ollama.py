@@ -97,7 +97,8 @@ class HttpOllamaApi:
         *,
         json: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
-        response = await self._client.request(method, path, json=json)
+        kwargs = {} if json is None else {"json": json}
+        response = await self._client.request(method, path, **kwargs)
         response.raise_for_status()
         body = response.json()
         if not isinstance(body, Mapping):
