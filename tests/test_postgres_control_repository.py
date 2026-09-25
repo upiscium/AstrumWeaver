@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import os
 from datetime import timedelta
-from pathlib import Path
 
 import httpx
 import pytest
@@ -35,13 +34,8 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture(autouse=True)
 def reset_database() -> None:
     assert DATABASE_URL is not None
-    migration = (
-        Path(__file__).resolve().parents[1]
-        / "migrations"
-        / "001_control_plane.sql"
-    ).read_text(encoding="utf-8")
+    apply_migrations(DATABASE_URL)
     with psycopg.connect(DATABASE_URL, autocommit=True) as connection:
-        connection.execute(migration)
         connection.execute("TRUNCATE TABLE jobs, workers RESTART IDENTITY CASCADE")
 
 
