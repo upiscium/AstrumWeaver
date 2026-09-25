@@ -56,12 +56,12 @@ def _recorded_migrations(connection: Any) -> set[str]:
     table = connection.execute(
         "SELECT to_regclass('public.schema_migrations') AS table_name"
     ).fetchone()
-    if not table or table.get("table_name") is None:
+    if not table or table[0] is None:
         return set()
     rows = connection.execute(
         "SELECT name FROM schema_migrations ORDER BY name"
     ).fetchall()
-    return {str(row["name"]) for row in rows}
+    return {str(row[0]) for row in rows}
 
 
 def apply_migrations(database_url: str) -> list[str]:
@@ -88,7 +88,7 @@ def apply_migrations(database_url: str) -> list[str]:
             table = connection.execute(
                 "SELECT to_regclass('public.schema_migrations') AS table_name"
             ).fetchone()
-            if table and table.get("table_name") is not None:
+            if table and table[0] is not None:
                 connection.execute(
                     """
                     INSERT INTO schema_migrations (name)
