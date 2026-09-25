@@ -75,6 +75,11 @@ Discovery deliberately does not inspect:
 
 GPU identity remains part of the existing Worker/GPU preflight contract.
 
+`discover_local_gpus()` provides the interactive and non-interactive setup
+frontends with exact NVIDIA GPU UUIDs, VRAM capacity, and best-effort compute
+capability. These facts remain separate from the public-safe
+`SetupHostSnapshot`.
+
 ## SetupPlan
 
 A SetupPlan is immutable and serializable.
@@ -191,7 +196,7 @@ The approval independently controls:
 
 A stale approval for another plan digest fails before the first mutation.
 
-This is the same contract the future TUI must use.
+This is the same contract used by the interactive TUI.
 
 ## Apply and idempotency
 
@@ -207,6 +212,10 @@ The apply result contains structured per-action:
 - changed flag
 - public-safe detail
 - structured evidence
+
+`apply_plan(..., on_result=...)` can stream each structured action/rollback
+result to an interactive frontend without moving mutation logic out of the
+shared backend.
 
 Deployment drivers must keep secrets out of evidence.
 
@@ -259,31 +268,17 @@ The lifecycle helper does not move durable job ownership out of the Worker/Contr
 
 ## TUI relationship
 
-The future TUI (#30) should perform:
+The interactive TUI is implemented by
+[`astrumweaver-setup-tui`](setup-tui.md).
 
-```text
-discover host
-    ↓
-choose runtime/model policy
-    ↓
-provider setup intent
-    ↓
-SetupPlan
-    ↓
-dry-run
-    ↓
-show exact actions + authority flags + digest
-    ↓
-user confirms
-    ↓
-SetupApproval
-    ↓
-apply_plan
-    ↓
-show action results/evidence
-```
+It performs host/GPU/Worker discovery, execution-demand editing, compatibility
+explanation, explicit runtime selection, provider-option editing, exact
+SetupPlan review, dry-run, digest-bound approval and structured apply progress.
 
-The TUI must not execute ad-hoc provider shell commands outside this backend.
+Without a deployment driver it stops in planning-only mode. #31 supplies the
+NixOS/systemd mutation driver and Worker service integration.
+
+The TUI does not execute ad-hoc provider shell commands outside this backend.
 
 ## Infrastructure boundary
 
