@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Protocol, TypeVar, runtime_checkable
 
-from ..contracts import ResourceShape, WorkerSpec
+from ..contracts import AcceleratorDevice, ResourceShape, WorkerSpec
 from ..runtime import (
     ExecutionDemand,
     GPUTopology,
@@ -292,8 +292,10 @@ def _select_gpus(io: TuiIO, gpus: tuple[DiscoveredGpu, ...]) -> tuple[Discovered
         return ()
     for index, gpu in enumerate(gpus, start=1):
         cap = gpu.compute_capability or "unknown"
+        device_class = gpu.device_class or "unknown"
         io.write(
-            f"  {index}. {gpu.uuid}  {gpu.memory_mb} MiB  compute={cap}"
+            f"  {index}. {gpu.uuid}  {gpu.memory_mb} MiB  "
+            f"class={device_class}  compute={cap}"
         )
 
     while True:
@@ -353,6 +355,15 @@ def build_worker_spec(
             max_single_gpu_vram_mb=max_vram_mb,
         ),
         gpu_uuids=tuple(gpu.uuid for gpu in gpus),
+        accelerators=tuple(
+            AcceleratorDevice(
+                uuid=gpu.uuid,
+                memory_mb=gpu.memory_mb,
+                compute_capability=gpu.compute_capability,
+                device_class=gpu.device_class,
+            )
+            for gpu in gpus
+        ),
         capabilities=frozenset({"llm.chat", "text.generate"}),
         labels=labels,
     )
