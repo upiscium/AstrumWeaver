@@ -263,6 +263,22 @@ def test_multi_gpu_tensor_parallel_mode_is_explicit() -> None:
     assert intent.configuration["tabby_config"]["model"]["tensor_parallel"] is True
 
 
+def test_autosplit_reserve_must_match_worker_gpu_count() -> None:
+    provider = ExLlamaV3Provider(
+        ExLlamaV3ProviderConfig(autosplit_reserve_mb=(96,))
+    )
+    report = provider.compatibility(
+        context(
+            worker=multi_worker(),
+            execution=demand(topology=GPUTopology.MULTI_GPU),
+        )
+    )
+    assert not report.compatible
+    assert "autosplit-reserve-length-mismatch" in {
+        reason.code for reason in report.reasons
+    }
+
+
 def test_explicit_gpu_split_must_match_worker_gpu_count() -> None:
     provider = ExLlamaV3Provider(
         ExLlamaV3ProviderConfig(gpu_split=(20.0, 10.0, 5.0))
@@ -619,6 +635,7 @@ async def test_executor_chat_metrics_model_binding_and_cancel() -> None:
             )
         )
 
+    api.chat_started.clear()
     api.block_chat = True
     execution = asyncio.create_task(
         executor.execute(
