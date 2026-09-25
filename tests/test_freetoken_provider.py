@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Mapping
+from dataclasses import replace
 
 import httpx
 import pytest
@@ -355,6 +356,22 @@ def test_incompatible_context_cannot_create_setup_or_runtime() -> None:
     compatible_intent = FreeTokenProvider().setup_intent(context())
     with pytest.raises(RuntimeError, match="incompatible"):
         provider.create_runtime(ctx, compatible_intent)
+
+
+def test_create_runtime_rejects_tampered_gpu_uuid() -> None:
+    provider = FreeTokenProvider()
+    ctx = context()
+    intent = provider.setup_intent(ctx)
+    tampered = replace(
+        intent,
+        configuration={
+            **dict(intent.configuration),
+            "gpu_uuid": "GPU-not-owned-by-worker",
+        },
+    )
+
+    with pytest.raises(ValueError, match="GPU UUID"):
+        provider.create_runtime(ctx, tampered)
 
 
 def test_single_gpu_command_uses_exact_worker_uuid_and_free_token_flags() -> None:
