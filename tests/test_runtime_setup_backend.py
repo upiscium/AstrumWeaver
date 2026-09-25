@@ -406,6 +406,59 @@ def test_apply_is_idempotent_and_returns_structured_evidence() -> None:
     )
 
 
+def test_progress_callback_failure_cannot_change_successful_apply_outcome() -> None:
+    plan = setup_plan()
+    baseline_driver = FakeDriver()
+    observed_driver = FakeDriver()
+
+    baseline = apply_plan(
+        plan,
+        baseline_driver,
+        approval=full_approval(plan),
+    )
+
+    def broken_observer(_result) -> None:
+        raise RuntimeError("observer failed")
+
+    observed = apply_plan(
+        plan,
+        observed_driver,
+        approval=full_approval(plan),
+        on_result=broken_observer,
+    )
+
+    assert observed == baseline
+    assert observed_driver.apply_calls == baseline_driver.apply_calls
+    assert observed_driver.rollback_calls == baseline_driver.rollback_calls
+
+
+def test_progress_callback_failure_cannot_interrupt_rollback() -> None:
+    plan = setup_plan()
+    baseline_driver = FakeDriver(fail_kind=SetupActionKind.HEALTH_CHECK)
+    observed_driver = FakeDriver(fail_kind=SetupActionKind.HEALTH_CHECK)
+
+    baseline = apply_plan(
+        plan,
+        baseline_driver,
+        approval=full_approval(plan),
+    )
+
+    def broken_observer(_result) -> None:
+        raise RuntimeError("observer failed")
+
+    observed = apply_plan(
+        plan,
+        observed_driver,
+        approval=full_approval(plan),
+        on_result=broken_observer,
+    )
+
+    assert observed == baseline
+    assert observed_driver.apply_calls == baseline_driver.apply_calls
+    assert observed_driver.rollback_calls == baseline_driver.rollback_calls
+    assert observed_driver.rollback_calls
+
+
 def test_apply_rolls_back_reversible_actions_in_reverse_order() -> None:
     plan = setup_plan()
     driver = FakeDriver(fail_kind=SetupActionKind.HEALTH_CHECK)
