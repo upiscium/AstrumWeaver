@@ -874,6 +874,16 @@ class FreeTokenProvider(RuntimeProvider):
             )
 
         cfg = dict(setup.configuration)
+        expected_gpu_uuid = context.worker.gpu_uuids[0]
+        configured_gpu_uuid = cfg.get("gpu_uuid")
+        if (
+            configured_gpu_uuid is not None
+            and str(configured_gpu_uuid) != expected_gpu_uuid
+        ):
+            raise ValueError(
+                "setup intent GPU UUID does not match FreeToken Worker ownership"
+            )
+
         base_url = str(cfg.get("base_url") or self.config.base_url)
         model_ref = str(
             cfg.get("model_ref") or context.demand.model.model_ref
@@ -883,7 +893,7 @@ class FreeTokenProvider(RuntimeProvider):
         )
         executable = str(cfg.get("executable") or self.config.executable)
         policy = FreeTokenLaunchPolicy(
-            gpu_uuid=str(cfg.get("gpu_uuid") or context.worker.gpu_uuids[0]),
+            gpu_uuid=expected_gpu_uuid,
             moe_strategy=FreeTokenMoeStrategy(
                 cfg.get("moe_strategy", self.config.moe_strategy)
             ),
