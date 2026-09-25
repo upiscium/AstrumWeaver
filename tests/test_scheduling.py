@@ -10,6 +10,7 @@ from astrumweaver import (
     match_worker,
     worker_matches,
 )
+from astrumweaver.control.serde import worker_spec_from_dict, worker_spec_to_dict
 
 
 def multi_gpu_worker() -> WorkerSpec:
@@ -197,3 +198,40 @@ def test_cpu_only_worker_uses_zero_gpu_resource_shape() -> None:
         JobRequirements(required_capabilities=frozenset({"metadata.normalize"})),
     )
     assert not worker_matches(worker, JobRequirements(min_gpu_count=1))
+
+
+def test_worker_per_device_facts_survive_control_serde_round_trip() -> None:
+    worker = WorkerSpec(
+        worker_id="durable-facts",
+        worker_class="multi-gpu",
+        resources=ResourceShape(
+            gpu_count=2,
+            total_vram_mb=36_864,
+            max_single_gpu_vram_mb=24_576,
+        ),
+        gpu_uuids=("GPU-a", "GPU-b"),
+        accelerators=(
+            AcceleratorDevice(
+                "GPU-a",
+                24_576,
+                compute_capability="8.6",
+                device_class="NVIDIA RTX 3090",
+            ),
+            AcceleratorDevice(
+                "GPU-b",
+                12_288,
+                compute_capability="8.6",
+                device_class="NVIDIA RTX 3060",
+            ),
+        ),
+        capabilities=frozenset({"llm.chat"}),
+        labels={"availability": "borrowable"},
+    )
+
+    encoded = worker_spec_to_dict(worker)
+    restored = worker_spec_from_dict(encoded)
+
+    assert restored == worker
+    assert restored.accelerators[0].uuid == "GPU-a"
+    assert restored.accelerators[1].memory_mb == 12_288
+    assert restored.accelerators[1].device_class == "NVIDIA RTX 3060"
