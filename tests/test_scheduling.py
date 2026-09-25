@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-from astrumweaver import JobRequirements, ResourceShape, WorkerSpec, match_worker, worker_matches
+from astrumweaver import (
+    AcceleratorDevice,
+    JobRequirements,
+    ResourceShape,
+    WorkerSpec,
+    match_worker,
+    worker_matches,
+)
 
 
 def multi_gpu_worker() -> WorkerSpec:
@@ -137,6 +144,45 @@ def test_gpu_uuid_count_must_match_resource_shape() -> None:
             ),
             gpu_uuids=("GPU-only-one",),
         )
+
+
+def test_worker_per_device_facts_must_match_gpu_identity_and_memory_shape() -> None:
+    with pytest.raises(ValueError, match="UUID order"):
+        WorkerSpec(
+            worker_id="wrong-order",
+            worker_class="multi-gpu",
+            resources=ResourceShape(
+                gpu_count=2,
+                total_vram_mb=24_576,
+                max_single_gpu_vram_mb=12_288,
+            ),
+            gpu_uuids=("GPU-a", "GPU-b"),
+            accelerators=(
+                AcceleratorDevice("GPU-b", 12_288, "8.6", "RTX 3060"),
+                AcceleratorDevice("GPU-a", 12_288, "8.6", "RTX 3060"),
+            ),
+        )
+
+    with pytest.raises(ValueError, match="memory sum"):
+        WorkerSpec(
+            worker_id="wrong-memory",
+            worker_class="multi-gpu",
+            resources=ResourceShape(
+                gpu_count=2,
+                total_vram_mb=24_576,
+                max_single_gpu_vram_mb=12_288,
+            ),
+            gpu_uuids=("GPU-a", "GPU-b"),
+            accelerators=(
+                AcceleratorDevice("GPU-a", 12_288, "8.6", "RTX 3060"),
+                AcceleratorDevice("GPU-b", 8_192, "8.6", "RTX 3060"),
+            ),
+        )
+
+
+def test_worker_per_device_facts_are_optional_for_legacy_workers() -> None:
+    worker = multi_gpu_worker()
+    assert worker.accelerators == ()
 
 
 def test_cpu_only_worker_uses_zero_gpu_resource_shape() -> None:
