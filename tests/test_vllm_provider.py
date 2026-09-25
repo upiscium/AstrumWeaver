@@ -270,6 +270,35 @@ def test_multi_gpu_requires_per_device_accelerator_facts() -> None:
     }
 
 
+def test_same_invalid_compute_capability_cannot_form_vllm_homogeneous_worker() -> None:
+    with pytest.raises(ValueError, match="compute capability"):
+        WorkerSpec(
+            worker_id="vllm-invalid-capability",
+            worker_class="multi-gpu",
+            resources=ResourceShape(
+                gpu_count=2,
+                total_vram_mb=49152,
+                max_single_gpu_vram_mb=24576,
+            ),
+            gpu_uuids=("GPU-a", "GPU-b"),
+            accelerators=(
+                AcceleratorDevice(
+                    "GPU-a",
+                    24576,
+                    compute_capability="garbage",
+                    device_class="NVIDIA RTX 3090",
+                ),
+                AcceleratorDevice(
+                    "GPU-b",
+                    24576,
+                    compute_capability="garbage",
+                    device_class="NVIDIA RTX 3090",
+                ),
+            ),
+            capabilities=frozenset({"llm.chat", "text.generate"}),
+        )
+
+
 def test_multi_gpu_rejects_mixed_device_class_even_with_equal_vram() -> None:
     worker = WorkerSpec(
         worker_id="vllm-mixed-class",
