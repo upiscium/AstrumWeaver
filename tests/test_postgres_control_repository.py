@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from datetime import timedelta
+from pathlib import Path
 
 import httpx
 import pytest
@@ -19,6 +20,7 @@ from astrumweaver.control import (
     JobStatus,
     JobSubmission,
     PostgresControlRepository,
+    StorageUnavailable,
     WorkerRegistration,
     utc_now,
 )
@@ -312,10 +314,60 @@ async def test_postgres_transport_fencing_and_non_text_result() -> None:
     assert result["outputs"]["probabilities"]["remote"] == 0.2
 
 
+def test_check_storage_rejects_legacy_001_only_schema_until_migrated() -> None:
+    assert DATABASE_URL is not None
+    migration_001 = (
+        Path(__file__).resolve().parents[1]
+        / "migrations"
+        / "001_control_plane.sql"
+    ).read_text(encoding="utf-8")
+
+    with psycopg.connect(DATABASE_URL, autocommit=True) as connection:
+        connection.execute("DROP TABLE IF EXISTS jobs CASCADE")
+        connection.execute("DROP TABLE IF EXISTS workers CASCADE")
+        connection.execute("DROP TABLE IF EXISTS schema_migrations CASCADE")
+        connection.execute(migration_001)
+
+    repo = PostgresControlRepository(DATABASE_URL)
+    with pytest.raises(StorageUnavailable, match="schema"):
+        repo.check_storage()
+
+    applied = apply_migrations(DATABASE_URL)
+
+    assert applied == [
+        "000_schema_migrations.sql",
+        "001_control_plane.sql",
+        "002_worker_accelerators.sql",
+    ]
+    repo.check_storage()
+
+    with psycopg.connect(DATABASE_URL) as connection:
+        columns = {
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'workers'
+                """
+            ).fetchall()
+        }
+        recorded = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM schema_migrations"
+            ).fetchall()
+        }
+
+    assert "accelerators" in columns
+    assert set(applied) <= recorded
+
+
 def test_packaged_migration_entrypoint_is_idempotent() -> None:
     assert DATABASE_URL is not None
     applied = apply_migrations(DATABASE_URL)
 
+    assert "000_schema_migrations.sql" in applied
     assert "001_control_plane.sql" in applied
     assert "002_worker_accelerators.sql" in applied
 
