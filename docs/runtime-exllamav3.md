@@ -82,6 +82,26 @@ python /opt/tabbyAPI/main.py --config /var/lib/astrumweaver/runtime/exllamav3/co
 
 Those paths are deployment inputs, not hidden installation actions.
 
+## Hardware compatibility
+
+Current TabbyAPI explicitly checks that every selected GPU is NVIDIA compute
+capability 8.0 (Ampere) or newer and rejects ROCm.
+
+AstrumWeaver therefore understands the optional Worker label:
+
+```text
+gpu.compute_capability.min = 8.6
+```
+
+When present, values below 8.x fail compatibility. This means Pascal-class
+devices such as GTX 1080 Ti are not valid ExLlamaV3 Workers, while Ampere-class
+RTX 30 series devices satisfy the architecture floor.
+
+When the label is absent the provider emits a non-blocking
+`compute-capability-unverified` advisory rather than pretending the generic
+Worker resource shape proves GPU architecture. Host/deployment preflight should
+materialize this fact before production use.
+
 ## Model format
 
 The first-class provider accepts:
