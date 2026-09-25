@@ -51,7 +51,11 @@ def host(ram_mb: int = 131072, architecture: str = "x86_64") -> RuntimeHostFacts
     )
 
 
-def single_worker(vram_mb: int = 24576) -> WorkerSpec:
+def single_worker(
+    vram_mb: int = 24576,
+    *,
+    labels: Mapping[str, str] | None = None,
+) -> WorkerSpec:
     return WorkerSpec(
         worker_id="exl3-single",
         worker_class="consumer-single",
@@ -62,6 +66,7 @@ def single_worker(vram_mb: int = 24576) -> WorkerSpec:
         ),
         gpu_uuids=("GPU-exl3-one",),
         capabilities=frozenset({"llm.chat", "text.generate"}),
+        labels=labels or {},
     )
 
 
@@ -178,6 +183,34 @@ def test_cpu_gpu_hybrid_is_outside_provider_scope() -> None:
     )
     assert not report.compatible
     assert "cpu-gpu-hybrid-outside-provider-scope" in {
+        reason.code for reason in report.reasons
+    }
+
+
+def test_pascal_compute_capability_is_rejected() -> None:
+    report = ExLlamaV3Provider().compatibility(
+        context(
+            worker=single_worker(
+                labels={"gpu.compute_capability.min": "6.1"}
+            )
+        )
+    )
+    assert not report.compatible
+    assert "compute-capability-unsupported" in {
+        reason.code for reason in report.reasons
+    }
+
+
+def test_ampere_compute_capability_is_accepted() -> None:
+    report = ExLlamaV3Provider().compatibility(
+        context(
+            worker=single_worker(
+                labels={"gpu.compute_capability.min": "8.6"}
+            )
+        )
+    )
+    assert report.compatible
+    assert "compute-capability-unverified" not in {
         reason.code for reason in report.reasons
     }
 
