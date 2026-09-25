@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from ...contracts import compute_capability_key
 from ...execution import JobExecutor, JobRequest, JobResult, ResidencyItem, ResidencyReport
 from ..contracts import (
     CompatibilityReason,
@@ -689,11 +690,12 @@ class ExLlamaV3Provider(RuntimeProvider):
             context.worker.accelerators
             and len(known_capabilities) == len(context.worker.accelerators)
         ):
+            # AcceleratorDevice validates/canonicalizes these values at the
+            # contract boundary, so provider comparison cannot be derailed by
+            # malformed per-device evidence.
             compute_capability = min(
                 known_capabilities,
-                key=lambda value: tuple(
-                    int(part) for part in str(value).split(".", 1)
-                ),
+                key=compute_capability_key,
             )
         else:
             compute_capability = context.worker.labels.get(
@@ -712,7 +714,7 @@ class ExLlamaV3Provider(RuntimeProvider):
             )
         else:
             try:
-                major = int(str(compute_capability).split(".", 1)[0])
+                capability_key = compute_capability_key(compute_capability)
             except ValueError:
                 reasons.append(
                     CompatibilityReason(
@@ -724,7 +726,7 @@ class ExLlamaV3Provider(RuntimeProvider):
                     )
                 )
             else:
-                if major < 8:
+                if capability_key < (8, 0):
                     reasons.append(
                         CompatibilityReason(
                             code="compute-capability-unsupported",
