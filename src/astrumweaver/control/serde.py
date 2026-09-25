@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from ..contracts import JobRequirements, ResourceShape, WorkerSpec
+from ..contracts import AcceleratorDevice, JobRequirements, ResourceShape, WorkerSpec
 from ..execution import ArtifactRef, JobResult
 
 
@@ -38,6 +38,15 @@ def worker_spec_to_dict(value: WorkerSpec) -> dict[str, Any]:
         "worker_id": value.worker_id,
         "worker_class": value.worker_class,
         "gpu_uuids": list(value.gpu_uuids),
+        "accelerators": [
+            {
+                "uuid": device.uuid,
+                "memory_mb": device.memory_mb,
+                "compute_capability": device.compute_capability,
+                "device_class": device.device_class,
+            }
+            for device in value.accelerators
+        ],
         "capabilities": sorted(value.capabilities),
         "labels": dict(value.labels),
         "resources": {
@@ -55,6 +64,15 @@ def worker_spec_from_dict(value: Mapping[str, Any]) -> WorkerSpec:
         worker_id=str(data["worker_id"]),
         worker_class=str(data["worker_class"]),
         gpu_uuids=tuple(data.get("gpu_uuids") or ()),
+        accelerators=tuple(
+            AcceleratorDevice(
+                uuid=str(item["uuid"]),
+                memory_mb=int(item["memory_mb"]),
+                compute_capability=item.get("compute_capability"),
+                device_class=item.get("device_class"),
+            )
+            for item in data.get("accelerators") or ()
+        ),
         capabilities=frozenset(data.get("capabilities") or ()),
         labels=data.get("labels") or {},
         resources=ResourceShape(
