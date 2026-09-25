@@ -49,6 +49,37 @@ def _normalize_labels(labels: Mapping[str, str] | None) -> Mapping[str, str]:
 
 
 @dataclass(frozen=True, slots=True)
+class AcceleratorDevice:
+    """Per-device accelerator facts used by runtime compatibility checks."""
+
+    uuid: str
+    memory_mb: int
+    compute_capability: str | None = None
+    device_class: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "uuid",
+            _require_nonblank(str(self.uuid), "accelerator uuid"),
+        )
+        if isinstance(self.memory_mb, bool) or not isinstance(self.memory_mb, int):
+            raise TypeError("accelerator memory_mb must be an integer")
+        if self.memory_mb <= 0:
+            raise ValueError("accelerator memory_mb must be positive")
+        if self.compute_capability is not None:
+            value = str(self.compute_capability).strip()
+            object.__setattr__(
+                self,
+                "compute_capability",
+                value or None,
+            )
+        if self.device_class is not None:
+            value = str(self.device_class).strip()
+            object.__setattr__(self, "device_class", value or None)
+
+
+@dataclass(frozen=True, slots=True)
 class ResourceShape:
     """Scheduler-visible GPU resource shape.
 
@@ -90,6 +121,7 @@ class WorkerSpec:
     worker_class: str
     resources: ResourceShape = field(default_factory=ResourceShape)
     gpu_uuids: tuple[str, ...] = ()
+    accelerators: tuple[AcceleratorDevice, ...] = ()
     capabilities: frozenset[str] = field(default_factory=frozenset)
     labels: Mapping[str, str] = field(default_factory=dict)
 
@@ -104,6 +136,11 @@ class WorkerSpec:
         gpu_uuids = _unique_strings(self.gpu_uuids, "gpu_uuids")
         object.__setattr__(self, "gpu_uuids", gpu_uuids)
 
+        accelerators = tuple(self.accelerators)
+        if not all(isinstance(device, AcceleratorDevice) for device in accelerators):
+            raise TypeError("accelerators must contain AcceleratorDevice values")
+        object.__setattr__(self, "accelerators", accelerators)
+
         capabilities = frozenset(_unique_strings(self.capabilities, "capabilities"))
         object.__setattr__(self, "capabilities", capabilities)
         object.__setattr__(self, "labels", _normalize_labels(self.labels))
@@ -112,6 +149,26 @@ class WorkerSpec:
             raise ValueError(
                 "gpu_uuids count must equal resources.gpu_count for a GPU worker"
             )
+
+        if accelerators:
+            if len(accelerators) != self.resources.gpu_count:
+                raise ValueError(
+                    "accelerators count must equal resources.gpu_count when provided"
+                )
+            if tuple(device.uuid for device in accelerators) != gpu_uuids:
+                raise ValueError(
+                    "accelerator UUID order must exactly match gpu_uuids"
+                )
+            total_memory = sum(device.memory_mb for device in accelerators)
+            max_memory = max(device.memory_mb for device in accelerators)
+            if total_memory != self.resources.total_vram_mb:
+                raise ValueError(
+                    "accelerator memory sum must equal resources.total_vram_mb"
+                )
+            if max_memory != self.resources.max_single_gpu_vram_mb:
+                raise ValueError(
+                    "accelerator max memory must equal resources.max_single_gpu_vram_mb"
+                )
 
 
 @dataclass(frozen=True, slots=True)
