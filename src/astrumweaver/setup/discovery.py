@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import platform
 import shutil
+import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -14,6 +16,116 @@ from .contracts import DeploymentPath, PrivilegeMode, SetupHostSnapshot
 
 class HostDiscoveryError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoveredGpu:
+    uuid: str
+    memory_mb: int
+    compute_capability: str | None = None
+
+    def __post_init__(self) -> None:
+        normalized_uuid = self.uuid.strip()
+        if not normalized_uuid:
+            raise ValueError("GPU UUID must not be blank")
+        if self.memory_mb <= 0:
+            raise ValueError("GPU memory must be positive")
+        object.__setattr__(self, "uuid", normalized_uuid)
+        if self.compute_capability is not None:
+            value = self.compute_capability.strip()
+            object.__setattr__(
+                self,
+                "compute_capability",
+                value or None,
+            )
+
+
+def _run_nvidia_query(
+    command: str,
+    fields: tuple[str, ...],
+    *,
+    run: Callable[..., subprocess.CompletedProcess[str]],
+) -> tuple[tuple[str, ...], ...]:
+    try:
+        completed = run(
+            [
+                command,
+                "--query-gpu=" + ",".join(fields),
+                "--format=csv,noheader,nounits",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return ()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise HostDiscoveryError("nvidia-smi GPU discovery failed") from exc
+
+    rows: list[tuple[str, ...]] = []
+    for raw_line in completed.stdout.splitlines():
+        if not raw_line.strip():
+            continue
+        values = tuple(value.strip() for value in raw_line.split(","))
+        if len(values) != len(fields) or any(not value for value in values):
+            raise HostDiscoveryError("nvidia-smi returned malformed GPU discovery data")
+        rows.append(values)
+    return tuple(rows)
+
+
+def discover_local_gpus(
+    *,
+    command: str = "nvidia-smi",
+    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> tuple[DiscoveredGpu, ...]:
+    """Discover local NVIDIA GPU facts without exposing them in host metadata.
+
+    UUID/device ordering follows nvidia-smi so a user-selected multi-GPU order
+    can be preserved for runtime placement. Compute capability is best-effort:
+    older drivers that do not expose the query still provide UUID/VRAM facts.
+    """
+
+    try:
+        rows = _run_nvidia_query(
+            command,
+            ("uuid", "memory.total", "compute_cap"),
+            run=run,
+        )
+    except HostDiscoveryError:
+        rows = _run_nvidia_query(
+            command,
+            ("uuid", "memory.total"),
+            run=run,
+        )
+        if not rows:
+            return ()
+        parsed: list[DiscoveredGpu] = []
+        for uuid, memory_raw in rows:
+            try:
+                memory_mb = int(memory_raw)
+            except ValueError as exc:
+                raise HostDiscoveryError(
+                    "nvidia-smi returned invalid GPU memory"
+                ) from exc
+            parsed.append(DiscoveredGpu(uuid=uuid, memory_mb=memory_mb))
+        return tuple(parsed)
+
+    parsed = []
+    for uuid, memory_raw, compute_capability in rows:
+        try:
+            memory_mb = int(memory_raw)
+        except ValueError as exc:
+            raise HostDiscoveryError(
+                "nvidia-smi returned invalid GPU memory"
+            ) from exc
+        parsed.append(
+            DiscoveredGpu(
+                uuid=uuid,
+                memory_mb=memory_mb,
+                compute_capability=compute_capability,
+            )
+        )
+    return tuple(parsed)
 
 
 def _read_key_value_file(path: Path) -> dict[str, str]:
