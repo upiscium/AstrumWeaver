@@ -207,11 +207,14 @@ def wizard_responses(*, runtime: str = "fake") -> list[Response]:
 
 def test_discover_local_gpus_reads_uuid_vram_and_compute_capability() -> None:
     def run(args, **kwargs):
-        assert "--query-gpu=uuid,memory.total,compute_cap" in args
+        assert "--query-gpu=uuid,memory.total,name,compute_cap" in args
         return subprocess.CompletedProcess(
             args=args,
             returncode=0,
-            stdout="GPU-a, 24576, 8.6\nGPU-b, 12288, 8.6\n",
+            stdout=(
+                "GPU-a, 24576, NVIDIA RTX 3090, 8.6\n"
+                "GPU-b, 12288, NVIDIA RTX 3060, 8.6\n"
+            ),
             stderr="",
         )
 
@@ -220,6 +223,10 @@ def test_discover_local_gpus_reads_uuid_vram_and_compute_capability() -> None:
     assert [gpu.uuid for gpu in gpus] == ["GPU-a", "GPU-b"]
     assert [gpu.memory_mb for gpu in gpus] == [24576, 12288]
     assert [gpu.compute_capability for gpu in gpus] == ["8.6", "8.6"]
+    assert [gpu.device_class for gpu in gpus] == [
+        "NVIDIA RTX 3090",
+        "NVIDIA RTX 3060",
+    ]
 
 
 def test_discover_local_gpus_falls_back_when_compute_query_is_unavailable() -> None:
@@ -233,20 +240,26 @@ def test_discover_local_gpus_falls_back_when_compute_query_is_unavailable() -> N
         return subprocess.CompletedProcess(
             args=args,
             returncode=0,
-            stdout="GPU-a, 24576\n",
+            stdout="GPU-a, 24576, NVIDIA RTX 3090\n",
             stderr="",
         )
 
     gpus = discover_local_gpus(run=run)
 
     assert calls == 2
-    assert gpus == (DiscoveredGpu(uuid="GPU-a", memory_mb=24576),)
+    assert gpus == (
+        DiscoveredGpu(
+            uuid="GPU-a",
+            memory_mb=24576,
+            device_class="NVIDIA RTX 3090",
+        ),
+    )
 
 
 def test_worker_shape_preserves_selected_gpu_order_and_min_compute_capability() -> None:
     gpus = (
-        DiscoveredGpu("GPU-new", 24576, "8.6"),
-        DiscoveredGpu("GPU-old", 12288, "8.0"),
+        DiscoveredGpu("GPU-new", 24576, "8.6", "NVIDIA RTX 3090"),
+        DiscoveredGpu("GPU-old", 12288, "8.0", "NVIDIA A100"),
     )
 
     worker = build_worker_spec(
@@ -259,6 +272,14 @@ def test_worker_shape_preserves_selected_gpu_order_and_min_compute_capability() 
     assert worker.resources.total_vram_mb == 36864
     assert worker.resources.max_single_gpu_vram_mb == 24576
     assert worker.labels["gpu.compute_capability.min"] == "8.0"
+    assert [device.uuid for device in worker.accelerators] == [
+        "GPU-new",
+        "GPU-old",
+    ]
+    assert [device.device_class for device in worker.accelerators] == [
+        "NVIDIA RTX 3090",
+        "NVIDIA A100",
+    ]
 
 
 def test_yes_no_prompt_retries_after_typo() -> None:
