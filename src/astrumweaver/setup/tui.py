@@ -745,7 +745,14 @@ def _load_driver(specifier: str) -> SetupActionDriver:
         raise ValueError("driver must use module:attribute syntax")
     module = importlib.import_module(module_name)
     target = getattr(module, attribute_name)
-    driver = target() if callable(target) and not isinstance(target, SetupActionDriver) else target
+    if isinstance(target, type):
+        driver = target()
+    elif isinstance(target, SetupActionDriver):
+        driver = target
+    elif callable(target):
+        driver = target()
+    else:
+        driver = target
     if not isinstance(driver, SetupActionDriver):
         raise TypeError("driver target does not implement SetupActionDriver")
     return driver
