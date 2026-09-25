@@ -18,6 +18,20 @@ class HostDiscoveryError(RuntimeError):
     pass
 
 
+_NVIDIA_OPTIONAL_SENTINELS = frozenset({"n/a"})
+
+
+def _optional_nvidia_value(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if normalized.lower() in _NVIDIA_OPTIONAL_SENTINELS:
+        return None
+    return normalized
+
+
 @dataclass(frozen=True, slots=True)
 class DiscoveredGpu:
     uuid: str
@@ -32,16 +46,16 @@ class DiscoveredGpu:
         if self.memory_mb <= 0:
             raise ValueError("GPU memory must be positive")
         object.__setattr__(self, "uuid", normalized_uuid)
-        if self.compute_capability is not None:
-            value = self.compute_capability.strip()
-            object.__setattr__(
-                self,
-                "compute_capability",
-                value or None,
-            )
-        if self.device_class is not None:
-            value = self.device_class.strip()
-            object.__setattr__(self, "device_class", value or None)
+        object.__setattr__(
+            self,
+            "compute_capability",
+            _optional_nvidia_value(self.compute_capability),
+        )
+        object.__setattr__(
+            self,
+            "device_class",
+            _optional_nvidia_value(self.device_class),
+        )
 
 
 def _run_nvidia_query(
