@@ -325,7 +325,7 @@ def _minimum_compute_capability(gpus: tuple[DiscoveredGpu, ...]) -> str | None:
         except ValueError:
             return None
         parsed.append((major, minor, gpu.compute_capability))
-    return min(parsed)[:2][0].__class__ and min(parsed)[2]
+    return min(parsed)[2]
 
 
 def build_worker_spec(
