@@ -751,6 +751,18 @@ class ExLlamaV3Provider(RuntimeProvider):
                     )
                 )
 
+        if policy.autosplit_reserve_mb is not None:
+            if len(policy.autosplit_reserve_mb) != resources.gpu_count:
+                reasons.append(
+                    CompatibilityReason(
+                        code="autosplit-reserve-length-mismatch",
+                        message=(
+                            "ExLlamaV3 autosplit_reserve_mb must provide one value "
+                            "for every Worker-owned GPU"
+                        ),
+                    )
+                )
+
         if demand.gpu_topology is GPUTopology.MULTI_GPU:
             if resources.gpu_count < 2:
                 reasons.append(
