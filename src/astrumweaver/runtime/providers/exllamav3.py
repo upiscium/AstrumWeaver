@@ -680,9 +680,25 @@ class ExLlamaV3Provider(RuntimeProvider):
                 )
             )
 
-        compute_capability = context.worker.labels.get(
-            "gpu.compute_capability.min"
-        )
+        known_capabilities = [
+            device.compute_capability
+            for device in context.worker.accelerators
+            if device.compute_capability is not None
+        ]
+        if (
+            context.worker.accelerators
+            and len(known_capabilities) == len(context.worker.accelerators)
+        ):
+            compute_capability = min(
+                known_capabilities,
+                key=lambda value: tuple(
+                    int(part) for part in str(value).split(".", 1)
+                ),
+            )
+        else:
+            compute_capability = context.worker.labels.get(
+                "gpu.compute_capability.min"
+            )
         if compute_capability is None:
             reasons.append(
                 CompatibilityReason(
