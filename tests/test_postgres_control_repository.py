@@ -363,6 +363,44 @@ def test_check_storage_rejects_legacy_001_only_schema_until_migrated() -> None:
     assert set(applied) <= recorded
 
 
+@pytest.mark.asyncio
+async def test_ready_rejects_legacy_001_only_schema_until_all_migrations_apply() -> None:
+    assert DATABASE_URL is not None
+    migration_001 = (
+        Path(__file__).resolve().parents[1]
+        / "migrations"
+        / "001_control_plane.sql"
+    ).read_text(encoding="utf-8")
+
+    with psycopg.connect(DATABASE_URL, autocommit=True) as connection:
+        connection.execute("DROP TABLE IF EXISTS jobs CASCADE")
+        connection.execute("DROP TABLE IF EXISTS workers CASCADE")
+        connection.execute("DROP TABLE IF EXISTS schema_migrations CASCADE")
+        connection.execute(migration_001)
+
+    repo = PostgresControlRepository(DATABASE_URL)
+    app = create_app(
+        repo,
+        client_token="client-secret",
+        worker_token="worker-secret",
+    )
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://control",
+    ) as client:
+        before = await client.get("/v1/ready")
+        assert before.status_code == 503
+        assert before.json() == {"detail": "storage unavailable"}
+
+        apply_migrations(DATABASE_URL)
+
+        after = await client.get("/v1/ready")
+        assert after.status_code == 200
+        assert after.json()["ready"] is True
+
+
 def test_packaged_migration_entrypoint_is_idempotent() -> None:
     assert DATABASE_URL is not None
     applied = apply_migrations(DATABASE_URL)
