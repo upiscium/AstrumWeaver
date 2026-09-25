@@ -680,6 +680,45 @@ class ExLlamaV3Provider(RuntimeProvider):
                 )
             )
 
+        compute_capability = context.worker.labels.get(
+            "gpu.compute_capability.min"
+        )
+        if compute_capability is None:
+            reasons.append(
+                CompatibilityReason(
+                    code="compute-capability-unverified",
+                    message=(
+                        "ExLlamaV3 requires NVIDIA compute capability 8.0 or newer; "
+                        "Worker metadata does not currently prove the minimum capability"
+                    ),
+                    blocking=False,
+                )
+            )
+        else:
+            try:
+                major = int(str(compute_capability).split(".", 1)[0])
+            except ValueError:
+                reasons.append(
+                    CompatibilityReason(
+                        code="compute-capability-invalid",
+                        message=(
+                            "gpu.compute_capability.min must use a numeric value such "
+                            "as 8.6"
+                        ),
+                    )
+                )
+            else:
+                if major < 8:
+                    reasons.append(
+                        CompatibilityReason(
+                            code="compute-capability-unsupported",
+                            message=(
+                                "ExLlamaV3 requires NVIDIA compute capability 8.0 "
+                                "or newer"
+                            ),
+                        )
+                    )
+
         if demand.gpu_topology is GPUTopology.NONE or resources.gpu_count == 0:
             reasons.append(
                 CompatibilityReason(
