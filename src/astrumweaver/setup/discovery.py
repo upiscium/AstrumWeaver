@@ -23,6 +23,7 @@ class DiscoveredGpu:
     uuid: str
     memory_mb: int
     compute_capability: str | None = None
+    device_class: str | None = None
 
     def __post_init__(self) -> None:
         normalized_uuid = self.uuid.strip()
@@ -38,6 +39,9 @@ class DiscoveredGpu:
                 "compute_capability",
                 value or None,
             )
+        if self.device_class is not None:
+            value = self.device_class.strip()
+            object.__setattr__(self, "device_class", value or None)
 
 
 def _run_nvidia_query(
@@ -81,37 +85,62 @@ def discover_local_gpus(
     """Discover local NVIDIA GPU facts without exposing them in host metadata.
 
     UUID/device ordering follows nvidia-smi so a user-selected multi-GPU order
-    can be preserved for runtime placement. Compute capability is best-effort:
-    older drivers that do not expose the query still provide UUID/VRAM facts.
+    can be preserved for runtime placement. Device class and compute capability
+    are best-effort: older drivers that do not expose every query still provide
+    UUID/VRAM facts.
     """
 
     try:
         rows = _run_nvidia_query(
             command,
-            ("uuid", "memory.total", "compute_cap"),
+            ("uuid", "memory.total", "name", "compute_cap"),
             run=run,
         )
     except HostDiscoveryError:
-        rows = _run_nvidia_query(
-            command,
-            ("uuid", "memory.total"),
-            run=run,
-        )
-        if not rows:
-            return ()
-        parsed: list[DiscoveredGpu] = []
-        for uuid, memory_raw in rows:
+        try:
+            rows = _run_nvidia_query(
+                command,
+                ("uuid", "memory.total", "name"),
+                run=run,
+            )
+        except HostDiscoveryError:
+            rows = _run_nvidia_query(
+                command,
+                ("uuid", "memory.total"),
+                run=run,
+            )
+            if not rows:
+                return ()
+            parsed: list[DiscoveredGpu] = []
+            for uuid, memory_raw in rows:
+                try:
+                    memory_mb = int(memory_raw)
+                except ValueError as exc:
+                    raise HostDiscoveryError(
+                        "nvidia-smi returned invalid GPU memory"
+                    ) from exc
+                parsed.append(DiscoveredGpu(uuid=uuid, memory_mb=memory_mb))
+            return tuple(parsed)
+
+        parsed = []
+        for uuid, memory_raw, device_class in rows:
             try:
                 memory_mb = int(memory_raw)
             except ValueError as exc:
                 raise HostDiscoveryError(
                     "nvidia-smi returned invalid GPU memory"
                 ) from exc
-            parsed.append(DiscoveredGpu(uuid=uuid, memory_mb=memory_mb))
+            parsed.append(
+                DiscoveredGpu(
+                    uuid=uuid,
+                    memory_mb=memory_mb,
+                    device_class=device_class,
+                )
+            )
         return tuple(parsed)
 
     parsed = []
-    for uuid, memory_raw, compute_capability in rows:
+    for uuid, memory_raw, device_class, compute_capability in rows:
         try:
             memory_mb = int(memory_raw)
         except ValueError as exc:
@@ -123,6 +152,7 @@ def discover_local_gpus(
                 uuid=uuid,
                 memory_mb=memory_mb,
                 compute_capability=compute_capability,
+                device_class=device_class,
             )
         )
     return tuple(parsed)
