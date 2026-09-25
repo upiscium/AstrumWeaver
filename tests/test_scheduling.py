@@ -235,3 +235,24 @@ def test_worker_per_device_facts_survive_control_serde_round_trip() -> None:
     assert restored.accelerators[0].uuid == "GPU-a"
     assert restored.accelerators[1].memory_mb == 12_288
     assert restored.accelerators[1].device_class == "NVIDIA RTX 3060"
+
+
+def test_accelerator_compute_capability_is_canonical_and_invalid_values_are_rejected() -> None:
+    assert AcceleratorDevice(
+        "GPU-a",
+        12_288,
+        compute_capability="8",
+    ).compute_capability == "8.0"
+    assert AcceleratorDevice(
+        "GPU-a",
+        12_288,
+        compute_capability="08.06",
+    ).compute_capability == "8.6"
+
+    for value in ("", "8.x", "garbage", "8.6.1", "-1.0"):
+        with pytest.raises(ValueError, match="compute capability"):
+            AcceleratorDevice(
+                "GPU-a",
+                12_288,
+                compute_capability=value,
+            )
