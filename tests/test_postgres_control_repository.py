@@ -317,6 +317,7 @@ def test_packaged_migration_entrypoint_is_idempotent() -> None:
     applied = apply_migrations(DATABASE_URL)
 
     assert "001_control_plane.sql" in applied
+    assert "002_worker_accelerators.sql" in applied
 
     repo = PostgresControlRepository(DATABASE_URL)
     repo.check_storage()
