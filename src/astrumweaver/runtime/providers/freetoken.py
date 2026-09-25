@@ -488,7 +488,9 @@ class FreeTokenExecutor(JobExecutor):
 
         vram_bytes = stats.get("vram_bytes")
         if isinstance(vram_bytes, int) and not isinstance(vram_bytes, bool):
-            if vram_bytes >= 0:
+            # FreeToken initializes this counter to zero before any measured
+            # GPU-memory sample arrives, so zero means "not observed yet".
+            if vram_bytes > 0:
                 accelerator_memory_bytes = vram_bytes
 
         model_stats = stats.get("model")
