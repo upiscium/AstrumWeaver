@@ -233,10 +233,14 @@ def default_runtime_catalog() -> RuntimeCatalog:
 
 def _confirm(io: TuiIO, prompt: str, *, default: bool = False) -> bool:
     suffix = " [Y/n]: " if default else " [y/N]: "
-    raw = io.ask(prompt + suffix).strip()
-    if not raw:
-        return default
-    return _parse_bool(raw)
+    while True:
+        raw = io.ask(prompt + suffix).strip()
+        if not raw:
+            return default
+        try:
+            return _parse_bool(raw)
+        except ValueError:
+            io.write("Enter yes/no (y/n).")
 
 
 def _ask_nonblank(io: TuiIO, prompt: str, *, default: str | None = None) -> str:
