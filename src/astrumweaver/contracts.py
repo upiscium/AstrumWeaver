@@ -8,6 +8,7 @@ GPUs, and a job describes what resource shape and capabilities it needs.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 from types import MappingProxyType
 from typing import Mapping
 
@@ -35,6 +36,28 @@ def _unique_strings(values: object, field_name: str) -> tuple[str, ...]:
         seen.add(item)
         normalized.append(item)
     return tuple(normalized)
+
+
+_COMPUTE_CAPABILITY_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)?$")
+
+
+def normalize_compute_capability(value: object) -> str:
+    """Validate and canonicalize an NVIDIA-style compute capability value."""
+    text = str(value).strip()
+    if not text or _COMPUTE_CAPABILITY_RE.fullmatch(text) is None:
+        raise ValueError(
+            "compute capability must use a numeric major or major.minor value"
+        )
+    major_text, separator, minor_text = text.partition(".")
+    major = int(major_text)
+    minor = int(minor_text) if separator else 0
+    return f"{major}.{minor}"
+
+
+def compute_capability_key(value: object) -> tuple[int, int]:
+    normalized = normalize_compute_capability(value)
+    major_text, minor_text = normalized.split(".", 1)
+    return int(major_text), int(minor_text)
 
 
 def _normalize_labels(labels: Mapping[str, str] | None) -> Mapping[str, str]:
@@ -68,11 +91,10 @@ class AcceleratorDevice:
         if self.memory_mb <= 0:
             raise ValueError("accelerator memory_mb must be positive")
         if self.compute_capability is not None:
-            value = str(self.compute_capability).strip()
             object.__setattr__(
                 self,
                 "compute_capability",
-                value or None,
+                normalize_compute_capability(self.compute_capability),
             )
         if self.device_class is not None:
             value = str(self.device_class).strip()
