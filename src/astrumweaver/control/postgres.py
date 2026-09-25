@@ -11,6 +11,7 @@ from uuid import uuid4
 from ..contracts import AcceleratorDevice, ResourceShape, WorkerSpec
 from ..execution import JobResult
 from ..scheduling import worker_matches
+from .migrate import required_migration_names
 from .models import (
     JobRecord,
     JobStatus,
@@ -55,16 +56,41 @@ class PostgresControlRepository:
     """Transactional PostgreSQL control-plane repository."""
 
     def check_storage(self) -> None:
+        try:
+            required = required_migration_names()
+        except RuntimeError as exc:
+            raise StorageUnavailable(
+                "postgresql migration metadata is unavailable"
+            ) from exc
+
         with self._connection() as connection:
             row = connection.execute(
                 """
                 SELECT
                     to_regclass('public.workers') AS workers,
-                    to_regclass('public.jobs') AS jobs
+                    to_regclass('public.jobs') AS jobs,
+                    to_regclass('public.schema_migrations') AS schema_migrations
                 """
             ).fetchone()
-        if not row or row.get("workers") is None or row.get("jobs") is None:
-            raise StorageUnavailable("postgresql schema is unavailable")
+            if (
+                not row
+                or row.get("workers") is None
+                or row.get("jobs") is None
+                or row.get("schema_migrations") is None
+            ):
+                raise StorageUnavailable("postgresql schema is unavailable")
+
+            applied_rows = connection.execute(
+                "SELECT name FROM schema_migrations"
+            ).fetchall()
+
+        applied = {str(item["name"]) for item in applied_rows}
+        missing = [name for name in required if name not in applied]
+        if missing:
+            raise StorageUnavailable(
+                "postgresql schema migrations are incomplete: "
+                + ", ".join(missing)
+            )
 
 
     def __init__(
