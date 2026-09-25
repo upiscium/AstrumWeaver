@@ -757,6 +757,20 @@ async def test_residency_does_not_invent_memory_bytes() -> None:
 
 
 @pytest.mark.asyncio
+async def test_residency_treats_zero_vram_as_unobserved() -> None:
+    executor = FreeTokenExecutor(
+        api=FakeApi(stats={"vram_bytes": 0}),
+        model_ref="Qwen/Qwen3-30B-A3B",
+        served_model_name="astrumweaver",
+        residency_metadata={},
+    )
+
+    report = await executor.residency()
+
+    assert report.items[0].accelerator_memory_bytes is None
+
+
+@pytest.mark.asyncio
 async def test_residency_uses_measured_vram_when_stats_reports_it() -> None:
     executor = FreeTokenExecutor(
         api=FakeApi(
