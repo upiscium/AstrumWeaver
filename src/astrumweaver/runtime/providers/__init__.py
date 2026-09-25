@@ -59,6 +59,19 @@ __all__ = [
     "FreeTokenProviderConfig",
     "FreeTokenSubprocessController",
     "HttpFreeTokenApi",
+    "EXLLAMAV3_CAPABILITIES",
+    "EXLLAMAV3_MODEL_FORMATS",
+    "EXLLAMAV3_PROVIDER_ID",
+    "ExLlamaMultiGpuMode",
+    "ExLlamaV3Api",
+    "ExLlamaV3Executor",
+    "ExLlamaV3LaunchPolicy",
+    "ExLlamaV3ManagedRuntime",
+    "ExLlamaV3ProcessController",
+    "ExLlamaV3Provider",
+    "ExLlamaV3ProviderConfig",
+    "ExLlamaV3SubprocessController",
+    "HttpExLlamaV3Api",
 ]
 
 
@@ -108,4 +121,21 @@ from .freetoken import (
     FreeTokenProviderConfig,
     FreeTokenSubprocessController,
     HttpFreeTokenApi,
+)
+
+
+from .exllamav3 import (
+    EXLLAMAV3_CAPABILITIES,
+    EXLLAMAV3_MODEL_FORMATS,
+    EXLLAMAV3_PROVIDER_ID,
+    ExLlamaMultiGpuMode,
+    ExLlamaV3Api,
+    ExLlamaV3Executor,
+    ExLlamaV3LaunchPolicy,
+    ExLlamaV3ManagedRuntime,
+    ExLlamaV3ProcessController,
+    ExLlamaV3Provider,
+    ExLlamaV3ProviderConfig,
+    ExLlamaV3SubprocessController,
+    HttpExLlamaV3Api,
 )
