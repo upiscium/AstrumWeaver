@@ -261,6 +261,25 @@ def test_worker_shape_preserves_selected_gpu_order_and_min_compute_capability() 
     assert worker.labels["gpu.compute_capability.min"] == "8.0"
 
 
+def test_yes_no_prompt_retries_after_typo() -> None:
+    io = ScriptedIO(
+        [
+            "ye",
+            "y",
+            "",  # gpu memory utilization
+            "",  # tensor parallel size
+            "",  # expert parallel
+            "",  # CPU offload
+            "",  # enforce eager
+        ]
+    )
+
+    configured = configure_provider(io, VllmProvider())
+
+    assert configured.config == VllmProvider().config
+    assert "Enter yes/no (y/n)." in io.output
+
+
 def test_runtime_specific_option_editor_rebuilds_selected_provider_only() -> None:
     io = ScriptedIO(
         [
