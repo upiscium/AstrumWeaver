@@ -74,6 +74,7 @@ Proxmox is a supported deployment environment, not an AstrumWeaver dependency. A
 - [Hardware E2E Acceptance](docs/hardware-e2e.md)
 - [Runtime Providers and Execution Demand](docs/runtime-providers.md)
 - [Runtime Setup Backend](docs/runtime-setup.md)
+- [Interactive Worker/runtime Setup TUI](docs/setup-tui.md)
 
 ## License
 

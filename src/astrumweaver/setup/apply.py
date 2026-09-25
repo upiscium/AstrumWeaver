@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Protocol, runtime_checkable
 
 from .contracts import (
@@ -154,6 +155,8 @@ def _validate_approval(
 def _rollback(
     driver: SetupActionDriver,
     applied: list[tuple[SetupAction, ActionReceipt]],
+    *,
+    on_result: Callable[[SetupActionResult], None] | None = None,
 ) -> tuple[SetupActionResult, ...]:
     results: list[SetupActionResult] = []
     for action, receipt in reversed(applied):
@@ -162,29 +165,29 @@ def _rollback(
         try:
             rollback_receipt = driver.rollback(action, receipt)
         except Exception as exc:
-            results.append(
-                SetupActionResult(
-                    action_id=action.action_id,
-                    kind=action.kind,
-                    status=SetupActionResultStatus.ROLLBACK_FAILED,
-                    changed=False,
-                    detail=(
-                        f"rollback failed: {type(exc).__name__}"
-                    ),
-                )
-            )
-            continue
-
-        results.append(
-            SetupActionResult(
+            result = SetupActionResult(
                 action_id=action.action_id,
                 kind=action.kind,
-                status=SetupActionResultStatus.ROLLED_BACK,
-                changed=rollback_receipt.changed,
-                detail=rollback_receipt.detail,
-                evidence=rollback_receipt.evidence,
+                status=SetupActionResultStatus.ROLLBACK_FAILED,
+                changed=False,
+                detail=f"rollback failed: {type(exc).__name__}",
             )
+            results.append(result)
+            if on_result is not None:
+                on_result(result)
+            continue
+
+        result = SetupActionResult(
+            action_id=action.action_id,
+            kind=action.kind,
+            status=SetupActionResultStatus.ROLLED_BACK,
+            changed=rollback_receipt.changed,
+            detail=rollback_receipt.detail,
+            evidence=rollback_receipt.evidence,
         )
+        results.append(result)
+        if on_result is not None:
+            on_result(result)
     return tuple(results)
 
 
@@ -194,6 +197,7 @@ def apply_plan(
     *,
     approval: SetupApproval,
     rollback_on_failure: bool = True,
+    on_result: Callable[[SetupActionResult], None] | None = None,
 ) -> SetupApplyResult:
     """Apply one exact reviewed plan.
 
@@ -211,17 +215,18 @@ def apply_plan(
         try:
             inspection = driver.inspect(action)
         except Exception as exc:
-            action_results.append(
-                SetupActionResult(
-                    action_id=action.action_id,
-                    kind=action.kind,
-                    status=SetupActionResultStatus.FAILED,
-                    changed=False,
-                    detail=f"inspection failed: {type(exc).__name__}",
-                )
+            result = SetupActionResult(
+                action_id=action.action_id,
+                kind=action.kind,
+                status=SetupActionResultStatus.FAILED,
+                changed=False,
+                detail=f"inspection failed: {type(exc).__name__}",
             )
+            action_results.append(result)
+            if on_result is not None:
+                on_result(result)
             rollback = (
-                _rollback(driver, applied)
+                _rollback(driver, applied, on_result=on_result)
                 if rollback_on_failure
                 else ()
             )
@@ -233,29 +238,31 @@ def apply_plan(
             )
 
         if inspection.state is SetupActionState.SATISFIED:
-            action_results.append(
-                SetupActionResult(
-                    action_id=action.action_id,
-                    kind=action.kind,
-                    status=SetupActionResultStatus.SKIPPED,
-                    changed=False,
-                    detail=inspection.detail or "already satisfied",
-                )
+            result = SetupActionResult(
+                action_id=action.action_id,
+                kind=action.kind,
+                status=SetupActionResultStatus.SKIPPED,
+                changed=False,
+                detail=inspection.detail or "already satisfied",
             )
+            action_results.append(result)
+            if on_result is not None:
+                on_result(result)
             continue
 
         if inspection.state is SetupActionState.BLOCKED:
-            action_results.append(
-                SetupActionResult(
-                    action_id=action.action_id,
-                    kind=action.kind,
-                    status=SetupActionResultStatus.BLOCKED,
-                    changed=False,
-                    detail=inspection.detail or "action is blocked",
-                )
+            result = SetupActionResult(
+                action_id=action.action_id,
+                kind=action.kind,
+                status=SetupActionResultStatus.BLOCKED,
+                changed=False,
+                detail=inspection.detail or "action is blocked",
             )
+            action_results.append(result)
+            if on_result is not None:
+                on_result(result)
             rollback = (
-                _rollback(driver, applied)
+                _rollback(driver, applied, on_result=on_result)
                 if rollback_on_failure
                 else ()
             )
@@ -269,17 +276,18 @@ def apply_plan(
         try:
             receipt = driver.apply(action)
         except Exception as exc:
-            action_results.append(
-                SetupActionResult(
-                    action_id=action.action_id,
-                    kind=action.kind,
-                    status=SetupActionResultStatus.FAILED,
-                    changed=False,
-                    detail=f"apply failed: {type(exc).__name__}",
-                )
+            result = SetupActionResult(
+                action_id=action.action_id,
+                kind=action.kind,
+                status=SetupActionResultStatus.FAILED,
+                changed=False,
+                detail=f"apply failed: {type(exc).__name__}",
             )
+            action_results.append(result)
+            if on_result is not None:
+                on_result(result)
             rollback = (
-                _rollback(driver, applied)
+                _rollback(driver, applied, on_result=on_result)
                 if rollback_on_failure
                 else ()
             )
@@ -296,16 +304,17 @@ def apply_plan(
         else:
             status = SetupActionResultStatus.SKIPPED
 
-        action_results.append(
-            SetupActionResult(
-                action_id=action.action_id,
-                kind=action.kind,
-                status=status,
-                changed=receipt.changed,
-                detail=receipt.detail,
-                evidence=receipt.evidence,
-            )
+        result = SetupActionResult(
+            action_id=action.action_id,
+            kind=action.kind,
+            status=status,
+            changed=receipt.changed,
+            detail=receipt.detail,
+            evidence=receipt.evidence,
         )
+        action_results.append(result)
+        if on_result is not None:
+            on_result(result)
 
     return SetupApplyResult(
         plan_digest=plan.digest,

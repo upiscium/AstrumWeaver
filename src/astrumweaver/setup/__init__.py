@@ -32,7 +32,12 @@ from .contracts import (
     SetupPlanGoal,
     SetupPreview,
 )
-from .discovery import HostDiscoveryError, discover_local_host
+from .discovery import (
+    DiscoveredGpu,
+    HostDiscoveryError,
+    discover_local_gpus,
+    discover_local_host,
+)
 from .planner import (
     SetupPlanningError,
     build_runtime_release_plan,
@@ -43,6 +48,7 @@ __all__ = [
     "ActionInspection",
     "ActionReceipt",
     "DeploymentPath",
+    "DiscoveredGpu",
     "HostDiscoveryError",
     "PrivilegeMode",
     "SecretReference",
@@ -65,6 +71,7 @@ __all__ = [
     "apply_plan",
     "build_runtime_release_plan",
     "build_runtime_setup_plan",
+    "discover_local_gpus",
     "discover_local_host",
     "dry_run_plan",
     "explain_plan",
