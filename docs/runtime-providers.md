@@ -236,7 +236,7 @@ AstrumWeaver must not download arbitrary models merely because a provider suppor
 | [llama.cpp](runtime-llama-cpp.md) | GGUF, CPU/GPU hybrid, heterogeneous multi-GPU |
 | [vLLM](runtime-vllm.md) | GPU-resident/high-throughput, tensor/expert parallel |
 | [FreeToken](runtime-freetoken.md) | RAM-heavy / VRAM-constrained MoE |
-| ExLlamaV3 | quantized consumer-NVIDIA VRAM-resident serving |
+| [ExLlamaV3](runtime-exllamav3.md) | quantized consumer-NVIDIA VRAM-resident serving |
 
 This table is product intent, not hard-coded planner logic.
 
