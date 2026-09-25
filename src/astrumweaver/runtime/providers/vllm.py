@@ -696,19 +696,54 @@ class VllmProvider(RuntimeProvider):
                         ),
                     )
                 )
-            if (
-                resources.total_vram_mb
-                != resources.max_single_gpu_vram_mb * resources.gpu_count
-            ):
+            accelerators = context.worker.accelerators
+            if len(accelerators) != resources.gpu_count:
                 reasons.append(
                     CompatibilityReason(
-                        code="heterogeneous-vram-unsupported",
+                        code="accelerator-facts-required",
                         message=(
-                            "vLLM multi-GPU v0.x requires equal VRAM capacity "
-                            "across Worker GPUs"
+                            "vLLM homogeneous multi-GPU validation requires "
+                            "per-device accelerator facts for every Worker GPU"
                         ),
                     )
                 )
+            else:
+                memory_sizes = {device.memory_mb for device in accelerators}
+                compute_capabilities = {
+                    device.compute_capability for device in accelerators
+                }
+                device_classes = {device.device_class for device in accelerators}
+
+                if len(memory_sizes) != 1:
+                    reasons.append(
+                        CompatibilityReason(
+                            code="heterogeneous-vram-unsupported",
+                            message=(
+                                "vLLM multi-GPU v0.x requires equal per-device "
+                                "VRAM capacity"
+                            ),
+                        )
+                    )
+                if None in compute_capabilities or len(compute_capabilities) != 1:
+                    reasons.append(
+                        CompatibilityReason(
+                            code="heterogeneous-compute-capability-unsupported",
+                            message=(
+                                "vLLM homogeneous multi-GPU validation requires "
+                                "the same known compute capability on every GPU"
+                            ),
+                        )
+                    )
+                if None in device_classes or len(device_classes) != 1:
+                    reasons.append(
+                        CompatibilityReason(
+                            code="heterogeneous-device-class-unsupported",
+                            message=(
+                                "vLLM homogeneous multi-GPU validation requires "
+                                "the same known device class on every GPU"
+                            ),
+                        )
+                    )
 
         if policy.enable_expert_parallel:
             if model.topology is not ModelTopology.MOE:
