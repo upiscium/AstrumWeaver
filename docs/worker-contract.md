@@ -120,11 +120,13 @@ Aggregate resource shape is not sufficient to validate every runtime topology.
 
 - UUID
 - VRAM capacity
-- compute capability when known
+- compute capability when known, canonicalized as numeric `major.minor`
 - device class/model identity when known
 
 When present, the accelerator tuple must exactly match `gpu_uuids` order and
-the aggregate VRAM totals in `ResourceShape`.
+the aggregate VRAM totals in `ResourceShape`. Compute capability evidence is
+validated at `AcceleratorDevice` construction; malformed strings are rejected
+instead of becoming compatibility evidence.
 
 These facts are durable Worker state, not TUI-only metadata. Runtime providers
 may require them before making claims such as "homogeneous multi-GPU".
