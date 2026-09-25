@@ -26,6 +26,21 @@ class SetupApprovalError(RuntimeError):
     pass
 
 
+def _emit_result(
+    callback: Callable[[SetupActionResult], None] | None,
+    result: SetupActionResult,
+) -> None:
+    """Notify a best-effort observer without affecting apply/rollback semantics."""
+    if callback is None:
+        return
+    try:
+        callback(result)
+    except Exception:
+        # Progress observers are non-transactional side channels. A broken UI,
+        # logger, pipe, or other observer must never alter mutation or rollback.
+        return
+
+
 @runtime_checkable
 class SetupActionDriver(Protocol):
     """Deployment-specific action implementation supplied by #31."""
@@ -173,8 +188,7 @@ def _rollback(
                 detail=f"rollback failed: {type(exc).__name__}",
             )
             results.append(result)
-            if on_result is not None:
-                on_result(result)
+            _emit_result(on_result, result)
             continue
 
         result = SetupActionResult(
@@ -186,8 +200,7 @@ def _rollback(
             evidence=rollback_receipt.evidence,
         )
         results.append(result)
-        if on_result is not None:
-            on_result(result)
+        _emit_result(on_result, result)
     return tuple(results)
 
 
@@ -223,8 +236,7 @@ def apply_plan(
                 detail=f"inspection failed: {type(exc).__name__}",
             )
             action_results.append(result)
-            if on_result is not None:
-                on_result(result)
+            _emit_result(on_result, result)
             rollback = (
                 _rollback(driver, applied, on_result=on_result)
                 if rollback_on_failure
@@ -246,8 +258,7 @@ def apply_plan(
                 detail=inspection.detail or "already satisfied",
             )
             action_results.append(result)
-            if on_result is not None:
-                on_result(result)
+            _emit_result(on_result, result)
             continue
 
         if inspection.state is SetupActionState.BLOCKED:
@@ -259,8 +270,7 @@ def apply_plan(
                 detail=inspection.detail or "action is blocked",
             )
             action_results.append(result)
-            if on_result is not None:
-                on_result(result)
+            _emit_result(on_result, result)
             rollback = (
                 _rollback(driver, applied, on_result=on_result)
                 if rollback_on_failure
@@ -284,8 +294,7 @@ def apply_plan(
                 detail=f"apply failed: {type(exc).__name__}",
             )
             action_results.append(result)
-            if on_result is not None:
-                on_result(result)
+            _emit_result(on_result, result)
             rollback = (
                 _rollback(driver, applied, on_result=on_result)
                 if rollback_on_failure
@@ -313,8 +322,7 @@ def apply_plan(
             evidence=receipt.evidence,
         )
         action_results.append(result)
-        if on_result is not None:
-            on_result(result)
+        _emit_result(on_result, result)
 
     return SetupApplyResult(
         plan_digest=plan.digest,
