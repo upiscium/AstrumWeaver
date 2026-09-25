@@ -10,7 +10,12 @@ import pytest
 from astrumweaver.execution import JobExecutor, JobRequest, JobResult, ResidencyReport
 from astrumweaver.runtime import (
     CompatibilityReason,
+    ExecutionDemand,
+    GPUTopology,
     ManagedRuntime,
+    ModelDemand,
+    ModelTopology,
+    ResidencyPolicy,
     RuntimeCatalog,
     RuntimeCompatibility,
     RuntimeCompatibilityContext,
@@ -19,7 +24,7 @@ from astrumweaver.runtime import (
     RuntimeProviderInfo,
     RuntimeSetupIntent,
 )
-from astrumweaver.runtime.providers import VllmProvider
+from astrumweaver.runtime.providers import ExLlamaV3Provider, VllmProvider
 from astrumweaver.setup import (
     ActionInspection,
     ActionReceipt,
@@ -254,6 +259,66 @@ def test_discover_local_gpus_falls_back_when_compute_query_is_unavailable() -> N
             device_class="NVIDIA RTX 3090",
         ),
     )
+
+
+def test_nvidia_na_compute_capability_remains_unknown_and_setup_works() -> None:
+    def run(args, **kwargs):
+        assert "--query-gpu=uuid,memory.total,name,compute_cap" in args
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout="GPU-a, 24576, NVIDIA RTX 3090, N/A\n",
+            stderr="",
+        )
+
+    gpus = discover_local_gpus(run=run)
+
+    assert gpus == (
+        DiscoveredGpu(
+            uuid="GPU-a",
+            memory_mb=24576,
+            compute_capability=None,
+            device_class="NVIDIA RTX 3090",
+        ),
+    )
+    assert DiscoveredGpu(
+        uuid="GPU-b",
+        memory_mb=12288,
+        device_class="N/A",
+    ).device_class is None
+
+    worker = build_worker_spec(
+        worker_id="worker-na-capability",
+        worker_class="gpu-single",
+        gpus=gpus,
+    )
+    assert worker.accelerators[0].compute_capability is None
+    assert "gpu.compute_capability.min" not in worker.labels
+
+    report = ExLlamaV3Provider().compatibility(
+        RuntimeCompatibilityContext(
+            worker=worker,
+            host=snapshot().runtime_host,
+            demand=ExecutionDemand(
+                model=ModelDemand(
+                    model_ref="example/Qwen-EXL3",
+                    model_format="exl3",
+                    topology=ModelTopology.DENSE,
+                    estimated_size_mb=12000,
+                ),
+                residency_policy=ResidencyPolicy.PREFER_VRAM,
+                gpu_topology=GPUTopology.SINGLE_GPU,
+            ),
+        )
+    )
+
+    assert report.compatible
+    reason = next(
+        reason
+        for reason in report.reasons
+        if reason.code == "compute-capability-unverified"
+    )
+    assert reason.blocking is False
 
 
 def test_worker_shape_preserves_selected_gpu_order_and_min_compute_capability() -> None:
