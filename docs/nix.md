@@ -224,9 +224,24 @@ fails runtime startup rather than triggering an unreviewed download.
 store and therefore must remain non-secret. Credentials stay in
 `environmentFile` or another protected secret mechanism.
 
-The exact-set GPU preflight remains authoritative. If the host exposes more GPUs
-than `gpuUuids`, the Worker fails closed unless the surrounding deployment has
-already isolated the process-visible device set.
+The exact-set GPU preflight remains authoritative. For a host-visible GPU
+superset, enable `gpuIsolation` and declare the exact UUID→`/dev/nvidiaN`
+mapping:
+
+```nix
+gpuIsolation = {
+  enable = true;
+  deviceMap."GPU-example-a" = "/dev/nvidia0";
+};
+```
+
+The module verifies that mapping in a separate host-level oneshot service, then
+runs the Worker under `DevicePolicy=closed` with only the selected physical
+GPU nodes plus configured shared NVIDIA control/UVM nodes. The existing
+`gpu-preflight` still runs inside the restricted Worker cgroup.
+
+See [Runtime Deployment GPU Isolation Acceptance](runtime-deployment-acceptance.md)
+for the real-host acceptance contract.
 
 ## Control module
 
