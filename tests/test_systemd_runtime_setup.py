@@ -183,7 +183,7 @@ def test_systemd_model_download_requires_explicit_preparer(
     assert "explicit reviewed model command" in inspection.detail
 
 
-def test_systemd_gpu_preflight_accepts_exact_set_and_rejects_host_superset(
+def test_systemd_gpu_preflight_accepts_exact_set_and_rejects_unisolated_superset(
     tmp_path: Path,
 ) -> None:
     worker_config = tmp_path / "worker.toml"
@@ -221,4 +221,58 @@ def test_systemd_gpu_preflight_accepts_exact_set_and_rejects_host_superset(
 
     assert exact_result.state is SetupActionState.SATISFIED
     assert superset_result.state is SetupActionState.BLOCKED
-    assert "GPU visibility preflight failed" in superset_result.detail
+    assert "no verified service device isolation" in superset_result.detail
+
+
+def test_systemd_gpu_preflight_accepts_host_superset_with_verified_device_isolation(
+    tmp_path: Path,
+) -> None:
+    worker_config = tmp_path / "worker.toml"
+    worker_config.write_text(
+        '[worker]\ngpu_uuids = ["GPU-a"]\n',
+        encoding="utf-8",
+    )
+    manifest = tmp_path / "runtime.json"
+    manifest.write_text("{}\n", encoding="utf-8")
+    expected = tmp_path / "gpu-uuids"
+    expected.write_text("GPU-a\n", encoding="utf-8")
+    device_map = tmp_path / "gpu-device-map"
+    device_map.write_text("GPU-a=/dev/nvidia0\n", encoding="utf-8")
+    dropin = tmp_path / "10-gpu-isolation.conf"
+    dropin.write_text(
+        "[Service]\n"
+        "DevicePolicy=closed\n"
+        "DeviceAllow=/dev/nvidia0 rw\n"
+        "DeviceAllow=/dev/nvidiactl rw\n"
+        "Environment=CUDA_VISIBLE_DEVICES=GPU-a\n",
+        encoding="utf-8",
+    )
+    verifier = tmp_path / "gpu-device-map-verify"
+    verifier.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    verifier.chmod(0o755)
+
+    superset_dir = tmp_path / "isolated-superset"
+    superset_dir.mkdir()
+    driver = SystemdSetupDriver(
+        worker_config_path=worker_config,
+        runtime_manifest_path=manifest,
+        gpu_uuid_file_path=expected,
+        gpu_device_map_path=device_map,
+        gpu_isolation_dropin_path=dropin,
+        gpu_device_map_command=str(verifier),
+        nvidia_smi=fake_nvidia_smi(
+            superset_dir,
+            "GPU-a\nGPU-b",
+        ),
+    )
+
+    result = driver.inspect(
+        action(
+            SetupActionKind.PREFLIGHT,
+            payload={"provider_id": "ollama"},
+        )
+    )
+
+    assert result.state is SetupActionState.SATISFIED
+    assert "device-cgroup isolation is verified" in result.detail
+    assert "ExecStartPre must still prove the exact set" in result.detail
