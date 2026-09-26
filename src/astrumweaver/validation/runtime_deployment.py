@@ -47,7 +47,7 @@ class SystemdRuntimeDeploymentHost:
         worker_config: Path,
         systemctl: str = "systemctl",
         nvidia_smi: str = "nvidia-smi",
-        health_url: str = "http://127.0.0.1:9100/ready",
+        health_url: str = "http://127.0.0.1:9100/health",
     ) -> None:
         self.service = service
         self.worker_config = worker_config
@@ -133,7 +133,10 @@ class SystemdRuntimeDeploymentHost:
             return None
         if response.status_code != 200:
             return None
-        body = response.json()
+        try:
+            body = response.json()
+        except ValueError:
+            return None
         return body if isinstance(body, dict) else None
 
 
@@ -397,7 +400,7 @@ def main() -> None:
     parser.add_argument("--nvidia-smi", default="nvidia-smi")
     parser.add_argument(
         "--health-url",
-        default="http://127.0.0.1:9100/ready",
+        default="http://127.0.0.1:9100/health",
     )
     parser.add_argument(
         "--start-timeout-seconds",
