@@ -72,14 +72,17 @@ class RuntimeDeploymentSpec:
     provider_id: str
     provider_config: Mapping[str, Any]
     demand: ExecutionDemand
-    setup_intent: RuntimeSetupIntent
+    setup_intent: RuntimeSetupIntent | None = None
     schema_version: str = "v1"
 
     def __post_init__(self) -> None:
         provider_id = str(self.provider_id).strip()
         if not provider_id:
             raise ValueError("provider_id must not be blank")
-        if self.setup_intent.provider_id != provider_id:
+        if (
+            self.setup_intent is not None
+            and self.setup_intent.provider_id != provider_id
+        ):
             raise ValueError(
                 "runtime deployment setup intent changed provider identity"
             )
@@ -125,23 +128,29 @@ class RuntimeDeploymentSpec:
                 ),
                 "metadata": _json_value(self.demand.metadata),
             },
-            "setup_intent": {
-                "provider_id": self.setup_intent.provider_id,
-                "package_references": list(
-                    self.setup_intent.package_references
-                ),
-                "configuration": _json_value(
-                    self.setup_intent.configuration
-                ),
-                "model_preparation": (
-                    self.setup_intent.model_preparation.value
-                ),
-                "model_ref": self.setup_intent.model_ref,
-                "requires_privilege": (
-                    self.setup_intent.requires_privilege
-                ),
-                "metadata": _json_value(self.setup_intent.metadata),
-            },
+            "setup_intent": (
+                None
+                if self.setup_intent is None
+                else {
+                    "provider_id": self.setup_intent.provider_id,
+                    "package_references": list(
+                        self.setup_intent.package_references
+                    ),
+                    "configuration": _json_value(
+                        self.setup_intent.configuration
+                    ),
+                    "model_preparation": (
+                        self.setup_intent.model_preparation.value
+                    ),
+                    "model_ref": self.setup_intent.model_ref,
+                    "requires_privilege": (
+                        self.setup_intent.requires_privilege
+                    ),
+                    "metadata": _json_value(
+                        self.setup_intent.metadata
+                    ),
+                }
+            ),
         }
 
     @classmethod
@@ -152,7 +161,10 @@ class RuntimeDeploymentSpec:
         data = dict(value)
         demand_data = dict(data["demand"])
         model_data = dict(demand_data["model"])
-        intent_data = dict(data["setup_intent"])
+        raw_intent = data.get("setup_intent")
+        intent_data = (
+            None if raw_intent is None else dict(raw_intent)
+        )
         return cls(
             schema_version=str(data.get("schema_version", "v1")),
             provider_id=str(data["provider_id"]),
@@ -188,28 +200,37 @@ class RuntimeDeploymentSpec:
                 ),
                 metadata=dict(demand_data.get("metadata") or {}),
             ),
-            setup_intent=RuntimeSetupIntent(
-                provider_id=str(intent_data["provider_id"]),
-                package_references=tuple(
-                    str(item)
-                    for item in intent_data.get(
-                        "package_references", ()
-                    )
-                ),
-                configuration=dict(
-                    intent_data.get("configuration") or {}
-                ),
-                model_preparation=ModelPreparationPolicy(
-                    str(intent_data.get(
-                        "model_preparation",
-                        ModelPreparationPolicy.REFERENCE_ONLY.value,
-                    ))
-                ),
-                model_ref=intent_data.get("model_ref"),
-                requires_privilege=bool(
-                    intent_data.get("requires_privilege", False)
-                ),
-                metadata=dict(intent_data.get("metadata") or {}),
+            setup_intent=(
+                None
+                if intent_data is None
+                else RuntimeSetupIntent(
+                    provider_id=str(intent_data["provider_id"]),
+                    package_references=tuple(
+                        str(item)
+                        for item in intent_data.get(
+                            "package_references", ()
+                        )
+                    ),
+                    configuration=dict(
+                        intent_data.get("configuration") or {}
+                    ),
+                    model_preparation=ModelPreparationPolicy(
+                        str(intent_data.get(
+                            "model_preparation",
+                            ModelPreparationPolicy.REFERENCE_ONLY.value,
+                        ))
+                    ),
+                    model_ref=intent_data.get("model_ref"),
+                    requires_privilege=bool(
+                        intent_data.get(
+                            "requires_privilege",
+                            False,
+                        )
+                    ),
+                    metadata=dict(
+                        intent_data.get("metadata") or {}
+                    ),
+                )
             ),
         )
 
@@ -334,9 +355,14 @@ def managed_runtime_from_deployment(
             "persisted runtime deployment is incompatible with current "
             f"Worker/host facts: {detail}"
         )
+    setup_intent = (
+        deployment.setup_intent
+        if deployment.setup_intent is not None
+        else provider.setup_intent(context)
+    )
     return provider.create_runtime(
         context,
-        deployment.setup_intent,
+        setup_intent,
     )
 
 
