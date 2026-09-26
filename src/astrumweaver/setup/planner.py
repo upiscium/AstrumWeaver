@@ -102,7 +102,11 @@ def build_runtime_setup_plan(
         raise SetupPlanningError(
             "runtime provider setup intent changed provider identity"
         )
-    deployment = build_runtime_deployment_spec(provider, context)
+    deployment = build_runtime_deployment_spec(
+        provider,
+        context,
+        setup_intent=intent,
+    )
 
     actions: list[SetupAction] = []
     builder = _ActionBuilder(actions)
