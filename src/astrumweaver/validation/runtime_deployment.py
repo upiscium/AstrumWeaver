@@ -208,7 +208,7 @@ class RuntimeDeploymentAcceptanceRunner:
             if (
                 payload is not None
                 and payload.get("ready") is True
-                and payload.get("registered") is not False
+                and payload.get("registered") is True
             ):
                 return payload
             if self._monotonic() >= deadline:
@@ -253,10 +253,11 @@ class RuntimeDeploymentAcceptanceRunner:
             )
 
         expected_visible = ",".join(expected)
-        if (
-            f"Environment=CUDA_VISIBLE_DEVICES={expected_visible}"
-            not in unit_text
-        ):
+        visible_matches = re.findall(
+            r"CUDA_VISIBLE_DEVICES=([^\"'\s]+)",
+            unit_text,
+        )
+        if visible_matches != [expected_visible]:
             raise RuntimeDeploymentAcceptanceError(
                 "Worker CUDA_VISIBLE_DEVICES does not preserve selected GPU order"
             )
