@@ -158,6 +158,11 @@
           ${worker}/bin/astrumweaver-hardware-accept --help >/dev/null
           touch "$out"
         '';
+        runtime-deployment-accept-cli = pkgs.runCommand "astrumweaver-runtime-deployment-accept-cli" { } ''
+          test -x ${worker}/bin/astrumweaver-runtime-deployment-accept
+          ${worker}/bin/astrumweaver-runtime-deployment-accept --help >/dev/null
+          touch "$out"
+        '';
         runtime-module-eval = pkgs.runCommand "astrumweaver-runtime-module-eval" {
           inherit
             runtimeWorkerExec
