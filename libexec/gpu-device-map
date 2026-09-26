@@ -25,7 +25,7 @@ USAGE
 [[ $# -ge 2 ]] || usage
 MODE="$1"
 EXPECTED_FILE="$2"
-MAP_FILE="\${3:-}"
+MAP_FILE="${3:-}"
 
 [[ "$MODE" == "discover" || "$MODE" == "verify" ]] || usage
 [[ -f "$EXPECTED_FILE" ]] || die "expected GPU UUID file is missing"
