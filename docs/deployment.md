@@ -94,6 +94,45 @@ For a live install it verifies `nvidia-smi` before the worker can be started.
 
 The systemd unit repeats exact UUID preflight as `ExecStartPre`, so reboot/service restart cannot silently start a worker against a changed GPU set.
 
+### RuntimeProvider manifest
+
+A generic systemd Worker can persist an already-reviewed
+`RuntimeDeploymentSpec` alongside the Worker configuration:
+
+```sh
+sudo astrumweaver-setup-gpu-worker \
+  --config ./worker.toml \
+  --environment-file ./worker.env \
+  --runtime-manifest ./runtime-deployment.json \
+  --gpu-uuid GPU-example-a
+```
+
+The manifest is installed as
+`/etc/astrumweaver/runtime-deployment.json` and passed explicitly to the
+Worker daemon. It contains provider identity, non-secret provider
+configuration and execution demand; secret values remain in the protected
+EnvironmentFile.
+
+The Worker starts the ManagedRuntime and waits for its readiness before
+registering with Control. Worker service shutdown also stops/releases the
+ManagedRuntime. A cleanup failure is surfaced rather than treated as a
+successful release.
+
+For interactive application of a SetupPlan, use the first-party systemd
+driver:
+
+```sh
+sudo astrumweaver-setup-tui \
+  --driver astrumweaver.setup.systemd:create_systemd_driver
+```
+
+The runtime driver does not guess installers. Package installation and
+download/conversion actions remain BLOCKED unless the operator supplies a
+reviewed argv command through
+`ASTRUMWEAVER_RUNTIME_INSTALLERS_JSON`,
+`ASTRUMWEAVER_RUNTIME_DOWNLOADERS_JSON`, or
+`ASTRUMWEAVER_RUNTIME_CONVERTERS_JSON`.
+
 ## Exact GPU identity
 
 The worker preflight compares sets, not ordinals.
@@ -213,4 +252,17 @@ worker process starts
 worker may register with Control
 ```
 
-Therefore worker registration cannot occur before the local GPU identity gate passes.
+For RuntimeProvider-backed Workers the ordering is stricter:
+
+```text
+exact UUID preflight
+    ↓
+ManagedRuntime start + provider health/model readiness
+    ↓
+Worker registration
+    ↓
+job claims
+```
+
+Therefore Worker registration cannot occur before either the local GPU identity
+gate or selected runtime readiness passes.
