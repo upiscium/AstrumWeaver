@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import platform
 from dataclasses import asdict, dataclass, is_dataclass
 from enum import Enum
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
 
@@ -232,6 +235,45 @@ _PROVIDER_TYPES: Mapping[
 }
 
 
+def discover_runtime_host_facts(
+    *,
+    meminfo_path: Path = Path("/proc/meminfo"),
+) -> RuntimeHostFacts:
+    cpu_count = os.cpu_count()
+    if cpu_count is None or cpu_count <= 0:
+        raise RuntimeError("runtime host CPU count is unavailable")
+
+    try:
+        meminfo = meminfo_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError("runtime host RAM information is unavailable") from exc
+
+    host_ram_mb: int | None = None
+    for raw_line in meminfo.splitlines():
+        if not raw_line.startswith("MemTotal:"):
+            continue
+        fields = raw_line.split()
+        if len(fields) < 2:
+            break
+        try:
+            host_ram_mb = int(fields[1]) // 1024
+        except ValueError as exc:
+            raise RuntimeError("runtime host RAM information is invalid") from exc
+        break
+    if host_ram_mb is None or host_ram_mb <= 0:
+        raise RuntimeError("runtime host RAM information is invalid")
+
+    architecture = platform.machine().strip()
+    if not architecture:
+        raise RuntimeError("runtime host architecture is unavailable")
+
+    return RuntimeHostFacts(
+        cpu_count=cpu_count,
+        host_ram_mb=host_ram_mb,
+        architecture=architecture,
+    )
+
+
 def provider_from_deployment(
     deployment: RuntimeDeploymentSpec,
 ) -> RuntimeProvider:
@@ -301,6 +343,7 @@ def managed_runtime_from_deployment(
 __all__ = [
     "RuntimeDeploymentSpec",
     "build_runtime_deployment_spec",
+    "discover_runtime_host_facts",
     "managed_runtime_from_deployment",
     "provider_from_deployment",
 ]
