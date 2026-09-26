@@ -54,6 +54,33 @@ openssl rand -hex 32
 
 Keep them outside the repository.
 
+## PostgreSQL prerequisite
+
+AstrumWeaver does not provision PostgreSQL. You may use an existing local,
+remote, or managed PostgreSQL instance.
+
+For a simple local PostgreSQL installation where you have the usual
+`postgres` administrator account, one possible bootstrap is:
+
+```sh
+sudo -u postgres createuser --pwprompt astrumweaver
+sudo -u postgres createdb --owner astrumweaver astrumweaver
+```
+
+Then the Control connection string has the general shape:
+
+```text
+postgresql://astrumweaver:PASSWORD@DB_HOST:5432/astrumweaver
+```
+
+This is only a database bootstrap example. PostgreSQL authentication,
+backups, TLS, HA, and network policy remain deployment/operator
+responsibilities.
+
+AstrumWeaver schema creation/upgrades are separate: run
+`astrumweaver-migrate`, or explicitly enable the NixOS
+`migrateOnStart` option described below.
+
 ## Option A — NixOS
 
 Add AstrumWeaver as a flake input:
@@ -176,6 +203,9 @@ Do not configure both `executorFactory` and `runtime.enable = true`.
 ## Option B — generic systemd Linux with Nix
 
 This path does **not** require a source checkout.
+
+It assumes the host already has Nix with the `nix-command` and `flakes`
+features available. AstrumWeaver does not bootstrap Nix itself.
 
 Install the immutable role package into a dedicated system profile.
 
