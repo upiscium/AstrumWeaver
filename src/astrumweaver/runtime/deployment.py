@@ -311,9 +311,15 @@ def provider_from_deployment(
 def build_runtime_deployment_spec(
     provider: RuntimeProvider,
     context: RuntimeCompatibilityContext,
+    *,
+    setup_intent: RuntimeSetupIntent | None = None,
 ) -> RuntimeDeploymentSpec:
     """Freeze one reviewed provider configuration and setup intent."""
-    setup = provider.setup_intent(context)
+    setup = setup_intent or provider.setup_intent(context)
+    if setup.provider_id != provider.info.provider_id:
+        raise ValueError(
+            "runtime deployment setup intent changed provider identity"
+        )
     config = getattr(provider, "config", None)
     provider_config = (
         _json_value(config)
