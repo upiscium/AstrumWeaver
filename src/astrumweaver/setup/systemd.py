@@ -22,6 +22,7 @@ from .contracts import (
     SetupAction,
     SetupActionKind,
     SetupActionState,
+    thaw_json,
 )
 
 
@@ -36,7 +37,7 @@ _PROVIDER_EXECUTABLES: Mapping[str, str] = {
 
 def _canonical_json(value: Any) -> str:
     return json.dumps(
-        value,
+        thaw_json(value),
         sort_keys=True,
         indent=2,
         ensure_ascii=False,
