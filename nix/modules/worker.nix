@@ -81,11 +81,27 @@ let
   expectedGpuUuids = pkgs.writeText "astrumweaver-gpu-uuids" (
     lib.concatStringsSep "\n" (lib.sort builtins.lessThan cfg.gpuUuids) + "\n"
   );
+  gpuIsolationDevicePaths = map (
+    uuid: cfg.gpuIsolation.deviceMap.${uuid} or ""
+  ) cfg.gpuUuids;
+  gpuIsolationMap = pkgs.writeText "astrumweaver-gpu-device-map" (
+    lib.concatStringsSep "\n" (
+      map (
+        uuid: "${uuid}=${cfg.gpuIsolation.deviceMap.${uuid} or ""}"
+      ) (lib.sort builtins.lessThan cfg.gpuUuids)
+    ) + "\n"
+  );
   preflight = pkgs.writeShellApplication {
     name = "astrumweaver-gpu-preflight";
     runtimeInputs = [ pkgs.coreutils pkgs.gawk ]
       ++ lib.optional (cfg.nvidiaSmiPackage != null) cfg.nvidiaSmiPackage;
     text = builtins.readFile ../../libexec/gpu-preflight;
+  };
+  gpuDeviceMapVerifier = pkgs.writeShellApplication {
+    name = "astrumweaver-gpu-device-map";
+    runtimeInputs = [ pkgs.coreutils pkgs.gawk ]
+      ++ lib.optional (cfg.nvidiaSmiPackage != null) cfg.nvidiaSmiPackage;
+    text = builtins.readFile ../../libexec/gpu-device-map;
   };
   effectiveCommand =
     if cfg.command == null
@@ -174,6 +190,30 @@ in
       default = [ ];
       example = [ "GPU-example-a" "GPU-example-b" ];
       description = "Exact guest-visible NVIDIA GPU UUID set. Leave empty for a non-GPU Worker.";
+    };
+
+    gpuIsolation = {
+      enable = lib.mkEnableOption "systemd device-cgroup isolation for the selected GPU UUID set";
+
+      deviceMap = lib.mkOption {
+        type = lib.types.attrsOf lib.types.str;
+        default = { };
+        example = {
+          "GPU-example-a" = "/dev/nvidia0";
+        };
+        description = "Explicit UUID to physical /dev/nvidiaN mapping. Keys must exactly match gpuUuids when isolation is enabled.";
+      };
+
+      auxiliaryDeviceNodes = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [
+          "/dev/nvidiactl"
+          "/dev/nvidia-modeset"
+          "/dev/nvidia-uvm"
+          "/dev/nvidia-uvm-tools"
+        ];
+        description = "Shared NVIDIA control/UVM device nodes required by the runtime service in addition to selected per-GPU nodes.";
+      };
     };
 
     accelerators = lib.mkOption {
@@ -474,6 +514,29 @@ in
         message = "services.astrumweaver.worker.gpuUuids must not contain duplicates.";
       }
       {
+        assertion =
+          !cfg.gpuIsolation.enable
+          || lib.sort builtins.lessThan (builtins.attrNames cfg.gpuIsolation.deviceMap)
+             == lib.sort builtins.lessThan cfg.gpuUuids;
+        message = "gpuIsolation.deviceMap keys must exactly match services.astrumweaver.worker.gpuUuids.";
+      }
+      {
+        assertion =
+          !cfg.gpuIsolation.enable
+          || builtins.all (
+            path: builtins.match "^/dev/nvidia[0-9]+$" path != null
+          ) gpuIsolationDevicePaths;
+        message = "gpuIsolation.deviceMap values must be physical /dev/nvidiaN device paths.";
+      }
+      {
+        assertion =
+          !cfg.gpuIsolation.enable
+          || builtins.all (
+            path: builtins.match "^/dev/nvidia[-a-zA-Z0-9_/]+$" path != null
+          ) cfg.gpuIsolation.auxiliaryDeviceNodes;
+        message = "gpuIsolation.auxiliaryDeviceNodes must contain NVIDIA /dev paths only.";
+      }
+      {
         assertion = cfg.gpuUuids == [ ] || cfg.nvidiaSmiPackage != null;
         message = "services.astrumweaver.worker.nvidiaSmiPackage is required for GPU Workers.";
       }
@@ -513,11 +576,25 @@ in
       [ cfg.package ]
       ++ lib.optional cfg.borrowable.enable borrowableMode;
 
+    systemd.services.astrumweaver-worker-gpu-isolation-preflight =
+      lib.mkIf (cfg.gpuIsolation.enable && cfg.gpuUuids != [ ]) {
+        description = "Verify AstrumWeaver Worker GPU UUID/device mapping";
+        before = [ "astrumweaver-worker.service" ];
+        path = [ gpuDeviceMapVerifier ]
+          ++ lib.optional (cfg.nvidiaSmiPackage != null) cfg.nvidiaSmiPackage;
+        serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${gpuDeviceMapVerifier}/bin/astrumweaver-gpu-device-map verify ${expectedGpuUuids} ${gpuIsolationMap}";
+        };
+      };
+
     systemd.services.astrumweaver-worker = {
       description = "AstrumWeaver Worker";
       wantedBy = [ "multi-user.target" ];
       wants = [ "network-online.target" ];
-      after = [ "network-online.target" ];
+      after = [ "network-online.target" ]
+        ++ lib.optional cfg.gpuIsolation.enable "astrumweaver-worker-gpu-isolation-preflight.service";
+      requires = lib.optional cfg.gpuIsolation.enable "astrumweaver-worker-gpu-isolation-preflight.service";
       path = [ cfg.package ]
         ++ lib.optional (cfg.nvidiaSmiPackage != null) cfg.nvidiaSmiPackage
         ++ cfg.runtime.packages
@@ -542,6 +619,18 @@ in
         ProtectKernelModules = true;
         ProtectControlGroups = true;
         RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" ];
+      }
+      // lib.optionalAttrs cfg.gpuIsolation.enable {
+        DevicePolicy = "closed";
+        DeviceAllow = map (
+          path: "${path} rw"
+        ) (
+          gpuIsolationDevicePaths
+          ++ cfg.gpuIsolation.auxiliaryDeviceNodes
+        );
+        Environment = [
+          "CUDA_VISIBLE_DEVICES=${lib.concatStringsSep "," cfg.gpuUuids}"
+        ];
       }
       // lib.optionalAttrs (cfg.gpuUuids != [ ]) {
         ExecStartPre = "+${preflight}/bin/astrumweaver-gpu-preflight ${expectedGpuUuids}";
