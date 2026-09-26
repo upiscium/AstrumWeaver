@@ -272,16 +272,15 @@ async def run_worker(
     finally:
         await client.aclose()
         if runtime_manager is not None:
-            with contextlib.suppress(Exception):
-                await runtime_manager.ensure_stopped(
-                    timeout_seconds=float(
-                        runtime_section.get(
-                            "shutdown_timeout_seconds",
-                            60.0,
-                        )
-                    ),
-                    release=True,
-                )
+            await runtime_manager.ensure_stopped(
+                timeout_seconds=float(
+                    runtime_section.get(
+                        "shutdown_timeout_seconds",
+                        60.0,
+                    )
+                ),
+                release=True,
+            )
 
 
 def main() -> None:
