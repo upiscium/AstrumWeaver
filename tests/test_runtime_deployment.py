@@ -50,6 +50,30 @@ def context() -> RuntimeCompatibilityContext:
     )
 
 
+def test_explicit_reviewed_setup_intent_is_not_regenerated() -> None:
+    class CountingOllamaProvider(OllamaProvider):
+        def __init__(self) -> None:
+            super().__init__()
+            self.setup_calls = 0
+
+        def setup_intent(self, runtime_context):
+            self.setup_calls += 1
+            return super().setup_intent(runtime_context)
+
+    provider = CountingOllamaProvider()
+    ctx = context()
+    reviewed = provider.setup_intent(ctx)
+
+    deployment = build_runtime_deployment_spec(
+        provider,
+        ctx,
+        setup_intent=reviewed,
+    )
+
+    assert provider.setup_calls == 1
+    assert deployment.setup_intent is reviewed
+
+
 def test_runtime_deployment_round_trip_preserves_provider_and_demand() -> None:
     provider = OllamaProvider(
         OllamaProviderConfig(
