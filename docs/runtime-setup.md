@@ -244,6 +244,13 @@ rollback(action, receipt) -> ActionReceipt
 
 The generic systemd implementation is `SystemdSetupDriver`. It materializes reviewed runtime manifests/configuration and delegates package/model mutation only to explicit operator-configured argv commands. It never guesses a package manager or hidden installer.
 
+If the host-visible GPU set is larger than the Worker set,
+`SystemdSetupDriver` accepts the preflight only when the existing Worker host
+integration proves `DevicePolicy=closed`, exact selected physical
+`DeviceAllow` entries, a verified UUID/device mapping, and ordered
+`CUDA_VISIBLE_DEVICES`. The Worker service must still pass the unchanged
+exact-set preflight inside its restricted cgroup.
+
 NixOS uses the same `RuntimeDeploymentSpec` contract declaratively: the module writes an immutable provider+demand manifest and puts explicitly selected runtime packages in the Worker service closure.
 
 The shared planner/apply engine itself does not invoke apt/dnf/pacman/nix/systemctl directly.
@@ -293,3 +300,11 @@ It must not plan or apply:
 - PCI passthrough
 - NVIDIA host-driver installation/replacement
 - arbitrary model download without explicit approval
+
+## Real-host runtime deployment acceptance
+
+The packaged `astrumweaver-runtime-deployment-accept` command validates the
+#31 GPU subset contract on an idle real Worker host and writes redacted
+evidence.
+
+See [Runtime Deployment GPU Isolation Acceptance](runtime-deployment-acceptance.md).
