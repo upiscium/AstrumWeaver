@@ -19,11 +19,13 @@ stdenvNoCC.mkDerivation {
     cp systemd/astrumweaver-control.service.in "$assetRoot/systemd/"
     cp systemd/astrumweaver-worker.service.in "$assetRoot/systemd/"
     cp libexec/gpu-preflight "$assetRoot/libexec/"
+    cp libexec/gpu-device-map "$assetRoot/libexec/"
 
     chmod +x \
       "$assetRoot/setup/setup-control-plane.sh" \
       "$assetRoot/setup/setup-gpu-worker.sh" \
-      "$assetRoot/libexec/gpu-preflight"
+      "$assetRoot/libexec/gpu-preflight" \
+      "$assetRoot/libexec/gpu-device-map"
 
     cat >"$out/bin/astrumweaver-setup-control-plane" <<EOF
     #!${bash}/bin/bash
@@ -33,6 +35,11 @@ stdenvNoCC.mkDerivation {
     cat >"$out/bin/astrumweaver-setup-gpu-worker" <<EOF
     #!${bash}/bin/bash
     exec ${bash}/bin/bash "$assetRoot/setup/setup-gpu-worker.sh" "\$@"
+    EOF
+
+    cat >"$out/bin/astrumweaver-gpu-device-map" <<EOF
+    #!${bash}/bin/bash
+    exec ${bash}/bin/bash "$assetRoot/libexec/gpu-device-map" "\$@"
     EOF
 
     cat >"$out/bin/astrumweaver-gpu-preflight" <<EOF

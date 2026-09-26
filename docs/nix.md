@@ -158,6 +158,91 @@ The module manages:
 
 The module deliberately does not infer the GPU set from PCI ordinals or Proxmox configuration.
 
+### First-class RuntimeProvider execution
+
+A Worker can use a selected RuntimeProvider instead of a manually configured
+`executorFactory`. The two execution paths are mutually exclusive.
+
+Example:
+
+```nix
+services.astrumweaver.worker = {
+  enable = true;
+
+  workerId = "worker-runtime";
+  workerClass = "modern-single";
+  controlUrl = "https://control.example.invalid";
+  capabilities = [ "llm.chat" "text.generate" ];
+
+  gpuUuids = [ "GPU-example-a" ];
+  accelerators = [
+    {
+      uuid = "GPU-example-a";
+      memory_mb = 24576;
+      compute_capability = "8.6";
+      device_class = "NVIDIA example class";
+    }
+  ];
+  totalVramMb = 24576;
+  maxSingleGpuVramMb = 24576;
+  nvidiaSmiPackage = config.hardware.nvidia.package;
+
+  runtime = {
+    enable = true;
+    provider = "vllm";
+
+    # Runtime packages are explicit and enter only this service closure.
+    packages = [ pkgs.vllm ];
+
+    modelRef = "/srv/models/example";
+    modelFormat = "safetensors";
+    modelTopology = "dense";
+    residencyPolicy = "vram_only";
+    estimatedModelSizeMb = 16000;
+
+    providerConfig = {
+      gpu_memory_utilization = 0.90;
+    };
+  };
+
+  environmentFile = "/run/secrets/astrumweaver-worker.env";
+};
+```
+
+The module serializes provider identity, provider configuration and
+`ExecutionDemand` to an immutable `RuntimeDeploymentSpec`. At service start
+the Worker re-checks compatibility against its current host/Worker facts,
+starts the ManagedRuntime, waits for runtime readiness, then registers with
+Control. On Worker shutdown it stops/releases the ManagedRuntime.
+
+Nix evaluation does not implicitly download models or run network installers.
+For model formats/providers that require acquisition, provision the reviewed
+model declaratively or use an already-present local reference. A missing model
+fails runtime startup rather than triggering an unreviewed download.
+
+`providerConfig`, model metadata, and demand metadata are stored in the Nix
+store and therefore must remain non-secret. Credentials stay in
+`environmentFile` or another protected secret mechanism.
+
+The exact-set GPU preflight remains authoritative. For a host-visible GPU
+superset, enable `gpuIsolation` and declare the exact UUID→`/dev/nvidiaN`
+mapping:
+
+```nix
+gpuIsolation = {
+  enable = true;
+  deviceMap."GPU-example-a" = "/dev/nvidia0";
+};
+```
+
+The module verifies that mapping in a separate host-level oneshot service, then
+runs the Worker under `DevicePolicy=closed` with only the selected physical
+GPU nodes plus configured shared NVIDIA control/UVM nodes. The existing
+`gpu-preflight` still runs inside the restricted Worker cgroup.
+
+See [Runtime Deployment GPU Isolation Acceptance](runtime-deployment-acceptance.md)
+for the real-host acceptance contract.
+
 ## Control module
 
 Example shape:

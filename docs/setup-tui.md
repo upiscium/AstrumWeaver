@@ -171,12 +171,9 @@ Final output shows:
 
 Driver evidence payloads are intentionally not dumped by the TUI.
 
-## Planning-only mode and #31
+## Planning-only and deployment modes
 
-Issue #30 deliberately does not duplicate the NixOS/systemd mutation driver
-owned by #31.
-
-Without a driver, running:
+The TUI remains usable without deployment authority. Without a driver, running:
 
 ```sh
 astrumweaver-setup-tui
@@ -185,20 +182,34 @@ astrumweaver-setup-tui
 completes host/Worker/demand/runtime selection and produces the exact reviewed
 SetupPlan, then stops without mutation.
 
-A deployment driver can be connected with:
+On an already-integrated generic systemd Worker host, the first-party driver
+can be connected with:
 
 ```sh
-astrumweaver-setup-tui --driver package.module:driver_or_factory
+sudo astrumweaver-setup-tui \
+  --driver astrumweaver.setup.systemd:create_systemd_driver
 ```
 
-The target must implement the existing SetupActionDriver protocol.
+The Worker service account, Worker TOML, protected token EnvironmentFile, and
+systemd unit must already exist. The runtime driver owns reviewed runtime
+package/config/model actions and starts the existing Worker service; it does not
+invent Control credentials or network identity.
 
-This boundary lets #31 add the real NixOS and generic-systemd materialization
-without changing the TUI's planning, approval, or compatibility logic.
+Provider package/model commands are opt-in argv maps supplied through protected
+deployment environment, for example a locally reviewed wrapper:
 
-Worker service enrollment/start remains part of that deployment integration;
-the TUI does not claim to have enrolled a Worker when only the runtime plan was
-produced.
+```sh
+export ASTRUMWEAVER_RUNTIME_INSTALLERS_JSON='{"vllm":["/usr/local/sbin/install-reviewed-vllm"]}'
+export ASTRUMWEAVER_RUNTIME_DOWNLOADERS_JSON='{"vllm":["/usr/local/sbin/fetch-reviewed-vllm-model"]}'
+```
+
+The driver appends the reviewed package reference or model reference as the
+final argument. It does not invoke a shell or guess `apt`, `pip`, `curl`,
+or another installer.
+
+NixOS normally uses `services.astrumweaver.worker.runtime` instead. The
+runtime provider and demand are persisted as an immutable Nix-store deployment
+manifest and the runtime package is explicitly supplied in the service closure.
 
 ## SSH/tmux/mobile use
 

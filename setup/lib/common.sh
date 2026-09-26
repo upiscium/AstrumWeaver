@@ -88,12 +88,13 @@ resolve_executable() {
 }
 
 render_unit() {
-  local template="$1" destination="$2" executable="$3" user="$4"
+  local template="$1" destination="$2" executable="$3" user="$4" runtime_arg="${5:-}"
   local temporary
   temporary="$(mktemp)"
   sed \
     -e "s|@EXECUTABLE@|$executable|g" \
     -e "s|@USER@|$user|g" \
+    -e "s|@RUNTIME_ARG@|$runtime_arg|g" \
     "$template" >"$temporary"
   install_same_or_fail "$temporary" "$destination" 0644
   rm -f "$temporary"
