@@ -10,6 +10,7 @@ from ..runtime import (
     RuntimeCompatibilityContext,
     RuntimeSelection,
     RuntimeSelectionMode,
+    build_runtime_deployment_spec,
     resolve_runtime,
 )
 from .contracts import (
@@ -101,6 +102,7 @@ def build_runtime_setup_plan(
         raise SetupPlanningError(
             "runtime provider setup intent changed provider identity"
         )
+    deployment = build_runtime_deployment_spec(provider, context)
 
     actions: list[SetupAction] = []
     builder = _ActionBuilder(actions)
@@ -135,6 +137,7 @@ def build_runtime_setup_plan(
             payload={
                 "provider_id": provider_id,
                 "configuration": dict(intent.configuration),
+                "runtime_deployment": deployment.to_dict(),
             },
             requires_privilege=intent.requires_privilege,
             reversible=True,
