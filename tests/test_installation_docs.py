@@ -52,7 +52,7 @@ def test_installation_guide_tracks_supported_package_surface() -> None:
     assert "astrumweaver-setup-control-plane" in text
     assert "astrumweaver-setup-gpu-worker" in text
     assert "pip-only" in text
-    assert "not a complete supported host installation" in text
+    assert "complete supported host deployment" in text
 
 
 def test_getting_started_proves_real_control_worker_round_trip() -> None:
