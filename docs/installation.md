@@ -130,7 +130,14 @@ Minimal Control module:
 }
 ```
 
-Create `/etc/astrumweaver/control.env` outside the Nix store:
+Create the local protected configuration directory if this is the first
+AstrumWeaver service on the host:
+
+```sh
+sudo install -d -m 0750 /etc/astrumweaver
+```
+
+Then create `/etc/astrumweaver/control.env` outside the Nix store:
 
 ```text
 ASTRUMWEAVER_DATABASE_URL=postgresql://USER:PASSWORD@DB_HOST:5432/astrumweaver
