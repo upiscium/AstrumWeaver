@@ -20,6 +20,12 @@ from .contracts import (
     RuntimeSelectionMode,
     RuntimeSetupIntent,
 )
+from .deployment import (
+    RuntimeDeploymentSpec,
+    build_runtime_deployment_spec,
+    managed_runtime_from_deployment,
+    provider_from_deployment,
+)
 from .planner import (
     RuntimeCatalog,
     RuntimeResolution,
@@ -39,6 +45,7 @@ __all__ = [
     "ModelTopology",
     "ResidencyPolicy",
     "RuntimeCatalog",
+    "RuntimeDeploymentSpec",
     "RuntimeCompatibility",
     "RuntimeCompatibilityContext",
     "RuntimeHealth",
@@ -53,8 +60,11 @@ __all__ = [
     "RuntimeSetupIntent",
     "RuntimeLifecycleError",
     "RuntimeLifecycleManager",
+    "build_runtime_deployment_spec",
     "evaluate_catalog",
     "evaluate_provider",
+    "managed_runtime_from_deployment",
+    "provider_from_deployment",
     "resolve_runtime",
 ]
 
