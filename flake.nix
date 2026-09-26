@@ -98,6 +98,11 @@
               totalVramMb = 16384;
               maxSingleGpuVramMb = 16384;
               nvidiaSmiPackage = fakeNvidia;
+              gpuIsolation = {
+                enable = true;
+                deviceMap."GPU-example-smoke" = "/dev/nvidia7";
+                auxiliaryDeviceNodes = [ "/dev/nvidiactl" ];
+              };
 
               runtime = {
                 enable = true;
@@ -122,6 +127,14 @@
         runtimeModuleSmoke.config.systemd.services.astrumweaver-worker.serviceConfig.ExecStart;
       runtimeWorkerPath = nixpkgs.lib.makeBinPath
         runtimeModuleSmoke.config.systemd.services.astrumweaver-worker.path;
+      runtimeDevicePolicy =
+        runtimeModuleSmoke.config.systemd.services.astrumweaver-worker.serviceConfig.DevicePolicy;
+      runtimeDeviceAllow =
+        runtimeModuleSmoke.config.systemd.services.astrumweaver-worker.serviceConfig.DeviceAllow;
+      runtimeEnvironment =
+        runtimeModuleSmoke.config.systemd.services.astrumweaver-worker.serviceConfig.Environment;
+      runtimeIsolationPreflight =
+        runtimeModuleSmoke.config.systemd.services.astrumweaver-worker-gpu-isolation-preflight.serviceConfig.ExecStart;
     in
     {
       packages.${system} = {
@@ -146,7 +159,14 @@
           touch "$out"
         '';
         runtime-module-eval = pkgs.runCommand "astrumweaver-runtime-module-eval" {
-          inherit runtimeWorkerExec runtimeWorkerPath;
+          inherit
+            runtimeWorkerExec
+            runtimeWorkerPath
+            runtimeDevicePolicy
+            runtimeIsolationPreflight
+            ;
+          runtimeDeviceAllowText = nixpkgs.lib.concatStringsSep "\n" runtimeDeviceAllow;
+          runtimeEnvironmentText = nixpkgs.lib.concatStringsSep "\n" runtimeEnvironment;
         } ''
           test -n "$runtimeWorkerExec"
           printf "%s" "$runtimeWorkerExec" | grep -q astrumweaver-worker
@@ -156,7 +176,14 @@
           test -f "$workerConfig"
           grep -q '\[runtime\]' "$workerConfig"
           grep -q 'manifest' "$workerConfig"
-          printf "%s\n%s\n%s\n" "$runtimeWorkerExec" "$runtimeWorkerPath" "$workerConfig" > "$out"
+          test "$runtimeDevicePolicy" = closed
+          printf "%s" "$runtimeDeviceAllowText" | grep -q '/dev/nvidia7 rw'
+          printf "%s" "$runtimeDeviceAllowText" | grep -q '/dev/nvidiactl rw'
+          printf "%s" "$runtimeEnvironmentText" | grep -q 'CUDA_VISIBLE_DEVICES=GPU-example-smoke'
+          printf "%s" "$runtimeIsolationPreflight" | grep -q 'gpu-device-map verify'
+          printf "%s\n%s\n%s\n%s\n%s\n" \
+            "$runtimeWorkerExec" "$runtimeWorkerPath" "$workerConfig" \
+            "$runtimeDevicePolicy" "$runtimeIsolationPreflight" > "$out"
         '';
         module-eval = pkgs.runCommand "astrumweaver-module-eval" {
           controlExec = moduleSmoke.config.systemd.services.astrumweaver-control.serviceConfig.ExecStart;
