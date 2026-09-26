@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import grp
 import os
+import pwd
 import shutil
 import subprocess
 import tomllib
@@ -66,6 +68,10 @@ class SystemdSetupDriver:
         nvidia_smi: str = "nvidia-smi",
         ready_url: str = "http://127.0.0.1:9100/ready",
         installers: Mapping[str, tuple[str, ...]] | None = None,
+        downloaders: Mapping[str, tuple[str, ...]] | None = None,
+        converters: Mapping[str, tuple[str, ...]] | None = None,
+        service_user: str = "astrumweaver",
+        service_group: str = "astrumweaver",
     ) -> None:
         self.root = root
         self.worker_config_path = worker_config_path
@@ -78,6 +84,16 @@ class SystemdSetupDriver:
             str(key): tuple(str(item) for item in value)
             for key, value in dict(installers or {}).items()
         }
+        self.downloaders = {
+            str(key): tuple(str(item) for item in value)
+            for key, value in dict(downloaders or {}).items()
+        }
+        self.converters = {
+            str(key): tuple(str(item) for item in value)
+            for key, value in dict(converters or {}).items()
+        }
+        self.service_user = service_user
+        self.service_group = service_group
 
     def _target(self, path: Path) -> Path:
         if self.root == Path("/"):
@@ -111,6 +127,56 @@ class SystemdSetupDriver:
     def _installer(self, provider_id: str) -> tuple[str, ...] | None:
         value = self.installers.get(provider_id)
         return value if value else None
+
+    def _model_command(
+        self,
+        provider_id: str,
+        kind: SetupActionKind,
+    ) -> tuple[str, ...] | None:
+        source = (
+            self.downloaders
+            if kind is SetupActionKind.DOWNLOAD_MODEL
+            else self.converters
+        )
+        value = source.get(provider_id)
+        return value if value else None
+
+    def _service_ids(self) -> tuple[int, int]:
+        try:
+            uid = pwd.getpwnam(self.service_user).pw_uid
+            gid = grp.getgrnam(self.service_group).gr_gid
+        except KeyError as exc:
+            raise RuntimeError(
+                "AstrumWeaver service user/group must exist before runtime setup"
+            ) from exc
+        return uid, gid
+
+    def _prepare_runtime_directory(
+        self,
+        provider_id: str,
+        logical_name: str,
+    ) -> tuple[Path, bool]:
+        path = self._runtime_dir(provider_id, logical_name)
+        existed = path.is_dir()
+        path.mkdir(parents=True, exist_ok=True)
+        if logical_name == "config":
+            os.chmod(path, 0o755)
+        else:
+            os.chmod(path, 0o750)
+            if self.root == Path("/"):
+                uid, gid = self._service_ids()
+                os.chown(path, uid, gid)
+        return path, existed
+
+    def _write_nonsecret_config(self, path: Path, content: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(path.name + ".tmp")
+        temporary.write_text(content, encoding="utf-8")
+        os.chmod(temporary, 0o640)
+        if self.root == Path("/"):
+            _, gid = self._service_ids()
+            os.chown(temporary, 0, gid)
+        os.replace(temporary, path)
 
     def _read_worker_gpu_uuids(self) -> tuple[str, ...]:
         path = self._target(self.worker_config_path)
@@ -272,18 +338,25 @@ class SystemdSetupDriver:
             marker = self._target(
                 Path(
                     f"/var/lib/astrumweaver/runtime/{provider_id}/"
-                    f"authorizations/{_action_marker(action)}"
+                    f"model-preparation/{_action_marker(action)}"
                 )
             )
+            if marker.is_file():
+                return ActionInspection(
+                    SetupActionState.SATISFIED,
+                    "model preparation command completed",
+                )
+            if self._model_command(provider_id, kind) is None:
+                return ActionInspection(
+                    SetupActionState.BLOCKED,
+                    (
+                        f"{kind.value} requires an explicit reviewed "
+                        f"model command for provider {provider_id}"
+                    ),
+                )
             return ActionInspection(
-                SetupActionState.SATISFIED
-                if marker.is_file()
-                else SetupActionState.NEEDS_APPLY,
-                (
-                    "model preparation authorization recorded"
-                    if marker.is_file()
-                    else "model preparation will execute in the Worker-owned runtime"
-                ),
+                SetupActionState.NEEDS_APPLY,
+                "model preparation command is configured",
             )
 
         if kind is SetupActionKind.PREFLIGHT:
@@ -356,12 +429,10 @@ class SystemdSetupDriver:
         provider_id = str(action.payload.get("provider_id") or "").strip()
 
         if kind is SetupActionKind.ENSURE_DIRECTORY:
-            path = self._runtime_dir(
+            path, existed = self._prepare_runtime_directory(
                 provider_id,
                 str(action.payload["logical_name"]),
             )
-            existed = path.is_dir()
-            path.mkdir(parents=True, exist_ok=True)
             return ActionReceipt(
                 changed=not existed,
                 detail=f"ensured {path}",
@@ -404,11 +475,7 @@ class SystemdSetupDriver:
                 )
                 if previous == content:
                     continue
-                path.parent.mkdir(parents=True, exist_ok=True)
-                temporary = path.with_name(path.name + ".tmp")
-                temporary.write_text(content, encoding="utf-8")
-                os.chmod(temporary, 0o640)
-                os.replace(temporary, path)
+                self._write_nonsecret_config(path, content)
                 changed = True
                 rollback["files"].append(
                     {"path": str(path), "previous": previous}
@@ -423,24 +490,36 @@ class SystemdSetupDriver:
             SetupActionKind.DOWNLOAD_MODEL,
             SetupActionKind.CONVERT_MODEL,
         }:
+            command = self._model_command(provider_id, kind)
+            if command is None:
+                raise RuntimeError(
+                    f"no explicit {kind.value} command configured for {provider_id}"
+                )
+            model_ref = str(action.payload.get("model_ref") or "").strip()
+            if not model_ref:
+                raise RuntimeError("model preparation action lacks model_ref")
+            subprocess.run(
+                [*command, model_ref],
+                check=True,
+            )
             marker = self._target(
                 Path(
                     f"/var/lib/astrumweaver/runtime/{provider_id}/"
-                    f"authorizations/{_action_marker(action)}"
+                    f"model-preparation/{_action_marker(action)}"
                 )
             )
             marker.parent.mkdir(parents=True, exist_ok=True)
-            existed = marker.exists()
             marker.write_text(
                 _canonical_json(action.to_dict()),
                 encoding="utf-8",
             )
             return ActionReceipt(
-                changed=not existed,
-                detail=(
-                    "authorized provider-owned model preparation at runtime start"
-                ),
-                evidence={"deferred_to_worker_runtime": True},
+                changed=True,
+                detail=f"{kind.value} command completed",
+                evidence={
+                    "model_ref": model_ref,
+                    "provider_id": provider_id,
+                },
             )
 
         if kind is SetupActionKind.RUNTIME_START:
@@ -553,25 +632,15 @@ class SystemdSetupDriver:
         )
 
 
-def create_systemd_driver() -> SystemdSetupDriver:
-    """Factory usable directly by astrumweaver-setup-tui --driver."""
-
-    root = Path(os.environ.get("ASTRUMWEAVER_SETUP_ROOT", "/"))
-    raw_installers = os.environ.get(
-        "ASTRUMWEAVER_RUNTIME_INSTALLERS_JSON",
-        "{}",
-    )
+def _argv_map_from_env(name: str) -> dict[str, tuple[str, ...]]:
+    raw = os.environ.get(name, "{}")
     try:
-        parsed = json.loads(raw_installers)
+        parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            "ASTRUMWEAVER_RUNTIME_INSTALLERS_JSON must be valid JSON"
-        ) from exc
+        raise RuntimeError(f"{name} must be valid JSON") from exc
     if not isinstance(parsed, dict):
-        raise RuntimeError(
-            "ASTRUMWEAVER_RUNTIME_INSTALLERS_JSON must contain an object"
-        )
-    installers: dict[str, tuple[str, ...]] = {}
+        raise RuntimeError(f"{name} must contain an object")
+    values: dict[str, tuple[str, ...]] = {}
     for provider_id, argv in parsed.items():
         if (
             not isinstance(argv, list)
@@ -579,10 +648,16 @@ def create_systemd_driver() -> SystemdSetupDriver:
             or not all(isinstance(item, str) and item for item in argv)
         ):
             raise RuntimeError(
-                "runtime installer entries must be non-empty argv arrays"
+                f"{name} entries must be non-empty argv arrays"
             )
-        installers[str(provider_id)] = tuple(argv)
+        values[str(provider_id)] = tuple(argv)
+    return values
 
+
+def create_systemd_driver() -> SystemdSetupDriver:
+    """Factory usable directly by astrumweaver-setup-tui --driver."""
+
+    root = Path(os.environ.get("ASTRUMWEAVER_SETUP_ROOT", "/"))
     return SystemdSetupDriver(
         root=root,
         worker_config_path=Path(
@@ -613,7 +688,23 @@ def create_systemd_driver() -> SystemdSetupDriver:
             "ASTRUMWEAVER_WORKER_READY_URL",
             "http://127.0.0.1:9100/ready",
         ),
-        installers=installers,
+        installers=_argv_map_from_env(
+            "ASTRUMWEAVER_RUNTIME_INSTALLERS_JSON"
+        ),
+        downloaders=_argv_map_from_env(
+            "ASTRUMWEAVER_RUNTIME_DOWNLOADERS_JSON"
+        ),
+        converters=_argv_map_from_env(
+            "ASTRUMWEAVER_RUNTIME_CONVERTERS_JSON"
+        ),
+        service_user=os.environ.get(
+            "ASTRUMWEAVER_WORKER_USER",
+            "astrumweaver",
+        ),
+        service_group=os.environ.get(
+            "ASTRUMWEAVER_WORKER_GROUP",
+            "astrumweaver",
+        ),
     )
 
 
