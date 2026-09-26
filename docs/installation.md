@@ -360,11 +360,11 @@ Upgrade the dedicated profile:
 ```sh
 sudo nix profile upgrade \
   --profile /nix/var/nix/profiles/astrumweaver-control \
-  '.*'
+  --all
 
 sudo nix profile upgrade \
   --profile /nix/var/nix/profiles/astrumweaver-worker \
-  '.*'
+  --all
 ```
 
 If the new Control binary contains new database migrations, run
