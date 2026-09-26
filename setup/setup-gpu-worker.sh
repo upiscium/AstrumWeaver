@@ -13,7 +13,9 @@ EXECUTABLE=''
 ROOT='/'
 START=0
 SERVICE_USER='astrumweaver'
+GPU_ISOLATION='auto'
 GPU_UUIDS=()
+GPU_DEVICE_ENTRIES=()
 
 usage() {
   cat <<'USAGE'
@@ -25,13 +27,16 @@ Options:
   --runtime-manifest FILE    Reviewed RuntimeProvider deployment manifest.
   --executable PATH         Optional absolute daemon override; defaults to astrumweaver-worker on PATH.
   --gpu-uuid UUID           Expected NVIDIA GPU UUID; may be repeated.
+  --gpu-isolation MODE      GPU device-cgroup policy: auto|on|off (default: auto).
+  --gpu-device UUID=PATH    Reviewed UUID to /dev/nvidiaN mapping; may be repeated.
   --root DIR                Stage files below DIR instead of live /.
   --user NAME               Service account name (default: astrumweaver).
   --start                   Enable and start the service after installation.
   -h, --help                Show this help.
 
 The node and GPU exposure must already exist. The script does not configure
-Proxmox, PCI passthrough, IOMMU, device cgroups, or host NVIDIA drivers.
+Proxmox, PCI passthrough, IOMMU, or host NVIDIA drivers. When GPU isolation is
+enabled it configures only the Worker systemd service device allow-list.
 USAGE
 }
 
@@ -52,6 +57,12 @@ while (($#)); do
     --gpu-uuid)
       (($# >= 2)) || die "--gpu-uuid requires a value"
       GPU_UUIDS+=("$2"); shift 2 ;;
+    --gpu-isolation)
+      (($# >= 2)) || die "--gpu-isolation requires a value"
+      GPU_ISOLATION="$2"; shift 2 ;;
+    --gpu-device)
+      (($# >= 2)) || die "--gpu-device requires a value"
+      GPU_DEVICE_ENTRIES+=("$2"); shift 2 ;;
     --root)
       (($# >= 2)) || die "--root requires a value"
       ROOT="$2"; shift 2 ;;
@@ -75,6 +86,7 @@ fi
 if [[ -n "$RUNTIME_MANIFEST_SOURCE" ]]; then
   [[ -f "$RUNTIME_MANIFEST_SOURCE" ]] || die "runtime manifest does not exist: $RUNTIME_MANIFEST_SOURCE"
 fi
+[[ "$GPU_ISOLATION" =~ ^(auto|on|off)$ ]] || die "--gpu-isolation must be auto, on, or off"
 ((${#GPU_UUIDS[@]} > 0)) || die "at least one --gpu-uuid is required"
 [[ "$SERVICE_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "invalid service user"
 
