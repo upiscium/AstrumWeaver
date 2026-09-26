@@ -30,7 +30,9 @@ def fake_nvidia_smi(tmp_path: Path, output: str) -> str:
     executable.write_text(
         "#!/usr/bin/env bash\n"
         "if [[ \"$1\" == \"--query-gpu=uuid\" ]]; then\n"
-        f"  printf '%s\\n' {output!r}\n"
+        "  cat <<'ASTRUM_GPU_EOF'\n"
+        + output
+        + "\nASTRUM_GPU_EOF\n"
         "  exit 0\n"
         "fi\n"
         "exit 2\n",
@@ -145,6 +147,24 @@ def test_systemd_driver_runs_only_explicit_package_installer(
     assert driver.inspect(install).state is SetupActionState.SATISFIED
 
 
+def test_exllamav3_packages_are_not_satisfied_by_python_alone(
+    tmp_path: Path,
+) -> None:
+    install = action(
+        SetupActionKind.ENSURE_PACKAGE,
+        payload={
+            "provider_id": "exllamav3",
+            "package_reference": "exllamav3",
+        },
+    )
+    driver = SystemdSetupDriver(root=tmp_path / "root")
+
+    inspection = driver.inspect(install)
+
+    assert inspection.state is SetupActionState.BLOCKED
+    assert "no explicit installer" in inspection.detail
+
+
 def test_systemd_model_download_requires_explicit_preparer(
     tmp_path: Path,
 ) -> None:
@@ -194,7 +214,7 @@ def test_systemd_gpu_preflight_accepts_exact_set_and_rejects_host_superset(
         runtime_manifest_path=manifest,
         nvidia_smi=fake_nvidia_smi(
             superset_dir,
-            "GPU-a\\nGPU-b",
+            "GPU-a\nGPU-b",
         ),
     )
     superset_result = superset.inspect(preflight)
