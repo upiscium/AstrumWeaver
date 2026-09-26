@@ -155,6 +155,82 @@ def test_worker_setup_stages_runtime_manifest_and_wires_service(
     )
 
 
+def test_worker_setup_stages_gpu_device_cgroup_isolation(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "worker.toml"
+    config.write_text(
+        '[worker]\nid = "worker-isolated"\nclass = "gpu-single"\n',
+        encoding="utf-8",
+    )
+    staged = tmp_path / "root"
+
+    result = run(
+        "bash",
+        str(SETUP / "setup-gpu-worker.sh"),
+        "--config",
+        str(config),
+        "--executable",
+        "/usr/local/bin/astrumweaver-worker",
+        "--gpu-uuid",
+        "GPU-example-a",
+        "--gpu-isolation",
+        "on",
+        "--gpu-device",
+        "GPU-example-a=/dev/nvidia3",
+        "--root",
+        str(staged),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        staged / "etc/astrumweaver/gpu-device-map"
+    ).read_text(encoding="utf-8") == "GPU-example-a=/dev/nvidia3\n"
+
+    dropin = (
+        staged
+        / "etc/systemd/system/astrumweaver-worker.service.d/10-gpu-isolation.conf"
+    ).read_text(encoding="utf-8")
+    assert "DevicePolicy=closed" in dropin
+    assert "DeviceAllow=/dev/nvidia3 rw" in dropin
+    assert "Environment=CUDA_VISIBLE_DEVICES=GPU-example-a" in dropin
+    assert (
+        "Requires=astrumweaver-worker-gpu-isolation-preflight.service"
+        in dropin
+    )
+
+    verifier_unit = (
+        staged
+        / "etc/systemd/system/astrumweaver-worker-gpu-isolation-preflight.service"
+    ).read_text(encoding="utf-8")
+    assert "gpu-device-map verify" in verifier_unit
+
+
+def test_staged_gpu_isolation_requires_explicit_uuid_device_mapping(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "worker.toml"
+    config.write_text("[worker]\n", encoding="utf-8")
+
+    result = run(
+        "bash",
+        str(SETUP / "setup-gpu-worker.sh"),
+        "--config",
+        str(config),
+        "--executable",
+        "/usr/local/bin/astrumweaver-worker",
+        "--gpu-uuid",
+        "GPU-example-a",
+        "--gpu-isolation",
+        "on",
+        "--root",
+        str(tmp_path / "root"),
+    )
+
+    assert result.returncode != 0
+    assert "staged GPU isolation requires --gpu-device" in result.stderr
+
+
 def test_worker_setup_rejects_duplicate_gpu_identity(tmp_path: Path) -> None:
     config = tmp_path / "worker.toml"
     config.write_text("[worker]\n", encoding="utf-8")
@@ -190,6 +266,40 @@ def fake_nvidia_smi(tmp_path: Path, output: str) -> dict[str, str]:
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
     return env
+
+
+def test_gpu_device_map_discovers_selected_uuid_to_minor_mapping(
+    tmp_path: Path,
+) -> None:
+    expected = tmp_path / "expected"
+    expected.write_text("GPU-b\n", encoding="utf-8")
+
+    bin_dir = tmp_path / "map-bin"
+    bin_dir.mkdir()
+    executable = bin_dir / "nvidia-smi"
+    executable.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [[ \"$1\" == \"--query-gpu=uuid,minor_number\" ]]; then\n"
+        "  printf 'GPU-a, 2\\nGPU-b, 7\\n'\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 2\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+
+    result = run(
+        "bash",
+        str(ROOT / "libexec" / "gpu-device-map"),
+        "discover",
+        str(expected),
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "GPU-b=/dev/nvidia7\n"
 
 
 def test_gpu_preflight_requires_exact_set_equality(tmp_path: Path) -> None:
