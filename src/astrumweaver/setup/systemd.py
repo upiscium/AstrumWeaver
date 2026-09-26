@@ -63,6 +63,16 @@ class SystemdSetupDriver:
         runtime_manifest_path: Path = Path(
             "/etc/astrumweaver/runtime-deployment.json"
         ),
+        gpu_uuid_file_path: Path = Path(
+            "/etc/astrumweaver/gpu-uuids"
+        ),
+        gpu_device_map_path: Path = Path(
+            "/etc/astrumweaver/gpu-device-map"
+        ),
+        gpu_isolation_dropin_path: Path = Path(
+            "/etc/systemd/system/astrumweaver-worker.service.d/10-gpu-isolation.conf"
+        ),
+        gpu_device_map_command: str = "/usr/local/libexec/astrumweaver/gpu-device-map",
         service_name: str = "astrumweaver-worker.service",
         systemctl: str = "systemctl",
         nvidia_smi: str = "nvidia-smi",
@@ -76,6 +86,10 @@ class SystemdSetupDriver:
         self.root = root
         self.worker_config_path = worker_config_path
         self.runtime_manifest_path = runtime_manifest_path
+        self.gpu_uuid_file_path = gpu_uuid_file_path
+        self.gpu_device_map_path = gpu_device_map_path
+        self.gpu_isolation_dropin_path = gpu_isolation_dropin_path
+        self.gpu_device_map_command = gpu_device_map_command
         self.service_name = service_name
         self.systemctl = systemctl
         self.nvidia_smi = nvidia_smi
@@ -195,6 +209,77 @@ class SystemdSetupDriver:
             ) from exc
         worker = dict(config.get("worker") or {})
         return tuple(str(item) for item in worker.get("gpu_uuids", ()))
+
+    def _gpu_isolation_verified(
+        self,
+        expected: tuple[str, ...],
+    ) -> bool:
+        expected_file = self._target(self.gpu_uuid_file_path)
+        map_file = self._target(self.gpu_device_map_path)
+        dropin = self._target(self.gpu_isolation_dropin_path)
+
+        if not expected_file.is_file() or not map_file.is_file() or not dropin.is_file():
+            return False
+
+        configured_expected = tuple(
+            sorted(
+                line.strip()
+                for line in expected_file.read_text(
+                    encoding="utf-8"
+                ).splitlines()
+                if line.strip()
+            )
+        )
+        if configured_expected != tuple(sorted(expected)):
+            return False
+
+        mapping: dict[str, str] = {}
+        for raw_line in map_file.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or "=" not in line:
+                continue
+            uuid, path = line.split("=", 1)
+            uuid = uuid.strip()
+            path = path.strip()
+            if (
+                not uuid
+                or not path.startswith("/dev/nvidia")
+                or uuid in mapping
+            ):
+                return False
+            mapping[uuid] = path
+
+        if tuple(sorted(mapping)) != tuple(sorted(expected)):
+            return False
+        if len(set(mapping.values())) != len(mapping):
+            return False
+
+        dropin_text = dropin.read_text(encoding="utf-8")
+        if "DevicePolicy=closed" not in dropin_text:
+            return False
+        for path in mapping.values():
+            if f"DeviceAllow={path} rw" not in dropin_text:
+                return False
+
+        visible = ",".join(expected)
+        if f"Environment=CUDA_VISIBLE_DEVICES={visible}" not in dropin_text:
+            return False
+
+        if self.root != Path("/"):
+            return False
+
+        completed = subprocess.run(
+            [
+                self.gpu_device_map_command,
+                "verify",
+                str(expected_file),
+                str(map_file),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        return completed.returncode == 0
 
     def _service_active(self) -> bool:
         if self.root != Path("/"):
@@ -374,18 +459,34 @@ class SystemdSetupDriver:
                     SetupActionState.BLOCKED,
                     "runtime preflight requires the live target host",
                 )
-            try:
-                expected = self._read_worker_gpu_uuids()
-                if expected:
+
+            expected = self._read_worker_gpu_uuids()
+            visibility_detail = "no GPU visibility requirement"
+            if expected:
+                try:
                     require_exact_gpu_set(
                         expected,
                         command=self.nvidia_smi,
                     )
-            except Exception as exc:
-                return ActionInspection(
-                    SetupActionState.BLOCKED,
-                    f"GPU visibility preflight failed: {type(exc).__name__}",
-                )
+                except Exception as exc:
+                    if not self._gpu_isolation_verified(expected):
+                        return ActionInspection(
+                            SetupActionState.BLOCKED,
+                            (
+                                "GPU visibility preflight failed and no "
+                                "verified service device isolation exists: "
+                                f"{type(exc).__name__}"
+                            ),
+                        )
+                    visibility_detail = (
+                        "host GPU superset accepted only because reviewed "
+                        "systemd device-cgroup isolation is verified; "
+                        "service ExecStartPre must still prove the exact set "
+                        "inside that cgroup"
+                    )
+                else:
+                    visibility_detail = "host-visible GPU set is already exact"
+
             if not self._target(self.runtime_manifest_path).is_file():
                 return ActionInspection(
                     SetupActionState.BLOCKED,
@@ -393,7 +494,7 @@ class SystemdSetupDriver:
                 )
             return ActionInspection(
                 SetupActionState.SATISFIED,
-                "runtime and exact GPU visibility preflight passed",
+                "runtime preflight passed; " + visibility_detail,
             )
 
         if kind is SetupActionKind.RUNTIME_START:
@@ -683,6 +784,28 @@ def create_systemd_driver() -> SystemdSetupDriver:
                 "ASTRUMWEAVER_RUNTIME_MANIFEST",
                 "/etc/astrumweaver/runtime-deployment.json",
             )
+        ),
+        gpu_uuid_file_path=Path(
+            os.environ.get(
+                "ASTRUMWEAVER_GPU_UUID_FILE",
+                "/etc/astrumweaver/gpu-uuids",
+            )
+        ),
+        gpu_device_map_path=Path(
+            os.environ.get(
+                "ASTRUMWEAVER_GPU_DEVICE_MAP",
+                "/etc/astrumweaver/gpu-device-map",
+            )
+        ),
+        gpu_isolation_dropin_path=Path(
+            os.environ.get(
+                "ASTRUMWEAVER_GPU_ISOLATION_DROPIN",
+                "/etc/systemd/system/astrumweaver-worker.service.d/10-gpu-isolation.conf",
+            )
+        ),
+        gpu_device_map_command=os.environ.get(
+            "ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND",
+            "/usr/local/libexec/astrumweaver/gpu-device-map",
         ),
         service_name=os.environ.get(
             "ASTRUMWEAVER_WORKER_SERVICE",
