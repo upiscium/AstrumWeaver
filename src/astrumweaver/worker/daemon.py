@@ -79,7 +79,10 @@ def _build_spec(section: dict[str, Any]) -> WorkerSpec:
     )
 
 
-async def run_worker(config_path: str) -> None:
+async def run_worker(
+    config_path: str,
+    runtime_manifest_path: str | None = None,
+) -> None:
     config = _load_toml(config_path)
     worker_section = dict(config.get("worker") or {})
     executor_section = dict(config.get("executor") or {})
@@ -91,7 +94,11 @@ async def run_worker(config_path: str) -> None:
         raise RuntimeError(f"missing worker configuration: {', '.join(missing)}")
 
     executor_factory = str(executor_section.get("factory", "")).strip()
-    runtime_manifest = str(runtime_section.get("manifest", "")).strip()
+    runtime_manifest = (
+        str(runtime_manifest_path).strip()
+        if runtime_manifest_path is not None
+        else str(runtime_section.get("manifest", "")).strip()
+    )
     if bool(executor_factory) == bool(runtime_manifest):
         raise RuntimeError(
             "configure exactly one of executor.factory or runtime.manifest"
@@ -280,8 +287,20 @@ async def run_worker(config_path: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(prog="astrumweaver-worker")
     parser.add_argument("--config", required=True)
+    parser.add_argument(
+        "--runtime-manifest",
+        help=(
+            "optional RuntimeProvider deployment manifest; overrides "
+            "[runtime].manifest in worker configuration"
+        ),
+    )
     args = parser.parse_args()
-    asyncio.run(run_worker(args.config))
+    asyncio.run(
+        run_worker(
+            args.config,
+            runtime_manifest_path=args.runtime_manifest,
+        )
+    )
 
 
 if __name__ == "__main__":
