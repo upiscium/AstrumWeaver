@@ -108,6 +108,53 @@ def test_worker_setup_stages_exact_gpu_identity_and_is_idempotent(tmp_path: Path
     assert "ExecStart=/usr/local/bin/astrumweaver-worker --config /etc/astrumweaver/worker.toml" in unit
 
 
+def test_worker_setup_stages_runtime_manifest_and_wires_service(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "worker.toml"
+    config.write_text(
+        '[worker]\nid = "worker-runtime"\nclass = "gpu-single"\n',
+        encoding="utf-8",
+    )
+    runtime_manifest = tmp_path / "runtime.json"
+    runtime_manifest.write_text(
+        '{"schema_version":"v1","provider_id":"ollama"}\n',
+        encoding="utf-8",
+    )
+    staged = tmp_path / "root"
+
+    result = run(
+        "bash",
+        str(SETUP / "setup-gpu-worker.sh"),
+        "--config",
+        str(config),
+        "--runtime-manifest",
+        str(runtime_manifest),
+        "--executable",
+        "/usr/local/bin/astrumweaver-worker",
+        "--gpu-uuid",
+        "GPU-example-a",
+        "--root",
+        str(staged),
+    )
+
+    assert result.returncode == 0, result.stderr
+    deployed = (
+        staged / "etc/astrumweaver/runtime-deployment.json"
+    )
+    assert deployed.read_text(encoding="utf-8") == runtime_manifest.read_text(
+        encoding="utf-8"
+    )
+    unit = (
+        staged
+        / "etc/systemd/system/astrumweaver-worker.service"
+    ).read_text(encoding="utf-8")
+    assert (
+        "--runtime-manifest /etc/astrumweaver/runtime-deployment.json"
+        in unit
+    )
+
+
 def test_worker_setup_rejects_duplicate_gpu_identity(tmp_path: Path) -> None:
     config = tmp_path / "worker.toml"
     config.write_text("[worker]\n", encoding="utf-8")
