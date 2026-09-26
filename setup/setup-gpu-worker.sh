@@ -271,7 +271,7 @@ EOF
       fi
     done
 
-    visible="$(paste -sd, "$GPU_UUID_DEST")"
+    visible="$(IFS=,; printf '%s' "${GPU_UUIDS[*]}")"
     printf 'Environment=CUDA_VISIBLE_DEVICES=%s\n' "$visible"
   } >"$isolation_dropin_tmp"
   install_generated_same_or_fail "$isolation_dropin_tmp" "$ISOLATION_DROPIN_DEST" 0644
