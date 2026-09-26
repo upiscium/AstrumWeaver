@@ -101,26 +101,53 @@ EXECUTABLE="$(resolve_executable "$EXECUTABLE" "$ROOT" astrumweaver-worker)"
 ETC_DIR="$(root_path "$ROOT" /etc/astrumweaver)"
 STATE_DIR="$(root_path "$ROOT" /var/lib/astrumweaver)"
 UNIT_DIR="$(root_path "$ROOT" /etc/systemd/system)"
+DROPIN_DIR="$UNIT_DIR/astrumweaver-worker.service.d"
 LIBEXEC_DIR="$(root_path "$ROOT" /usr/local/libexec/astrumweaver)"
 CONFIG_DEST="$ETC_DIR/worker.toml"
 ENV_DEST="$ETC_DIR/worker.env"
 RUNTIME_MANIFEST_DEST="$ETC_DIR/runtime-deployment.json"
 GPU_UUID_DEST="$ETC_DIR/gpu-uuids"
+GPU_DEVICE_MAP_DEST="$ETC_DIR/gpu-device-map"
 PREFLIGHT_DEST="$LIBEXEC_DIR/gpu-preflight"
+DEVICE_MAP_HELPER_DEST="$LIBEXEC_DIR/gpu-device-map"
 UNIT_DEST="$UNIT_DIR/astrumweaver-worker.service"
+ISOLATION_UNIT_DEST="$UNIT_DIR/astrumweaver-worker-gpu-isolation-preflight.service"
+ISOLATION_DROPIN_DEST="$DROPIN_DIR/10-gpu-isolation.conf"
 
 install -d -m 0750 "$ETC_DIR" "$STATE_DIR"
 install -d -m 0755 "$UNIT_DIR" "$LIBEXEC_DIR"
 
 expected_tmp="$(mktemp)"
+device_map_tmp="$(mktemp)"
+isolation_unit_tmp="$(mktemp)"
+isolation_dropin_tmp="$(mktemp)"
 cleanup() {
-  rm -f "$expected_tmp"
+  rm -f "$expected_tmp" "$device_map_tmp" "$isolation_unit_tmp" "$isolation_dropin_tmp"
 }
 trap cleanup EXIT
 
 printf '%s\n' "${GPU_UUIDS[@]}" | sort >"$expected_tmp"
 if [[ -n "$(uniq -d "$expected_tmp")" ]]; then
   die "duplicate --gpu-uuid values are not allowed"
+fi
+
+if ((${#GPU_DEVICE_ENTRIES[@]} > 0)); then
+  for entry in "${GPU_DEVICE_ENTRIES[@]}"; do
+    [[ "$entry" == *=* ]] || die "--gpu-device must use UUID=/dev/nvidiaN"
+    uuid="${entry%%=*}"
+    path="${entry#*=}"
+    [[ -n "$uuid" && "$path" =~ ^/dev/nvidia[0-9]+$ ]] || die "--gpu-device must use UUID=/dev/nvidiaN"
+    printf '%s=%s\n' "$uuid" "$path"
+  done | sort >"$device_map_tmp"
+  cut -d= -f1 "$device_map_tmp" >"${device_map_tmp}.keys"
+  if ! cmp -s "$expected_tmp" "${device_map_tmp}.keys"; then
+    rm -f "${device_map_tmp}.keys"
+    die "--gpu-device UUID keys must exactly match --gpu-uuid values"
+  fi
+  rm -f "${device_map_tmp}.keys"
+  if [[ -n "$(cut -d= -f2 "$device_map_tmp" | sort | uniq -d)" ]]; then
+    die "--gpu-device paths must be unique"
+  fi
 fi
 
 install_same_or_fail "$CONFIG_SOURCE" "$CONFIG_DEST" 0640
@@ -132,6 +159,7 @@ if [[ -n "$RUNTIME_MANIFEST_SOURCE" ]]; then
 fi
 install_same_or_fail "$expected_tmp" "$GPU_UUID_DEST" 0640
 install_same_or_fail "$REPO_ROOT/libexec/gpu-preflight" "$PREFLIGHT_DEST" 0755
+install_same_or_fail "$REPO_ROOT/libexec/gpu-device-map" "$DEVICE_MAP_HELPER_DEST" 0755
 
 runtime_arg=''
 if [[ -n "$RUNTIME_MANIFEST_SOURCE" ]]; then
