@@ -64,6 +64,6 @@ def test_getting_started_proves_real_control_worker_round_trip() -> None:
         "debug.echo",
         "astrumweaver.executors.structured_echo:create_executor",
         "/v1/jobs",
-        '"succeeded"',
+        "succeeded",
     ):
         assert required in text
