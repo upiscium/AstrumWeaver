@@ -302,6 +302,44 @@ def test_gpu_device_map_discovers_selected_uuid_to_minor_mapping(
     assert result.stdout == "GPU-b=/dev/nvidia7\n"
 
 
+def test_gpu_device_map_verify_reads_reviewed_map_argument(
+    tmp_path: Path,
+) -> None:
+    expected = tmp_path / "expected"
+    expected.write_text("GPU-b\n", encoding="utf-8")
+    reviewed = tmp_path / "reviewed-map"
+    reviewed.write_text("GPU-b=/dev/nvidia9\n", encoding="utf-8")
+
+    bin_dir = tmp_path / "verify-bin"
+    bin_dir.mkdir()
+    executable = bin_dir / "nvidia-smi"
+    executable.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [[ \"$1\" == \"--query-gpu=uuid,minor_number\" ]]; then\n"
+        "  printf 'GPU-b, 7\\n'\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 2\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+
+    result = run(
+        "bash",
+        str(ROOT / "libexec" / "gpu-device-map"),
+        "verify",
+        str(expected),
+        str(reviewed),
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert "GPU UUID to device-node mapping changed" in result.stderr
+    assert "GPU device map file is missing" not in result.stderr
+
+
 def test_gpu_preflight_requires_exact_set_equality(tmp_path: Path) -> None:
     expected = tmp_path / "expected"
     expected.write_text("GPU-a\nGPU-b\n", encoding="utf-8")
