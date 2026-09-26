@@ -31,7 +31,6 @@ _PROVIDER_EXECUTABLES: Mapping[str, str] = {
     "llama-cpp": "llama-server",
     "vllm": "vllm",
     "freetoken": "ft",
-    "exllamav3": "python",
 }
 
 
@@ -121,9 +120,15 @@ class SystemdSetupDriver:
             )
         )
 
-    def _provider_executable_available(self, provider_id: str) -> bool:
+    def _provider_executable_available(
+        self,
+        provider_id: str,
+        package_reference: str,
+    ) -> bool:
         executable = _PROVIDER_EXECUTABLES.get(provider_id)
-        return bool(executable and shutil.which(executable))
+        if executable is None:
+            return False
+        return bool(shutil.which(executable))
 
     def _installer(self, provider_id: str) -> tuple[str, ...] | None:
         value = self.installers.get(provider_id)
@@ -275,7 +280,10 @@ class SystemdSetupDriver:
         if kind is SetupActionKind.ENSURE_PACKAGE:
             package_reference = str(action.payload["package_reference"])
             marker = self._package_marker(provider_id, package_reference)
-            if marker.is_file() or self._provider_executable_available(provider_id):
+            if marker.is_file() or self._provider_executable_available(
+                provider_id,
+                package_reference,
+            ):
                 return ActionInspection(
                     SetupActionState.SATISFIED,
                     "runtime package/executable is available",
@@ -442,7 +450,10 @@ class SystemdSetupDriver:
 
         if kind is SetupActionKind.ENSURE_PACKAGE:
             package_reference = str(action.payload["package_reference"])
-            if self._provider_executable_available(provider_id):
+            if self._provider_executable_available(
+                provider_id,
+                package_reference,
+            ):
                 return ActionReceipt(
                     changed=False,
                     detail="runtime executable already available",
