@@ -153,6 +153,16 @@
       checks.${system} = {
         inherit astrumweaver control worker integration;
 
+        installation-surface = pkgs.runCommand "astrumweaver-installation-surface" { } ''
+          test -x ${control}/bin/astrumweaver-control
+          test -x ${control}/bin/astrumweaver-migrate
+          test -x ${control}/bin/astrumweaver-setup-control-plane
+          test -x ${worker}/bin/astrumweaver-worker
+          test -x ${worker}/bin/astrumweaver-setup-gpu-worker
+          test -x ${worker}/bin/astrumweaver-setup-tui
+          test -x ${worker}/bin/astrumweaver-runtime-deployment-accept
+          touch "$out"
+        '';
         hardware-accept-cli = pkgs.runCommand "astrumweaver-hardware-accept-cli" { } ''
           test -x ${worker}/bin/astrumweaver-hardware-accept
           ${worker}/bin/astrumweaver-hardware-accept --help >/dev/null
