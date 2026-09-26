@@ -175,9 +175,38 @@ render_unit \
 
 if [[ "$ROOT" == "/" ]]; then
   ensure_live_service_user "$SERVICE_USER"
-
   require_cmd nvidia-smi
-  "$PREFLIGHT_DEST" "$GPU_UUID_DEST"
+
+  exact_set=0
+  if "$PREFLIGHT_DEST" "$GPU_UUID_DEST" >/dev/null 2>&1; then
+    exact_set=1
+  fi
+
+  isolation_enabled=0
+  case "$GPU_ISOLATION" in
+    on) isolation_enabled=1 ;;
+    off) isolation_enabled=0 ;;
+    auto)
+      if [[ "$exact_set" == 1 ]]; then
+        isolation_enabled=0
+      else
+        isolation_enabled=1
+      fi
+      ;;
+  esac
+
+  if [[ "$isolation_enabled" == 1 ]]; then
+    if [[ ! -s "$device_map_tmp" ]]; then
+      "$DEVICE_MAP_HELPER_DEST" discover "$GPU_UUID_DEST" >"$device_map_tmp"
+    fi
+    install_same_or_fail "$device_map_tmp" "$GPU_DEVICE_MAP_DEST" 0640
+    "$DEVICE_MAP_HELPER_DEST" verify "$GPU_UUID_DEST" "$GPU_DEVICE_MAP_DEST"
+  else
+    "$PREFLIGHT_DEST" "$GPU_UUID_DEST"
+    if [[ -e "$ISOLATION_DROPIN_DEST" || -e "$ISOLATION_UNIT_DEST" || -e "$GPU_DEVICE_MAP_DEST" ]]; then
+      die "existing GPU isolation state requires reviewed removal before --gpu-isolation off"
+    fi
+  fi
 
   if command -v usermod >/dev/null 2>&1; then
     for group in video render; do
@@ -191,11 +220,68 @@ if [[ "$ROOT" == "/" ]]; then
     nvidia_smi="$(command -v nvidia-smi)"
     if ! runuser -u "$SERVICE_USER" -- "$nvidia_smi" \
       --query-gpu=uuid --format=csv,noheader >/dev/null 2>&1; then
-      die "service account cannot access the configured NVIDIA devices"
+      die "service account cannot access NVIDIA devices"
     fi
   fi
+else
+  isolation_enabled=0
+  if [[ "$GPU_ISOLATION" == "on" || -s "$device_map_tmp" ]]; then
+    [[ -s "$device_map_tmp" ]] || die "staged GPU isolation requires --gpu-device UUID=/dev/nvidiaN entries"
+    isolation_enabled=1
+    install_same_or_fail "$device_map_tmp" "$GPU_DEVICE_MAP_DEST" 0640
+  fi
 
+  if [[ "$START" == 1 ]]; then
+    die "--start cannot be used with staged --root installs"
+  fi
+fi
+
+if [[ "$isolation_enabled" == 1 ]]; then
+  install -d -m 0755 "$DROPIN_DIR"
+
+  cat >"$isolation_unit_tmp" <<'EOF'
+[Unit]
+Description=Verify AstrumWeaver Worker GPU UUID/device mapping
+Before=astrumweaver-worker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/astrumweaver/gpu-device-map verify /etc/astrumweaver/gpu-uuids /etc/astrumweaver/gpu-device-map
+EOF
+  install_generated_same_or_fail "$isolation_unit_tmp" "$ISOLATION_UNIT_DEST" 0644
+
+  {
+    printf '[Unit]\n'
+    printf 'Requires=astrumweaver-worker-gpu-isolation-preflight.service\n'
+    printf 'After=astrumweaver-worker-gpu-isolation-preflight.service\n\n'
+    printf '[Service]\n'
+    printf 'DevicePolicy=closed\n'
+    while IFS='=' read -r uuid path; do
+      printf 'DeviceAllow=%s rw\n' "$path"
+    done <"$GPU_DEVICE_MAP_DEST"
+
+    for path in \
+      /dev/nvidiactl \
+      /dev/nvidia-modeset \
+      /dev/nvidia-uvm \
+      /dev/nvidia-uvm-tools \
+      /dev/nvidia-nvswitchctl; do
+      if [[ "$ROOT" != "/" || -e "$path" ]]; then
+        printf 'DeviceAllow=%s rw\n' "$path"
+      fi
+    done
+
+    visible="$(paste -sd, "$GPU_UUID_DEST")"
+    printf 'Environment=CUDA_VISIBLE_DEVICES=%s\n' "$visible"
+  } >"$isolation_dropin_tmp"
+  install_generated_same_or_fail "$isolation_dropin_tmp" "$ISOLATION_DROPIN_DEST" 0644
+fi
+
+if [[ "$ROOT" == "/" ]]; then
   chown root:"$SERVICE_USER" "$CONFIG_DEST" "$GPU_UUID_DEST"
+  if [[ -f "$GPU_DEVICE_MAP_DEST" ]]; then
+    chown root:"$SERVICE_USER" "$GPU_DEVICE_MAP_DEST"
+  fi
   if [[ -f "$RUNTIME_MANIFEST_DEST" ]]; then
     chown root:"$SERVICE_USER" "$RUNTIME_MANIFEST_DEST"
   fi
@@ -205,8 +291,5 @@ if [[ "$ROOT" == "/" ]]; then
   chown "$SERVICE_USER":"$SERVICE_USER" "$STATE_DIR"
 
   systemd_reload_and_maybe_start astrumweaver-worker.service "$START"
-elif [[ "$START" == 1 ]]; then
-  die "--start cannot be used with staged --root installs"
 fi
-
 log "GPU worker host integration complete"
