@@ -6,6 +6,33 @@ It is GPU-first, but its control-plane contracts are intentionally not tied to L
 
 > **Project status:** early v0.1 architecture/bootstrap. Interfaces may change until the first stable worker/control contract is accepted.
 
+## Start here
+
+If you want to **install and run AstrumWeaver**, start with these two pages:
+
+1. [Installation](docs/installation.md) — choose NixOS or generic systemd and install the Control/Worker packages.
+2. [Getting Started](docs/getting-started.md) — bring up Control + one Worker and complete a real `debug.echo` job.
+
+The recommended first deployment is deliberately simple:
+
+```text
+PostgreSQL → Control → Worker → debug.echo
+```
+
+Verify this path before adding Ollama, llama.cpp, vLLM, FreeToken, or ExLlamaV3.
+That keeps base AstrumWeaver installation problems separate from model-runtime
+problems.
+
+Current supported installation paths are:
+
+- **NixOS x86_64-linux:** flake + NixOS module — recommended.
+- **Other systemd Linux x86_64:** Nix role package + packaged setup wrapper.
+- **pip-only:** useful for development, but not currently a complete supported host deployment.
+
+AstrumWeaver assumes the Linux node, networking, PostgreSQL service, GPU
+passthrough/device exposure, and NVIDIA host driver already exist.
+
+
 ## Scope
 
 AstrumWeaver owns the compute-fabric layer:
@@ -61,6 +88,8 @@ Proxmox is a supported deployment environment, not an AstrumWeaver dependency. A
 
 ## Documentation
 
+- [Installation](docs/installation.md)
+- [Getting Started](docs/getting-started.md)
 - [Architecture](docs/architecture.md)
 - [Host Prerequisite Contract](docs/host-contract.md)
 - [Worker and Resource Contract](docs/worker-contract.md)
