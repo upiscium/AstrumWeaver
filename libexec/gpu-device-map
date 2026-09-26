@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+die() {
+  printf '[astrumweaver-gpu-device-map] ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+usage() {
+  cat >&2 <<'USAGE'
+usage:
+  gpu-device-map discover EXPECTED_UUID_FILE
+  gpu-device-map verify EXPECTED_UUID_FILE DEVICE_MAP_FILE
+
+discover prints canonical lines:
+  GPU-uuid=/dev/nvidiaN
+
+verify proves that every configured UUID still maps to the reviewed device node.
+MIG device instances are intentionally outside this v0.x physical-GPU contract.
+USAGE
+  exit 2
+}
+
+[[ $# -ge 2 ]] || usage
+MODE="$1"
+EXPECTED_FILE="$2"
+MAP_FILE="\${3:-}"
+
+[[ "$MODE" == "discover" || "$MODE" == "verify" ]] || usage
+[[ -f "$EXPECTED_FILE" ]] || die "expected GPU UUID file is missing"
+if [[ "$MODE" == "verify" ]]; then
+  [[ $# -eq 3 ]] || usage
+  [[ -f "$MAP_FILE" ]] || die "GPU device map file is missing"
+else
+  [[ $# -eq 2 ]] || usage
+fi
+command -v nvidia-smi >/dev/null 2>&1 || die "nvidia-smi is not available"
+
+expected_tmp="$(mktemp)"
+observed_tmp="$(mktemp)"
+map_tmp="$(mktemp)"
+cleanup() {
+  rm -f "$expected_tmp" "$observed_tmp" "$map_tmp"
+}
+trap cleanup EXIT
+
+awk 'NF { gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print }' "$EXPECTED_FILE" \
+  | sort >"$expected_tmp"
+[[ -s "$expected_tmp" ]] || die "expected GPU UUID set is empty"
+if [[ -n "$(uniq -d "$expected_tmp")" ]]; then
+  die "expected GPU UUID file contains duplicates"
+fi
+
+nvidia-smi --query-gpu=uuid,minor_number --format=csv,noheader,nounits \
+  | awk -F',' '
+      NF >= 2 {
+        uuid=$1
+        minor=$2
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", uuid)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", minor)
+        if (uuid != "" && minor != "") print uuid "=" minor
+      }
+    ' >"$observed_tmp"
+
+[[ -s "$observed_tmp" ]] || die "no GPU UUID/minor mappings were observed"
+
+while IFS= read -r uuid; do
+  matches="$(awk -F= -v wanted="$uuid" '$1 == wanted { print $2 }' "$observed_tmp")"
+  count="$(printf '%s\n' "$matches" | awk 'NF { count++ } END { print count+0 }')"
+  [[ "$count" -eq 1 ]] || die "configured GPU UUID does not map to exactly one physical device"
+  minor="$(printf '%s\n' "$matches" | awk 'NF { print; exit }')"
+  [[ "$minor" =~ ^[0-9]+$ ]] || die "configured GPU UUID has unsupported minor_number"
+  printf '%s=/dev/nvidia%s\n' "$uuid" "$minor" >>"$map_tmp"
+done <"$expected_tmp"
+
+sort -o "$map_tmp" "$map_tmp"
+if [[ -n "$(cut -d= -f2 "$map_tmp" | sort | uniq -d)" ]]; then
+  die "multiple configured GPU UUIDs map to one device node"
+fi
+
+if [[ "$MODE" == "discover" ]]; then
+  cat "$map_tmp"
+  exit 0
+fi
+
+reviewed_tmp="$(mktemp)"
+trap 'rm -f "$expected_tmp" "$observed_tmp" "$map_tmp" "$reviewed_tmp"' EXIT
+awk -F= '
+  NF == 2 {
+    uuid=$1
+    path=$2
+    gsub(/^[[:space:]]+|[[:space:]]+$/, "", uuid)
+    gsub(/^[[:space:]]+|[[:space:]]+$/, "", path)
+    if (uuid != "" && path != "") print uuid "=" path
+  }
+' "$MAP_FILE" | sort >"$reviewed_tmp"
+
+if ! cmp -s "$map_tmp" "$reviewed_tmp"; then
+  die "GPU UUID to device-node mapping changed"
+fi
+
+while IFS='=' read -r uuid path; do
+  [[ "$path" =~ ^/dev/nvidia[0-9]+$ ]] || die "unsupported GPU device-node path"
+  [[ -c "$path" ]] || die "GPU device node is not a character device: $path"
+done <"$reviewed_tmp"
+
+count="$(wc -l <"$reviewed_tmp" | tr -d ' ')"
+printf '[astrumweaver-gpu-device-map] ok count=%s\n' "$count"
