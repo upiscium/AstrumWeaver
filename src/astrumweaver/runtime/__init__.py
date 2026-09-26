@@ -23,6 +23,7 @@ from .contracts import (
 from .deployment import (
     RuntimeDeploymentSpec,
     build_runtime_deployment_spec,
+    discover_runtime_host_facts,
     managed_runtime_from_deployment,
     provider_from_deployment,
 )
@@ -61,6 +62,7 @@ __all__ = [
     "RuntimeLifecycleError",
     "RuntimeLifecycleManager",
     "build_runtime_deployment_spec",
+    "discover_runtime_host_facts",
     "evaluate_catalog",
     "evaluate_provider",
     "managed_runtime_from_deployment",
