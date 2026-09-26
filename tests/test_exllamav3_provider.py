@@ -8,7 +8,7 @@ from dataclasses import replace
 import httpx
 import pytest
 
-from astrumweaver import ResourceShape, WorkerSpec
+from astrumweaver import AcceleratorDevice, ResourceShape, WorkerSpec
 from astrumweaver.execution import JobRequest
 from astrumweaver.runtime import (
     ExecutionDemand,
@@ -183,6 +183,31 @@ def test_cpu_gpu_hybrid_is_outside_provider_scope() -> None:
     )
     assert not report.compatible
     assert "cpu-gpu-hybrid-outside-provider-scope" in {
+        reason.code for reason in report.reasons
+    }
+
+
+def test_invalid_per_device_compute_capability_is_rejected_before_exllama_probe() -> None:
+    with pytest.raises(ValueError, match="compute capability"):
+        AcceleratorDevice(
+            "GPU-invalid",
+            24576,
+            compute_capability="8.x",
+            device_class="NVIDIA RTX 3090",
+        )
+
+
+def test_invalid_legacy_compute_capability_label_returns_structured_reason() -> None:
+    report = ExLlamaV3Provider().compatibility(
+        context(
+            worker=single_worker(
+                labels={"gpu.compute_capability.min": "8.x"}
+            )
+        )
+    )
+
+    assert not report.compatible
+    assert "compute-capability-invalid" in {
         reason.code for reason in report.reasons
     }
 

@@ -74,7 +74,9 @@ The backend queries:
 - compute capability when the installed driver exposes it
 
 If compute capability is unavailable, UUID/VRAM discovery remains usable and
-providers that require architecture evidence return an advisory.
+providers that require architecture evidence return an advisory. `nvidia-smi`
+optional-field sentinels such as `N/A` are normalized to unknown evidence
+rather than passed into strict accelerator-fact validation.
 
 The user explicitly chooses which locally visible GPUs form the Worker. The
 resulting WorkerSpec preserves that UUID order and calculates:

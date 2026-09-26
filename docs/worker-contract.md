@@ -111,7 +111,31 @@ GPU UUIDs identify devices. CUDA ordinals and `/dev/nvidiaN` names do not.
 
 A job may optionally require a particular UUID, but ordinary portable scheduling should prefer resource/capability constraints over hard-pinning a device.
 
-## 7. Job requirements
+## 7. Per-device accelerator facts
+
+Aggregate resource shape is not sufficient to validate every runtime topology.
+
+`WorkerSpec.accelerators` may therefore preserve one ordered
+`AcceleratorDevice` record per owned GPU:
+
+- UUID
+- VRAM capacity
+- compute capability when known, canonicalized as numeric `major.minor`
+- device class/model identity when known
+
+When present, the accelerator tuple must exactly match `gpu_uuids` order and
+the aggregate VRAM totals in `ResourceShape`. Compute capability evidence is
+validated at `AcceleratorDevice` construction; malformed strings are rejected
+instead of becoming compatibility evidence.
+
+These facts are durable Worker state, not TUI-only metadata. Runtime providers
+may require them before making claims such as "homogeneous multi-GPU".
+
+In particular, vLLM v0.x multi-GPU compatibility fails closed when per-device
+facts are absent or when VRAM, compute capability, or device class differs
+across the selected devices.
+
+## 8. Job requirements
 
 The initial generic requirements are:
 
@@ -127,7 +151,7 @@ All requirements are conjunctive.
 
 The matcher returns both a boolean result and generic mismatch reasons for diagnostics.
 
-## 8. Separation from application semantics
+## 9. Separation from application semantics
 
 The following is intentionally invalid scheduler design:
 

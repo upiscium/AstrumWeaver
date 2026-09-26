@@ -8,9 +8,10 @@ from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
-from ..contracts import ResourceShape, WorkerSpec
+from ..contracts import AcceleratorDevice, ResourceShape, WorkerSpec
 from ..execution import JobResult
 from ..scheduling import worker_matches
+from .migrate import required_migration_names
 from .models import (
     JobRecord,
     JobStatus,
@@ -55,16 +56,41 @@ class PostgresControlRepository:
     """Transactional PostgreSQL control-plane repository."""
 
     def check_storage(self) -> None:
+        try:
+            required = required_migration_names()
+        except RuntimeError as exc:
+            raise StorageUnavailable(
+                "postgresql migration metadata is unavailable"
+            ) from exc
+
         with self._connection() as connection:
             row = connection.execute(
                 """
                 SELECT
                     to_regclass('public.workers') AS workers,
-                    to_regclass('public.jobs') AS jobs
+                    to_regclass('public.jobs') AS jobs,
+                    to_regclass('public.schema_migrations') AS schema_migrations
                 """
             ).fetchone()
-        if not row or row.get("workers") is None or row.get("jobs") is None:
-            raise StorageUnavailable("postgresql schema is unavailable")
+            if (
+                not row
+                or row.get("workers") is None
+                or row.get("jobs") is None
+                or row.get("schema_migrations") is None
+            ):
+                raise StorageUnavailable("postgresql schema is unavailable")
+
+            applied_rows = connection.execute(
+                "SELECT name FROM schema_migrations"
+            ).fetchall()
+
+        applied = {str(item["name"]) for item in applied_rows}
+        missing = [name for name in required if name not in applied]
+        if missing:
+            raise StorageUnavailable(
+                "postgresql schema migrations are incomplete: "
+                + ", ".join(missing)
+            )
 
 
     def __init__(
@@ -116,6 +142,15 @@ class PostgresControlRepository:
             worker_id=row["id"],
             worker_class=row["worker_class"],
             gpu_uuids=tuple(row.get("gpu_uuids") or ()),
+            accelerators=tuple(
+                AcceleratorDevice(
+                    uuid=str(item["uuid"]),
+                    memory_mb=int(item["memory_mb"]),
+                    compute_capability=item.get("compute_capability"),
+                    device_class=item.get("device_class"),
+                )
+                for item in row.get("accelerators") or ()
+            ),
             capabilities=frozenset(row.get("capabilities") or ()),
             labels=row.get("labels") or {},
             resources=ResourceShape(
@@ -228,12 +263,12 @@ class PostgresControlRepository:
                 """
                 INSERT INTO workers (
                     id, worker_class, capabilities, labels, gpu_uuids,
-                    gpu_count, total_vram_mb, max_single_gpu_vram_mb,
+                    accelerators, gpu_count, total_vram_mb, max_single_gpu_vram_mb,
                     max_concurrency, state, metadata, registered_at,
                     last_seen_at, active_jobs, updated_at
                 ) VALUES (
                     %s, %s, %s, %s, %s,
-                    %s, %s, %s,
+                    %s, %s, %s, %s,
                     %s, 'online', %s, %s,
                     %s, %s, %s
                 )
@@ -242,6 +277,7 @@ class PostgresControlRepository:
                     capabilities = EXCLUDED.capabilities,
                     labels = EXCLUDED.labels,
                     gpu_uuids = EXCLUDED.gpu_uuids,
+                    accelerators = EXCLUDED.accelerators,
                     gpu_count = EXCLUDED.gpu_count,
                     total_vram_mb = EXCLUDED.total_vram_mb,
                     max_single_gpu_vram_mb = EXCLUDED.max_single_gpu_vram_mb,
@@ -259,6 +295,17 @@ class PostgresControlRepository:
                     _json(sorted(spec.capabilities)),
                     _json(dict(spec.labels)),
                     _json(list(spec.gpu_uuids)),
+                    _json(
+                        [
+                            {
+                                "uuid": device.uuid,
+                                "memory_mb": device.memory_mb,
+                                "compute_capability": device.compute_capability,
+                                "device_class": device.device_class,
+                            }
+                            for device in spec.accelerators
+                        ]
+                    ),
                     spec.resources.gpu_count,
                     spec.resources.total_vram_mb,
                     spec.resources.max_single_gpu_vram_mb,

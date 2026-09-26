@@ -95,7 +95,7 @@ Unauthenticated process-liveness endpoint.
 GET /v1/ready
 ```
 
-Readiness requires the configured PostgreSQL service to be reachable and the AstrumWeaver `workers` and `jobs` schema to exist.
+Readiness requires PostgreSQL to be reachable, the AstrumWeaver control tables to exist, and every SQL migration packaged with the running Control binary to be recorded in `schema_migrations`. A Control binary whose required migration set has not been applied returns 503 rather than advertising Ready.
 
 ### Client job operations
 

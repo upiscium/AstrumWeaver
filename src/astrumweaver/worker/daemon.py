@@ -12,7 +12,7 @@ from typing import Any
 
 import uvicorn
 
-from ..contracts import ResourceShape, WorkerSpec
+from ..contracts import AcceleratorDevice, ResourceShape, WorkerSpec
 from .client import ControlClient
 from .health import create_health_app
 from .runtime import (
@@ -32,6 +32,15 @@ def _build_spec(section: dict[str, Any]) -> WorkerSpec:
     gpu_uuids = tuple(str(item) for item in section.get("gpu_uuids", ()))
     capabilities = frozenset(str(item) for item in section.get("capabilities", ()))
     labels = {str(key): str(value) for key, value in dict(section.get("labels") or {}).items()}
+    accelerators = tuple(
+        AcceleratorDevice(
+            uuid=str(item["uuid"]),
+            memory_mb=int(item["memory_mb"]),
+            compute_capability=item.get("compute_capability"),
+            device_class=item.get("device_class"),
+        )
+        for item in section.get("accelerators", ())
+    )
     return WorkerSpec(
         worker_id=str(section["id"]),
         worker_class=str(section["class"]),
@@ -41,6 +50,7 @@ def _build_spec(section: dict[str, Any]) -> WorkerSpec:
             max_single_gpu_vram_mb=int(section.get("max_single_gpu_vram_mb", 0)),
         ),
         gpu_uuids=gpu_uuids,
+        accelerators=accelerators,
         capabilities=capabilities,
         labels=labels,
     )

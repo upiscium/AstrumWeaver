@@ -127,6 +127,21 @@ v0.x contains:
 
 Host discovery belongs to the setup backend (#24), not Control.
 
+## Per-device accelerator evidence
+
+Runtime compatibility may use ordered per-device facts from
+`WorkerSpec.accelerators` in addition to aggregate `ResourceShape`.
+
+This distinction matters for multi-GPU runtimes. Equal aggregate or per-device
+VRAM alone does not prove that GPUs are homogeneous. Providers that require a
+homogeneous set must validate the available device-level facts, such as compute
+capability and device class, and fail closed when the evidence required for the
+claim is missing.
+
+The setup TUI preserves discovered UUID, VRAM, device class and best-effort
+compute capability in the WorkerSpec. The durable Control state preserves the
+same facts so #32 acceptance can audit compatibility decisions.
+
 ## Compatibility result
 
 Every provider returns structured `CompatibilityReason` values.
@@ -244,7 +259,7 @@ Each concrete provider must prove its own compatibility rules through provider t
 
 ## Setup TUI relationship
 
-The future TUI (#30) is a frontend over these contracts.
+The interactive TUI (#30) is a frontend over these contracts.
 
 Expected flow:
 

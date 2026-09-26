@@ -1,6 +1,6 @@
 """AstrumWeaver domain contracts."""
 
-from .contracts import JobRequirements, ResourceShape, WorkerSpec
+from .contracts import AcceleratorDevice, JobRequirements, ResourceShape, WorkerSpec
 from .execution import (
     ArtifactRef,
     JobExecutor,
@@ -12,6 +12,7 @@ from .execution import (
 from .scheduling import MatchResult, match_worker, worker_matches
 
 __all__ = [
+    "AcceleratorDevice",
     "ArtifactRef",
     "JobExecutor",
     "JobRequest",

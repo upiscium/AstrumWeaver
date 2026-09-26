@@ -20,6 +20,7 @@ from astrumweaver.control import (
     JobStatus,
     JobSubmission,
     PostgresControlRepository,
+    StorageUnavailable,
     WorkerRegistration,
     utc_now,
 )
@@ -35,13 +36,8 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture(autouse=True)
 def reset_database() -> None:
     assert DATABASE_URL is not None
-    migration = (
-        Path(__file__).resolve().parents[1]
-        / "migrations"
-        / "001_control_plane.sql"
-    ).read_text(encoding="utf-8")
+    apply_migrations(DATABASE_URL)
     with psycopg.connect(DATABASE_URL, autocommit=True) as connection:
-        connection.execute(migration)
         connection.execute("TRUNCATE TABLE jobs, workers RESTART IDENTITY CASCADE")
 
 
@@ -318,11 +314,100 @@ async def test_postgres_transport_fencing_and_non_text_result() -> None:
     assert result["outputs"]["probabilities"]["remote"] == 0.2
 
 
+def test_check_storage_rejects_legacy_001_only_schema_until_migrated() -> None:
+    assert DATABASE_URL is not None
+    migration_001 = (
+        Path(__file__).resolve().parents[1]
+        / "migrations"
+        / "001_control_plane.sql"
+    ).read_text(encoding="utf-8")
+
+    with psycopg.connect(DATABASE_URL, autocommit=True) as connection:
+        connection.execute("DROP TABLE IF EXISTS jobs CASCADE")
+        connection.execute("DROP TABLE IF EXISTS workers CASCADE")
+        connection.execute("DROP TABLE IF EXISTS schema_migrations CASCADE")
+        connection.execute(migration_001)
+
+    repo = PostgresControlRepository(DATABASE_URL)
+    with pytest.raises(StorageUnavailable, match="schema"):
+        repo.check_storage()
+
+    applied = apply_migrations(DATABASE_URL)
+
+    assert applied == [
+        "000_schema_migrations.sql",
+        "001_control_plane.sql",
+        "002_worker_accelerators.sql",
+    ]
+    repo.check_storage()
+
+    with psycopg.connect(DATABASE_URL) as connection:
+        columns = {
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'workers'
+                """
+            ).fetchall()
+        }
+        recorded = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM schema_migrations"
+            ).fetchall()
+        }
+
+    assert "accelerators" in columns
+    assert set(applied) <= recorded
+
+
+@pytest.mark.asyncio
+async def test_ready_rejects_legacy_001_only_schema_until_all_migrations_apply() -> None:
+    assert DATABASE_URL is not None
+    migration_001 = (
+        Path(__file__).resolve().parents[1]
+        / "migrations"
+        / "001_control_plane.sql"
+    ).read_text(encoding="utf-8")
+
+    with psycopg.connect(DATABASE_URL, autocommit=True) as connection:
+        connection.execute("DROP TABLE IF EXISTS jobs CASCADE")
+        connection.execute("DROP TABLE IF EXISTS workers CASCADE")
+        connection.execute("DROP TABLE IF EXISTS schema_migrations CASCADE")
+        connection.execute(migration_001)
+
+    repo = PostgresControlRepository(DATABASE_URL)
+    app = create_app(
+        repo,
+        client_token="client-secret",
+        worker_token="worker-secret",
+    )
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://control",
+    ) as client:
+        before = await client.get("/v1/ready")
+        assert before.status_code == 503
+        assert before.json() == {"detail": "storage unavailable"}
+
+        apply_migrations(DATABASE_URL)
+
+        after = await client.get("/v1/ready")
+        assert after.status_code == 200
+        assert after.json()["ready"] is True
+
+
 def test_packaged_migration_entrypoint_is_idempotent() -> None:
     assert DATABASE_URL is not None
     applied = apply_migrations(DATABASE_URL)
 
+    assert "000_schema_migrations.sql" in applied
     assert "001_control_plane.sql" in applied
+    assert "002_worker_accelerators.sql" in applied
 
     repo = PostgresControlRepository(DATABASE_URL)
     repo.check_storage()

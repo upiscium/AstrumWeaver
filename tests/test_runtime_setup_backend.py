@@ -406,6 +406,168 @@ def test_apply_is_idempotent_and_returns_structured_evidence() -> None:
     )
 
 
+def test_progress_callback_failure_cannot_change_successful_apply_outcome() -> None:
+    plan = setup_plan()
+    baseline_driver = FakeDriver()
+    observed_driver = FakeDriver()
+
+    baseline = apply_plan(
+        plan,
+        baseline_driver,
+        approval=full_approval(plan),
+    )
+
+    def broken_observer(_result) -> None:
+        raise RuntimeError("observer failed")
+
+    observed = apply_plan(
+        plan,
+        observed_driver,
+        approval=full_approval(plan),
+        on_result=broken_observer,
+    )
+
+    assert observed == baseline
+    assert observed_driver.apply_calls == baseline_driver.apply_calls
+    assert observed_driver.rollback_calls == baseline_driver.rollback_calls
+
+
+def test_progress_callback_failure_cannot_interrupt_rollback() -> None:
+    plan = setup_plan()
+    baseline_driver = FakeDriver(fail_kind=SetupActionKind.HEALTH_CHECK)
+    observed_driver = FakeDriver(fail_kind=SetupActionKind.HEALTH_CHECK)
+
+    baseline = apply_plan(
+        plan,
+        baseline_driver,
+        approval=full_approval(plan),
+    )
+
+    def broken_observer(_result) -> None:
+        raise RuntimeError("observer failed")
+
+    observed = apply_plan(
+        plan,
+        observed_driver,
+        approval=full_approval(plan),
+        on_result=broken_observer,
+    )
+
+    assert observed == baseline
+    assert observed_driver.apply_calls == baseline_driver.apply_calls
+    assert observed_driver.rollback_calls == baseline_driver.rollback_calls
+    assert observed_driver.rollback_calls
+
+
+def test_progress_callback_failure_cannot_change_skipped_outcome() -> None:
+    plan = setup_plan()
+    baseline_driver = FakeDriver()
+    observed_driver = FakeDriver()
+    baseline_driver.satisfied.update(action.action_id for action in plan.actions)
+    observed_driver.satisfied.update(action.action_id for action in plan.actions)
+
+    baseline = apply_plan(
+        plan,
+        baseline_driver,
+        approval=full_approval(plan),
+    )
+    observed = apply_plan(
+        plan,
+        observed_driver,
+        approval=full_approval(plan),
+        on_result=lambda _result: (_ for _ in ()).throw(
+            RuntimeError("observer failed")
+        ),
+    )
+
+    assert observed == baseline
+    assert all(
+        result.status is SetupActionResultStatus.SKIPPED
+        for result in observed.actions
+    )
+    assert observed_driver.apply_calls == []
+
+
+def test_progress_callback_failure_cannot_change_blocked_or_inspect_failure() -> None:
+    plan = setup_plan()
+    target_id = plan.actions[1].action_id
+
+    class BlockedDriver(FakeDriver):
+        def inspect(self, action):
+            if action.action_id == target_id:
+                return ActionInspection(
+                    state=SetupActionState.BLOCKED,
+                    detail="synthetic block",
+                )
+            return super().inspect(action)
+
+    class InspectFailDriver(FakeDriver):
+        def inspect(self, action):
+            if action.action_id == target_id:
+                raise RuntimeError("synthetic inspect failure")
+            return super().inspect(action)
+
+    def broken_observer(_result) -> None:
+        raise RuntimeError("observer failed")
+
+    for driver_type in (BlockedDriver, InspectFailDriver):
+        baseline_driver = driver_type()
+        observed_driver = driver_type()
+        baseline = apply_plan(
+            plan,
+            baseline_driver,
+            approval=full_approval(plan),
+        )
+        observed = apply_plan(
+            plan,
+            observed_driver,
+            approval=full_approval(plan),
+            on_result=broken_observer,
+        )
+
+        assert observed == baseline
+        assert observed_driver.apply_calls == baseline_driver.apply_calls
+        assert observed_driver.rollback_calls == baseline_driver.rollback_calls
+
+
+def test_progress_callback_failure_cannot_interrupt_rollback_failures() -> None:
+    plan = setup_plan()
+
+    class RollbackFailDriver(FakeDriver):
+        def rollback(self, action, receipt):
+            self.rollback_calls.append(action.action_id)
+            raise RuntimeError("synthetic rollback failure")
+
+    def broken_observer(_result) -> None:
+        raise RuntimeError("observer failed")
+
+    baseline_driver = RollbackFailDriver(
+        fail_kind=SetupActionKind.HEALTH_CHECK
+    )
+    observed_driver = RollbackFailDriver(
+        fail_kind=SetupActionKind.HEALTH_CHECK
+    )
+    baseline = apply_plan(
+        plan,
+        baseline_driver,
+        approval=full_approval(plan),
+    )
+    observed = apply_plan(
+        plan,
+        observed_driver,
+        approval=full_approval(plan),
+        on_result=broken_observer,
+    )
+
+    assert observed == baseline
+    assert observed_driver.rollback_calls == baseline_driver.rollback_calls
+    assert len(observed.rollback_actions) == len(baseline.rollback_actions)
+    assert all(
+        result.status is SetupActionResultStatus.ROLLBACK_FAILED
+        for result in observed.rollback_actions
+    )
+
+
 def test_apply_rolls_back_reversible_actions_in_reverse_order() -> None:
     plan = setup_plan()
     driver = FakeDriver(fail_kind=SetupActionKind.HEALTH_CHECK)

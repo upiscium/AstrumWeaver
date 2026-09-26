@@ -7,7 +7,7 @@ from collections.abc import Mapping
 import httpx
 import pytest
 
-from astrumweaver import ResourceShape, WorkerSpec
+from astrumweaver import AcceleratorDevice, ResourceShape, WorkerSpec
 from astrumweaver.execution import JobRequest
 from astrumweaver.runtime import (
     ExecutionDemand,
@@ -73,6 +73,20 @@ def homogeneous_multi_worker() -> WorkerSpec:
             max_single_gpu_vram_mb=24576,
         ),
         gpu_uuids=("GPU-example-a", "GPU-example-b"),
+        accelerators=(
+            AcceleratorDevice(
+                "GPU-example-a",
+                24576,
+                compute_capability="8.6",
+                device_class="NVIDIA RTX 3090",
+            ),
+            AcceleratorDevice(
+                "GPU-example-b",
+                24576,
+                compute_capability="8.6",
+                device_class="NVIDIA RTX 3090",
+            ),
+        ),
         capabilities=frozenset({"llm.chat", "text.generate"}),
     )
 
@@ -87,6 +101,20 @@ def heterogeneous_multi_worker() -> WorkerSpec:
             max_single_gpu_vram_mb=24576,
         ),
         gpu_uuids=("GPU-example-large", "GPU-example-small"),
+        accelerators=(
+            AcceleratorDevice(
+                "GPU-example-large",
+                24576,
+                compute_capability="8.6",
+                device_class="NVIDIA RTX 3090",
+            ),
+            AcceleratorDevice(
+                "GPU-example-small",
+                12288,
+                compute_capability="8.6",
+                device_class="NVIDIA RTX 3060",
+            ),
+        ),
         capabilities=frozenset({"llm.chat", "text.generate"}),
     )
 
@@ -214,6 +242,101 @@ def test_multi_gpu_rejects_partial_tensor_parallel_size() -> None:
     assert "tensor-parallel-size-mismatch" in {
         reason.code for reason in report.reasons
     }
+
+
+def test_multi_gpu_requires_per_device_accelerator_facts() -> None:
+    worker = WorkerSpec(
+        worker_id="vllm-unknown",
+        worker_class="multi-gpu",
+        resources=ResourceShape(
+            gpu_count=2,
+            total_vram_mb=49152,
+            max_single_gpu_vram_mb=24576,
+        ),
+        gpu_uuids=("GPU-a", "GPU-b"),
+        capabilities=frozenset({"llm.chat", "text.generate"}),
+    )
+
+    report = VllmProvider().compatibility(
+        context(
+            worker=worker,
+            execution=demand(topology=GPUTopology.MULTI_GPU),
+        )
+    )
+
+    assert not report.compatible
+    assert "accelerator-facts-required" in {
+        reason.code for reason in report.reasons
+    }
+
+
+def test_same_invalid_compute_capability_cannot_form_vllm_homogeneous_worker() -> None:
+    with pytest.raises(ValueError, match="compute capability"):
+        WorkerSpec(
+            worker_id="vllm-invalid-capability",
+            worker_class="multi-gpu",
+            resources=ResourceShape(
+                gpu_count=2,
+                total_vram_mb=49152,
+                max_single_gpu_vram_mb=24576,
+            ),
+            gpu_uuids=("GPU-a", "GPU-b"),
+            accelerators=(
+                AcceleratorDevice(
+                    "GPU-a",
+                    24576,
+                    compute_capability="garbage",
+                    device_class="NVIDIA RTX 3090",
+                ),
+                AcceleratorDevice(
+                    "GPU-b",
+                    24576,
+                    compute_capability="garbage",
+                    device_class="NVIDIA RTX 3090",
+                ),
+            ),
+            capabilities=frozenset({"llm.chat", "text.generate"}),
+        )
+
+
+def test_multi_gpu_rejects_mixed_device_class_even_with_equal_vram() -> None:
+    worker = WorkerSpec(
+        worker_id="vllm-mixed-class",
+        worker_class="multi-gpu",
+        resources=ResourceShape(
+            gpu_count=2,
+            total_vram_mb=49152,
+            max_single_gpu_vram_mb=24576,
+        ),
+        gpu_uuids=("GPU-a", "GPU-b"),
+        accelerators=(
+            AcceleratorDevice(
+                "GPU-a",
+                24576,
+                compute_capability="8.6",
+                device_class="NVIDIA RTX 3090",
+            ),
+            AcceleratorDevice(
+                "GPU-b",
+                24576,
+                compute_capability="8.9",
+                device_class="NVIDIA RTX 4090",
+            ),
+        ),
+        capabilities=frozenset({"llm.chat", "text.generate"}),
+    )
+
+    report = VllmProvider().compatibility(
+        context(
+            worker=worker,
+            execution=demand(topology=GPUTopology.MULTI_GPU),
+        )
+    )
+
+    assert not report.compatible
+    codes = {reason.code for reason in report.reasons}
+    assert "heterogeneous-device-class-unsupported" in codes
+    assert "heterogeneous-compute-capability-unsupported" in codes
 
 
 def test_multi_gpu_rejects_heterogeneous_vram_capacity() -> None:
