@@ -663,6 +663,8 @@ def test_first_run_nixos_runtime_writes_reviewed_provider_snippet(
     assert result.provider_id == "fake"
     rendered = output_path.read_text(encoding="utf-8")
     assert "runtime = {" in rendered
+    assert 'capabilities = [ "llm.chat" "text.generate" ];' in rendered
+    assert '"debug.echo"' not in rendered
     assert 'provider = "fake";' in rendered
     assert "packages = [ pkgs.fake ];" in rendered
     assert 'modelRef = "org/model";' in rendered

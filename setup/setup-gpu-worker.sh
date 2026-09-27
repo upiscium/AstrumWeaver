@@ -29,9 +29,13 @@ Options:
   --gpu-isolation MODE      GPU device-cgroup policy: auto|on|off (default: auto).
   --gpu-device UUID=PATH    Reviewed UUID to /dev/nvidiaN mapping; may be repeated.
   --root DIR                Stage files below DIR instead of live /.
-  --user NAME               Service account name (default: astrumweaver).
+  --user NAME               Shared Control/Worker service account and group (default: astrumweaver).
   --start                   Enable and start the service after installation.
   -h, --help                Show this help.
+
+Control and Worker share /etc/astrumweaver and /var/lib/astrumweaver. Use the
+same --user NAME for both setup scripts; an existing role unit with a different
+or ambiguous User=/Group= identity is rejected rather than migrated.
 
 The node and GPU exposure must already exist. The script does not configure
 Proxmox, PCI passthrough, IOMMU, or host NVIDIA drivers. When GPU isolation is
@@ -86,8 +90,6 @@ fi
 [[ "$SERVICE_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "invalid service user"
 
 ROOT="$(normalize_root "$ROOT")"
-EXECUTABLE="$(resolve_executable "$EXECUTABLE" "$ROOT" astrumweaver-worker)"
-
 ETC_DIR="$(root_path "$ROOT" /etc/astrumweaver)"
 STATE_DIR="$(root_path "$ROOT" /var/lib/astrumweaver)"
 UNIT_DIR="$(root_path "$ROOT" /etc/systemd/system)"
@@ -104,8 +106,8 @@ UNIT_DEST="$UNIT_DIR/astrumweaver-worker.service"
 ISOLATION_UNIT_DEST="$UNIT_DIR/astrumweaver-worker-gpu-isolation-preflight.service"
 ISOLATION_DROPIN_DEST="$DROPIN_DIR/10-gpu-isolation.conf"
 
-install -d -m 0750 "$ETC_DIR" "$STATE_DIR"
-install -d -m 0755 "$UNIT_DIR" "$LIBEXEC_DIR"
+validate_shared_service_identity "$ROOT" "$SERVICE_USER"
+EXECUTABLE="$(resolve_executable "$EXECUTABLE" "$ROOT" astrumweaver-worker)"
 
 declared_tmp="$(mktemp)"
 expected_tmp="$(mktemp)"
@@ -151,6 +153,14 @@ if ((${#GPU_DEVICE_ENTRIES[@]} > 0)); then
   fi
 fi
 
+if [[ "$ROOT" == "/" ]]; then
+  ensure_live_service_user "$SERVICE_USER"
+fi
+
+install -d -m 0750 "$ETC_DIR" "$STATE_DIR"
+install -d -m 0755 "$UNIT_DIR" "$LIBEXEC_DIR"
+reconcile_service_directories "$ROOT" "$SERVICE_USER" "$ETC_DIR" "$STATE_DIR"
+
 install_same_or_fail "$CONFIG_SOURCE" "$CONFIG_DEST" 0640
 if [[ -n "$ENV_SOURCE" ]]; then
   install_same_or_fail "$ENV_SOURCE" "$ENV_DEST" 0640
@@ -175,7 +185,6 @@ render_unit \
   "$runtime_arg"
 
 if [[ "$ROOT" == "/" ]]; then
-  ensure_live_service_user "$SERVICE_USER"
   require_cmd nvidia-smi
 
   exact_set=0
@@ -278,19 +287,13 @@ EOF
   install_generated_same_or_fail "$isolation_dropin_tmp" "$ISOLATION_DROPIN_DEST" 0644
 fi
 
-if [[ "$ROOT" == "/" ]]; then
-  chown root:"$SERVICE_USER" "$CONFIG_DEST" "$GPU_UUID_DEST"
-  if [[ -f "$GPU_DEVICE_MAP_DEST" ]]; then
-    chown root:"$SERVICE_USER" "$GPU_DEVICE_MAP_DEST"
-  fi
-  if [[ -f "$RUNTIME_MANIFEST_DEST" ]]; then
-    chown root:"$SERVICE_USER" "$RUNTIME_MANIFEST_DEST"
-  fi
-  if [[ -f "$ENV_DEST" ]]; then
-    chown root:"$SERVICE_USER" "$ENV_DEST"
-  fi
-  chown "$SERVICE_USER":"$SERVICE_USER" "$STATE_DIR"
+reconcile_service_file "$ROOT" "$SERVICE_USER" "$CONFIG_DEST"
+reconcile_service_file "$ROOT" "$SERVICE_USER" "$ENV_DEST"
+reconcile_service_file "$ROOT" "$SERVICE_USER" "$RUNTIME_MANIFEST_DEST"
+reconcile_service_file "$ROOT" "$SERVICE_USER" "$GPU_UUID_DEST"
+reconcile_service_file "$ROOT" "$SERVICE_USER" "$GPU_DEVICE_MAP_DEST"
 
+if [[ "$ROOT" == "/" ]]; then
   systemd_reload_and_maybe_start astrumweaver-worker.service "$START"
 fi
 log "GPU worker host integration complete"

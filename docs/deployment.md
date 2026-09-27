@@ -131,7 +131,7 @@ For interactive application of a SetupPlan, use the first-party systemd
 driver:
 
 ```sh
-sudo astrumweaver-setup-tui \
+sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-setup-tui \
   --driver astrumweaver.setup.systemd:create_systemd_driver
 ```
 

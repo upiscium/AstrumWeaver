@@ -156,6 +156,10 @@
       checks.${system} = {
         inherit astrumweaver control worker installer integration;
 
+        setup-permissions = import ./nix/tests/setup-permissions.nix {
+          inherit pkgs integration;
+        };
+
         installation-surface = pkgs.runCommand "astrumweaver-installation-surface" { } ''
           test -x ${installer}/bin/astrumweaver-setup-tui
           test -x ${installer}/bin/astrumweaver-control
@@ -173,15 +177,20 @@
 
           # Prove that first-run helper discovery works from the actual
           # combined installer closure without relying on shell PATH.
-          env -i PATH=/usr/bin:/bin \
+          ln -s ${installer} "$TMPDIR/installer-profile"
+          env -i PATH=${pkgs.coreutils}/bin:${pkgs.bash}/bin PROFILE="$TMPDIR/installer-profile" \
             ${installer}/bin/python3 -c '
+import os
+import subprocess
 import sys
 from astrumweaver.setup.first_run import SystemdFirstRunInstaller
-sys.argv[0] = "${installer}/bin/astrumweaver-setup-tui"
+profile_bin = os.environ["PROFILE"] + "/bin/"
+sys.argv[0] = profile_bin + "astrumweaver-setup-tui"
 installer = SystemdFirstRunInstaller()
 expected = {
-    name: "${installer}/bin/" + name
+    name: profile_bin + name
     for name in (
+        "astrumweaver-setup-tui",
         "astrumweaver-setup-control-plane",
         "astrumweaver-setup-gpu-worker",
         "astrumweaver-control",
@@ -192,6 +201,7 @@ expected = {
 for name, path in expected.items():
     actual = installer._resolve_tool(name)
     assert actual == path, (name, actual, path)
+    subprocess.run([actual, "--help"], check=True, stdout=subprocess.DEVNULL)
 '
           touch "$out"
         '';

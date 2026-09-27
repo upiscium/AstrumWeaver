@@ -148,6 +148,7 @@ def render_worker_toml(
         raise ValueError("Control URL must not be blank")
     if not 1 <= health_port <= 65535:
         raise ValueError("Worker health port must be between 1 and 65535")
+    _validate_smoke_capabilities(worker, execution_mode)
 
     capabilities = tuple(sorted(worker.capabilities))
     gpu_uuids = tuple(worker.gpu_uuids)
@@ -214,6 +215,16 @@ def render_worker_toml(
             ]
         )
     return "\n".join(lines) + "\n"
+
+
+def _validate_smoke_capabilities(
+    worker: WorkerSpec, execution_mode: FirstRunExecutionMode,
+) -> None:
+    if (
+        execution_mode is FirstRunExecutionMode.SMOKE
+        and worker.capabilities != frozenset({"debug.echo"})
+    ):
+        raise ValueError("smoke WorkerSpec must advertise only debug.echo")
 
 
 def write_protected_file(path: Path, content: str) -> None:
@@ -286,7 +297,7 @@ class SystemdFirstRunInstaller:
         if self.tool_dir is not None:
             candidates.append(self.tool_dir / name)
         argv0 = Path(sys.argv[0])
-        if argv0.parent != Path("."):
+        if os.sep in sys.argv[0]:
             # Keep the invocation path before resolving symlinks. Dedicated
             # Nix profiles expose a combined bin/ directory whose setup
             # helpers are siblings of astrumweaver-setup-tui; resolving the
@@ -375,6 +386,35 @@ class SystemdFirstRunInstaller:
                 time.sleep(self.poll_interval_seconds)
         return False
 
+    @staticmethod
+    def _diagnostics(role: str, port: int) -> str:
+        endpoint = "v1/ready" if role == "control" else "health"
+        # Only fixed unit names and a validated, non-secret port are emitted.
+        # Never include subprocess argv/env, DB URLs, tokens or GPU identity.
+        return (
+            "Inspect:\n"
+            f"  systemctl status astrumweaver-{role}.service\n"
+            f"  journalctl -u astrumweaver-{role}.service -b\n"
+            f"  curl http://127.0.0.1:{port}/{endpoint}\n"
+            "Use the configured local bind address if loopback is not enabled."
+        )
+
+    def _run_service(
+        self,
+        args: list[str],
+        *,
+        role: str,
+        port: int,
+        env: Mapping[str, str] | None = None,
+    ) -> None:
+        try:
+            self._run(args, env=env)
+        except (OSError, subprocess.CalledProcessError):
+            raise RuntimeError(
+                f"{role.capitalize()} setup/migration/start command failed.\n"
+                + self._diagnostics(role, port)
+            ) from None
+
     def install_control(
         self,
         *,
@@ -393,7 +433,7 @@ class SystemdFirstRunInstaller:
             render_control_env(secrets),
             suffix=".env",
         ) as env_path:
-            self._run(
+            self._run_service(
                 [
                     setup,
                     "--config",
@@ -402,7 +442,9 @@ class SystemdFirstRunInstaller:
                     str(env_path),
                     "--executable",
                     executable,
-                ]
+                ],
+                role="control",
+                port=spec.port,
             )
 
         migration_env = dict(os.environ)
@@ -410,14 +452,18 @@ class SystemdFirstRunInstaller:
         migration_env["ASTRUMWEAVER_DATABASE_URL"] = (
             secrets.database_url
         )
-        self._run([migrate], env=migration_env)
-        self._run(
+        self._run_service(
+            [migrate], env=migration_env, role="control", port=spec.port
+        )
+        self._run_service(
             [
                 self.systemctl,
                 "enable",
                 "--now",
                 "astrumweaver-control.service",
-            ]
+            ],
+            role="control",
+            port=spec.port,
         )
 
         host = spec.bind_host
@@ -428,7 +474,8 @@ class SystemdFirstRunInstaller:
         )
         if not ready:
             raise RuntimeError(
-                "Control service did not become ready after migration/start"
+                "Control service did not become ready after migration/start.\n"
+                + self._diagnostics("control", spec.port)
             )
         return SystemdBootstrapResult(
             control_installed=True,
@@ -478,11 +525,11 @@ class SystemdFirstRunInstaller:
                     )
                     if start:
                         args.append("--start")
-                    self._run(args)
+                    self._run_service(args, role="worker", port=9100)
             else:
                 if start:
                     args.append("--start")
-                self._run(args)
+                self._run_service(args, role="worker", port=9100)
 
         ready = False
         if start:
@@ -492,7 +539,8 @@ class SystemdFirstRunInstaller:
             )
             if not ready:
                 raise RuntimeError(
-                    "Worker service did not become ready/registered"
+                    "Worker service did not become ready/registered.\n"
+                    + self._diagnostics("worker", 9100)
                 )
         return SystemdBootstrapResult(
             worker_installed=True,
@@ -542,6 +590,7 @@ def render_nixos_bootstrap_snippet(
     if role in {FirstRunRole.WORKER, FirstRunRole.BOTH}:
         if worker is None or control_url is None:
             raise ValueError("Worker role requires WorkerSpec/control URL")
+        _validate_smoke_capabilities(worker, execution_mode)
         lines.extend(
             [
                 "  services.astrumweaver.worker = {",

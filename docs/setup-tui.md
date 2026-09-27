@@ -213,7 +213,8 @@ Driver evidence payloads are intentionally not dumped by the TUI.
 
 ## Planning-only and deployment modes
 
-The TUI remains usable without deployment authority. Without a driver, running:
+The TUI remains usable without deployment authority. When the installer
+profile's `bin` directory is already on `PATH`, running without a driver:
 
 ```sh
 astrumweaver-setup-tui --mode runtime

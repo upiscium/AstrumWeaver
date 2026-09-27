@@ -1019,6 +1019,7 @@ def _render_first_run_review(
         )
         io.write(f"Control URL: {control_url}")
         io.write(f"Execution: {execution_mode.value if execution_mode else 'none'}")
+        io.write("Capabilities: " + ", ".join(sorted(worker.capabilities)))
         if runtime_plan is not None:
             io.write(f"RuntimeProvider: {runtime_plan.provider_id}")
             io.write(f"Runtime plan digest: {runtime_plan.plan.digest}")
@@ -1083,6 +1084,11 @@ def run_first_run_tui(
             return TuiRunResult(status=TuiRunStatus.BLOCKED)
         worker = _prompt_worker(io, selected_gpus)
         execution_mode = _choose_execution_mode(io)
+        if execution_mode is FirstRunExecutionMode.SMOKE:
+            worker = replace(
+                worker,
+                capabilities=frozenset({"debug.echo"}),
+            )
 
         if role is FirstRunRole.BOTH:
             assert control_spec is not None

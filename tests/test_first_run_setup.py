@@ -3,8 +3,11 @@ from __future__ import annotations
 import os
 import sys
 import tomllib
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+
+import pytest
 
 from astrumweaver import AcceleratorDevice, ResourceShape, WorkerSpec
 from astrumweaver.setup.first_run import (
@@ -22,7 +25,7 @@ from astrumweaver.setup.first_run import (
 )
 
 
-def worker() -> WorkerSpec:
+def worker(*, smoke: bool = False) -> WorkerSpec:
     return WorkerSpec(
         worker_id="worker-test",
         worker_class="gpu-single",
@@ -40,7 +43,7 @@ def worker() -> WorkerSpec:
                 device_class="NVIDIA Test GPU",
             ),
         ),
-        capabilities=frozenset({"llm.chat", "text.generate"}),
+        capabilities=frozenset({"debug.echo"} if smoke else {"llm.chat", "text.generate"}),
         labels={"gpu.compute_capability.min": "8.6"},
     )
 
@@ -102,7 +105,7 @@ def test_worker_toml_is_generated_from_discovered_worker_contract() -> None:
 
 def test_smoke_worker_toml_uses_built_in_echo_executor() -> None:
     text = render_worker_toml(
-        worker(),
+        worker(smoke=True),
         control_url="http://control.internal:9000",
         execution_mode=FirstRunExecutionMode.SMOKE,
     )
@@ -160,11 +163,11 @@ def test_nixos_runtime_snippet_embeds_reviewed_provider_demand_and_package() -> 
 def test_nixos_snippet_uses_nix_lists_without_json_commas() -> None:
     snippet = render_nixos_bootstrap_snippet(
         role=FirstRunRole.WORKER,
-        worker=worker(),
+        worker=worker(smoke=True),
         control_url="http://control.internal:9000",
     )
 
-    assert 'capabilities = [ "llm.chat" "text.generate" ];' in snippet
+    assert 'capabilities = [ "debug.echo" ];' in snippet
     assert 'gpuUuids = [ "GPU-private-a" ];' in snippet
     assert '["llm.chat", "text.generate"]' not in snippet
     assert "executorFactory" in snippet
@@ -303,7 +306,7 @@ def test_worker_smoke_bootstrap_starts_and_waits_for_registered_health() -> None
 
     result = installer.install_worker(
         worker_toml=render_worker_toml(
-            worker(),
+            worker(smoke=True),
             control_url="http://control:9000",
             execution_mode=FirstRunExecutionMode.SMOKE,
         ),
@@ -338,3 +341,105 @@ def test_worker_env_contains_only_worker_authority() -> None:
     assert env == "ASTRUMWEAVER_WORKER_TOKEN=worker-secret\n"
     assert "CLIENT" not in env
     assert "DATABASE" not in env
+
+
+@pytest.mark.parametrize("role", ["control", "worker"])
+@pytest.mark.parametrize("failure", ["timeout", "command"])
+def test_failure_diagnostics_are_actionable_and_private(role, failure, monkeypatch):
+    installer = RecordingInstaller()
+    monkeypatch.setattr(installer, "_wait_json_ready", lambda *a, **kw: False)
+    if failure == "command":
+        def fail(*args, **kwargs):
+            raise subprocess.CalledProcessError(1, ["private-secret-command"])
+        monkeypatch.setattr(installer, "_run", fail)
+
+    with pytest.raises(RuntimeError) as error:
+        if role == "control":
+            installer.install_control(
+                spec=ControlBootstrapSpec(port=9001),
+                secrets=FirstRunSecrets(
+                    database_url="postgresql://private-db-secret",
+                    client_token="private-client-secret",
+                    worker_token="private-worker-secret",
+                ),
+            )
+        else:
+            installer.install_worker(
+                worker_toml=render_worker_toml(
+                    worker(smoke=True), control_url="http://private-control:9000",
+                    execution_mode=FirstRunExecutionMode.SMOKE,
+                ),
+                worker_token="private-worker-secret", start=True,
+            )
+    message = str(error.value)
+    assert f"systemctl status astrumweaver-{role}.service" in message
+    assert f"journalctl -u astrumweaver-{role}.service -b" in message
+    endpoint = "9001/v1/ready" if role == "control" else "9100/health"
+    assert f"curl http://127.0.0.1:{endpoint}" in message
+    assert "private" not in message
+    assert "GPU-" not in message
+
+
+def test_both_bootstraps_resolve_helpers_through_symlink_profile(tmp_path, monkeypatch):
+    store = tmp_path / "store"
+    python_bin = store / "python" / "bin"
+    integration_bin = store / "integration" / "bin"
+    installer_bin = store / "installer" / "bin"
+    for directory in (python_bin, integration_bin, installer_bin):
+        directory.mkdir(parents=True)
+    names = (
+        "astrumweaver-setup-tui", "astrumweaver-setup-control-plane",
+        "astrumweaver-setup-gpu-worker", "astrumweaver-control",
+        "astrumweaver-worker", "astrumweaver-migrate",
+    )
+    for name in names:
+        directory = integration_bin if name.endswith(("control-plane", "gpu-worker")) else python_bin
+        executable = directory / name
+        executable.write_text("#!/bin/sh\nexit 0\n")
+        executable.chmod(0o755)
+        (installer_bin / name).symlink_to(executable)
+    profile = tmp_path / "installer-profile"
+    profile.symlink_to(installer_bin.parent, target_is_directory=True)
+    profile_bin = profile / "bin"
+    monkeypatch.setattr(sys, "argv", [str(profile_bin / "astrumweaver-setup-tui")])
+    monkeypatch.setenv("PATH", "")
+    installer = SystemdFirstRunInstaller()
+    monkeypatch.setattr(installer, "_require_root", lambda: None)
+    monkeypatch.setattr(installer, "_wait_json_ready", lambda *a, **kw: True)
+    calls = []
+    monkeypatch.setattr(installer, "_run", lambda args, **kw: calls.append(args))
+    for name in names:
+        assert installer._resolve_tool(name) == str(profile_bin / name)
+    installer.install_control(
+        spec=ControlBootstrapSpec(),
+        secrets=FirstRunSecrets(database_url="postgresql://test", client_token="client", worker_token="worker"),
+    )
+    installer.install_worker(worker_toml="[worker]\n", worker_token="worker", start=True)
+    assert calls[0][0] == str(profile_bin / "astrumweaver-setup-control-plane")
+    assert calls[0][-1] == str(profile_bin / "astrumweaver-control")
+    assert calls[1] == [str(profile_bin / "astrumweaver-migrate")]
+    assert calls[3][0] == str(profile_bin / "astrumweaver-setup-gpu-worker")
+    assert calls[3][-2] == str(profile_bin / "astrumweaver-worker")
+
+
+def test_smoke_renderers_reject_inconsistent_worker_spec():
+    with pytest.raises(ValueError, match="only debug.echo"):
+        render_worker_toml(
+            worker(), control_url="http://localhost:9000",
+            execution_mode=FirstRunExecutionMode.SMOKE,
+        )
+    with pytest.raises(ValueError, match="only debug.echo"):
+        render_nixos_bootstrap_snippet(
+            role=FirstRunRole.WORKER, worker=worker(),
+            control_url="http://localhost:9000",
+        )
+
+
+def test_explicit_dot_slash_invocation_resolves_siblings(tmp_path, monkeypatch):
+    helper = tmp_path / "astrumweaver-setup-gpu-worker"
+    helper.write_text("#!/bin/sh\n")
+    helper.chmod(0o755)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["./astrumweaver-setup-tui"])
+    monkeypatch.setenv("PATH", "")
+    assert SystemdFirstRunInstaller()._resolve_tool(helper.name) == str(helper)

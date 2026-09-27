@@ -18,11 +18,16 @@ usage() {
 Usage: setup-control-plane.sh --config FILE [options]
 
 Options:
-  --environment-file FILE   Optional systemd EnvironmentFile source.\n  --executable PATH         Optional absolute daemon override; defaults to astrumweaver-control on PATH.
+  --environment-file FILE   Optional systemd EnvironmentFile source.
+  --executable PATH         Optional absolute daemon override; defaults to astrumweaver-control on PATH.
   --root DIR                Stage files below DIR instead of live /.
-  --user NAME               Service account name (default: astrumweaver).
+  --user NAME               Shared Control/Worker service account and group (default: astrumweaver).
   --start                   Enable and start the service after installation.
   -h, --help                Show this help.
+
+Control and Worker share /etc/astrumweaver and /var/lib/astrumweaver. Use the
+same --user NAME for both setup scripts; an existing role unit with a different
+or ambiguous User=/Group= identity is rejected rather than migrated.
 
 The script configures an existing Linux node only. It never creates a VM/LXC,
 network, storage pool, database host, or other infrastructure.
@@ -63,8 +68,6 @@ fi
 [[ "$SERVICE_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "invalid service user"
 
 ROOT="$(normalize_root "$ROOT")"
-EXECUTABLE="$(resolve_executable "$EXECUTABLE" "$ROOT" astrumweaver-control)"
-
 ETC_DIR="$(root_path "$ROOT" /etc/astrumweaver)"
 STATE_DIR="$(root_path "$ROOT" /var/lib/astrumweaver)"
 UNIT_DIR="$(root_path "$ROOT" /etc/systemd/system)"
@@ -72,8 +75,15 @@ CONFIG_DEST="$ETC_DIR/control.toml"
 ENV_DEST="$ETC_DIR/control.env"
 UNIT_DEST="$UNIT_DIR/astrumweaver-control.service"
 
+validate_shared_service_identity "$ROOT" "$SERVICE_USER"
+EXECUTABLE="$(resolve_executable "$EXECUTABLE" "$ROOT" astrumweaver-control)"
+if [[ "$ROOT" == "/" ]]; then
+  ensure_live_service_user "$SERVICE_USER"
+fi
+
 install -d -m 0750 "$ETC_DIR" "$STATE_DIR"
 install -d -m 0755 "$UNIT_DIR"
+reconcile_service_directories "$ROOT" "$SERVICE_USER" "$ETC_DIR" "$STATE_DIR"
 install_same_or_fail "$CONFIG_SOURCE" "$CONFIG_DEST" 0640
 if [[ -n "$ENV_SOURCE" ]]; then
   install_same_or_fail "$ENV_SOURCE" "$ENV_DEST" 0640
@@ -85,13 +95,10 @@ render_unit \
   "$EXECUTABLE" \
   "$SERVICE_USER"
 
+reconcile_service_file "$ROOT" "$SERVICE_USER" "$CONFIG_DEST"
+reconcile_service_file "$ROOT" "$SERVICE_USER" "$ENV_DEST"
+
 if [[ "$ROOT" == "/" ]]; then
-  ensure_live_service_user "$SERVICE_USER"
-  chown root:"$SERVICE_USER" "$CONFIG_DEST"
-  if [[ -f "$ENV_DEST" ]]; then
-    chown root:"$SERVICE_USER" "$ENV_DEST"
-  fi
-  chown "$SERVICE_USER":"$SERVICE_USER" "$STATE_DIR"
   systemd_reload_and_maybe_start astrumweaver-control.service "$START"
 elif [[ "$START" == 1 ]]; then
   die "--start cannot be used with staged --root installs"
