@@ -56,8 +56,16 @@ Keep them outside the repository.
 
 ## PostgreSQL prerequisite
 
+**For AstrumWeaver v0.1, use PostgreSQL 17.x.** The repository CI currently
+runs the durable Control integration tests against PostgreSQL 17, so PostgreSQL
+17 is the validated and recommended major version. Within that major version,
+use the latest available PostgreSQL 17 minor release.
+
+Other PostgreSQL major versions may work, but they are not currently covered by
+AstrumWeaver CI and should be treated as unvalidated rather than supported.
+
 AstrumWeaver does not provision PostgreSQL. You may use an existing local,
-remote, or managed PostgreSQL instance.
+remote, or managed PostgreSQL 17 instance.
 
 For a simple local PostgreSQL installation where you have the usual
 `postgres` administrator account, one possible bootstrap is:
