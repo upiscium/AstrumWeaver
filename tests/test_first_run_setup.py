@@ -250,7 +250,6 @@ def test_worker_bootstrap_passes_discovered_gpu_and_runtime_manifest() -> None:
             execution_mode=FirstRunExecutionMode.RUNTIME,
         ),
         worker_token="worker-secret",
-        gpu_uuids=("GPU-private-a",),
         runtime_manifest_json='{"schema_version":"v1"}\n',
         start=False,
     )
@@ -260,8 +259,7 @@ def test_worker_bootstrap_passes_discovered_gpu_and_runtime_manifest() -> None:
     assert len(installer.calls) == 1
     args = installer.calls[0].args
     assert args[0] == "/tools/astrumweaver-setup-gpu-worker"
-    assert "--gpu-uuid" in args
-    assert args[args.index("--gpu-uuid") + 1] == "GPU-private-a"
+    assert "--gpu-uuid" not in args
     assert "--runtime-manifest" in args
     assert "--start" not in args
     assert installer.ready_urls == []
@@ -277,7 +275,6 @@ def test_worker_smoke_bootstrap_starts_and_waits_for_registered_health() -> None
             execution_mode=FirstRunExecutionMode.SMOKE,
         ),
         worker_token="worker-secret",
-        gpu_uuids=("GPU-private-a",),
         start=True,
     )
 
