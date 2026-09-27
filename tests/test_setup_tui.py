@@ -569,7 +569,7 @@ def test_first_run_systemd_wraps_control_migration_gpu_and_worker(
     assert len(installer.worker_calls) == 1
 
     worker_call = installer.worker_calls[0]
-    assert "gpu_uuids" not in worker_call
+    assert worker_call["gpu_uuids"] == ("GPU-one",)
     assert worker_call["start"] is True
     assert "GPU-one" in worker_call["worker_toml"]
     assert (
@@ -600,6 +600,7 @@ def test_first_run_nixos_writes_reviewable_smoke_snippet(
             "worker-private-token",  # hidden
             str(output_path),
             _exact_first_run_write,
+            "n",  # do not write /etc secret env in unit test
         ]
     )
 
@@ -620,10 +621,10 @@ def test_first_run_nixos_writes_reviewable_smoke_snippet(
     assert "worker-private-token" not in rendered
 
 
-def test_first_run_nixos_runtime_fails_closed_before_invalid_snippet(
+def test_first_run_nixos_runtime_writes_reviewed_provider_snippet(
     tmp_path,
 ) -> None:
-    output_path = tmp_path / "should-not-exist.nix"
+    output_path = tmp_path / "runtime-first-run.nix"
     io = ScriptedIO(
         [
             "2",  # worker only
@@ -644,6 +645,10 @@ def test_first_run_nixos_runtime_fails_closed_before_invalid_snippet(
             "",  # min RAM
             "",  # preferred RAM
             "fake",
+            "pkgs.fake",  # explicit Nix runtime package expression
+            str(output_path),
+            _exact_first_run_write,
+            "n",  # do not write /etc secret env in unit test
         ]
     )
 
@@ -654,9 +659,15 @@ def test_first_run_nixos_runtime_fails_closed_before_invalid_snippet(
         catalog=RuntimeCatalog((FakeProvider(),)),
     )
 
-    assert result.status is TuiRunStatus.BLOCKED
-    assert not output_path.exists()
-    assert any(
-        "cannot safely invent the Nix package expression" in line
-        for line in io.output
-    )
+    assert result.status is TuiRunStatus.PLANNED
+    assert result.provider_id == "fake"
+    rendered = output_path.read_text(encoding="utf-8")
+    assert "runtime = {" in rendered
+    assert 'provider = "fake";' in rendered
+    assert "packages = [ pkgs.fake ];" in rendered
+    assert 'modelRef = "org/model";' in rendered
+    assert "executorFactory" not in rendered
+    assert "worker-private-token" not in rendered
+    output = "\n".join(io.output)
+    assert "Nix runtime package: pkgs.fake" in output
+    assert "worker-private-token" not in output
