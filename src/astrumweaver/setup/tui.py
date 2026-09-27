@@ -58,8 +58,11 @@ from .first_run import (
     FirstRunSecrets,
     SystemdFirstRunInstaller,
     generate_authority_tokens,
+    render_control_env,
     render_nixos_bootstrap_snippet,
+    render_worker_env,
     render_worker_toml,
+    write_protected_file,
 )
 
 
@@ -896,20 +899,31 @@ def _prompt_control_secrets(io: TuiIO) -> FirstRunSecrets:
     )
 
 
-def _runtime_manifest_json(runtime_plan: RuntimeTuiPlan) -> str:
+def _runtime_deployment_dict(
+    runtime_plan: RuntimeTuiPlan,
+) -> dict[str, object]:
     for action in runtime_plan.plan.actions:
         if action.kind is not SetupActionKind.RENDER_CONFIG:
             continue
         deployment = action.payload.get("runtime_deployment")
         if deployment is None:
             continue
-        return json.dumps(
-            thaw_json(deployment),
-            sort_keys=True,
-            indent=2,
-            ensure_ascii=False,
-        ) + "\n"
+        value = thaw_json(deployment)
+        if not isinstance(value, dict):
+            raise RuntimeError(
+                "Runtime SetupPlan deployment manifest is not an object"
+            )
+        return value
     raise RuntimeError("Runtime SetupPlan lacks runtime deployment manifest")
+
+
+def _runtime_manifest_json(runtime_plan: RuntimeTuiPlan) -> str:
+    return json.dumps(
+        _runtime_deployment_dict(runtime_plan),
+        sort_keys=True,
+        indent=2,
+        ensure_ascii=False,
+    ) + "\n"
 
 
 def _first_run_review_token(
@@ -966,6 +980,7 @@ def _first_run_review_token(
 def _render_first_run_review(
     io: TuiIO,
     *,
+    deployment_path: DeploymentPath,
     role: FirstRunRole,
     control: ControlBootstrapSpec | None,
     worker: WorkerSpec | None,
@@ -980,11 +995,16 @@ def _render_first_run_review(
     if control is not None:
         io.write(f"Control: {control.bind_host}:{control.port}")
         io.write("Control actions:")
-        io.write("  - write /etc/astrumweaver/control.toml")
-        io.write("  - write protected /etc/astrumweaver/control.env")
-        io.write("  - run astrumweaver-migrate explicitly")
-        io.write("  - enable/start astrumweaver-control.service")
-        io.write("  - wait for /v1/ready")
+        if deployment_path is DeploymentPath.NIXOS:
+            io.write("  - render reviewed NixOS module snippet")
+            io.write("  - optionally write protected /etc/astrumweaver/control.env")
+            io.write("  - preserve nixos-rebuild as the mutation boundary")
+        else:
+            io.write("  - write /etc/astrumweaver/control.toml")
+            io.write("  - write protected /etc/astrumweaver/control.env")
+            io.write("  - run astrumweaver-migrate explicitly")
+            io.write("  - enable/start astrumweaver-control.service")
+            io.write("  - wait for /v1/ready")
     if worker is not None:
         io.write(
             f"Worker: {worker.worker_id} | {worker.worker_class} | "
@@ -993,13 +1013,20 @@ def _render_first_run_review(
         io.write(f"Control URL: {control_url}")
         io.write(f"Execution: {execution_mode.value if execution_mode else 'none'}")
         io.write("Worker actions:")
-        io.write("  - write /etc/astrumweaver/worker.toml")
-        io.write("  - write protected /etc/astrumweaver/worker.env")
-        io.write("  - install systemd Worker integration")
-        if execution_mode is FirstRunExecutionMode.SMOKE:
-            io.write("  - start Worker and wait for registration/readiness")
+        if deployment_path is DeploymentPath.NIXOS:
+            io.write("  - render reviewed NixOS Worker module snippet")
+            io.write("  - optionally write protected /etc/astrumweaver/worker.env")
+            if execution_mode is FirstRunExecutionMode.RUNTIME:
+                io.write("  - embed reviewed RuntimeProvider settings with explicit package expression")
+            io.write("  - preserve nixos-rebuild as the mutation boundary")
         else:
-            io.write("  - hand off to reviewed RuntimeProvider SetupPlan")
+            io.write("  - write /etc/astrumweaver/worker.toml")
+            io.write("  - write protected /etc/astrumweaver/worker.env")
+            io.write("  - install systemd Worker integration")
+            if execution_mode is FirstRunExecutionMode.SMOKE:
+                io.write("  - start Worker and wait for registration/readiness")
+            else:
+                io.write("  - hand off to reviewed RuntimeProvider SetupPlan")
     io.write("Secret values are omitted from this review and digest.")
     io.write(f"First-run digest: {digest}")
 
@@ -1079,6 +1106,7 @@ def run_first_run_tui(
     )
     _render_first_run_review(
         io,
+        deployment_path=snapshot.deployment_path,
         role=role,
         control=control_spec,
         worker=worker,
