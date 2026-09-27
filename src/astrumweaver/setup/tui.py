@@ -1088,6 +1088,25 @@ def run_first_run_tui(
     )
 
     if snapshot.deployment_path is DeploymentPath.NIXOS:
+        if execution_mode is FirstRunExecutionMode.RUNTIME:
+            io.write(
+                "NixOS first-run RuntimeProvider rendering is not yet complete: "
+                "the TUI cannot safely invent the Nix package expression for the "
+                "selected runtime. No invalid module snippet was written."
+            )
+            io.write(
+                "Use smoke mode for first-run, then configure the reviewed "
+                "RuntimeProvider block declaratively in Nix."
+            )
+            return TuiRunResult(
+                status=TuiRunStatus.BLOCKED,
+                provider_id=(
+                    runtime_plan.provider_id
+                    if runtime_plan is not None
+                    else None
+                ),
+                plan_digest=digest,
+            )
         snippet = render_nixos_bootstrap_snippet(
             role=role,
             control=control_spec,
@@ -1124,12 +1143,6 @@ def run_first_run_tui(
             io.write(
                 "Create /etc/astrumweaver/worker.env with the Worker token "
                 "before rebuilding."
-            )
-        if execution_mode is FirstRunExecutionMode.RUNTIME:
-            io.write(
-                "The generated Nix base Worker intentionally leaves the "
-                "RuntimeProvider block for reviewed Nix integration; "
-                "runtime-only TUI remains available for planning."
             )
         return TuiRunResult(
             status=TuiRunStatus.PLANNED,
