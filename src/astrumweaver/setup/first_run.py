@@ -401,16 +401,10 @@ class SystemdFirstRunInstaller:
         *,
         worker_toml: str,
         worker_token: str,
-        gpu_uuids: tuple[str, ...],
         runtime_manifest_json: str | None = None,
         start: bool,
     ) -> SystemdBootstrapResult:
         self._require_root()
-        if not gpu_uuids:
-            raise RuntimeError(
-                "generic systemd first-run Worker integration currently "
-                "requires at least one selected NVIDIA GPU"
-            )
         setup = self._resolve_tool("astrumweaver-setup-gpu-worker")
         executable = self._resolve_tool("astrumweaver-worker")
 
@@ -430,8 +424,6 @@ class SystemdFirstRunInstaller:
                 "--executable",
                 executable,
             ]
-            for uuid in gpu_uuids:
-                args.extend(["--gpu-uuid", uuid])
 
             if runtime_manifest_json is not None:
                 with self._temporary_file(
