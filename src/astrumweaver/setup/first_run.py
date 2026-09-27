@@ -91,6 +91,14 @@ def _toml_string_list(values: tuple[str, ...] | frozenset[str]) -> str:
     return "[" + ", ".join(_toml_string(value) for value in values) + "]"
 
 
+def _nix_string(value: str) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _nix_string_list(values: tuple[str, ...] | frozenset[str]) -> str:
+    return "[ " + " ".join(_nix_string(value) for value in values) + " ]"
+
+
 def render_control_toml(spec: ControlBootstrapSpec) -> str:
     access_log = "true" if spec.access_log else "false"
     return (
@@ -481,7 +489,7 @@ def render_nixos_bootstrap_snippet(
                 "  services.astrumweaver.control = {",
                 "    enable = true;",
                 "    settings.control = {",
-                f"      host = {_toml_string(control.bind_host)};",
+                f"      host = {_nix_string(control.bind_host)};",
                 f"      port = {control.port};",
                 f"      worker_ttl_seconds = {control.worker_ttl_seconds};",
                 f"      lease_seconds = {control.lease_seconds};",
@@ -490,7 +498,7 @@ def render_nixos_bootstrap_snippet(
                 "      access_log = "
                 + ("true;" if control.access_log else "false;"),
                 "    };",
-                f"    environmentFile = {_toml_string(control_env_path)};",
+                f"    environmentFile = {_nix_string(control_env_path)};",
                 "    migrateOnStart = true;",
                 "  };",
                 "",
@@ -504,27 +512,27 @@ def render_nixos_bootstrap_snippet(
             [
                 "  services.astrumweaver.worker = {",
                 "    enable = true;",
-                f"    workerId = {_toml_string(worker.worker_id)};",
-                f"    workerClass = {_toml_string(worker.worker_class)};",
-                f"    controlUrl = {_toml_string(control_url)};",
+                f"    workerId = {_nix_string(worker.worker_id)};",
+                f"    workerClass = {_nix_string(worker.worker_class)};",
+                f"    controlUrl = {_nix_string(control_url)};",
                 "    capabilities = "
-                + _toml_string_list(tuple(sorted(worker.capabilities)))
+                + _nix_string_list(tuple(sorted(worker.capabilities)))
                 + ";",
                 "    gpuUuids = "
-                + _toml_string_list(tuple(worker.gpu_uuids))
+                + _nix_string_list(tuple(worker.gpu_uuids))
                 + ";",
                 f"    totalVramMb = {worker.resources.total_vram_mb};",
                 "    maxSingleGpuVramMb = "
                 f"{worker.resources.max_single_gpu_vram_mb};",
                 "    nvidiaSmiPackage = config.hardware.nvidia.package;",
-                f"    environmentFile = {_toml_string(worker_env_path)};",
+                f"    environmentFile = {_nix_string(worker_env_path)};",
             ]
         )
         if execution_mode is FirstRunExecutionMode.SMOKE:
             lines.extend(
                 [
                     "    executorFactory = "
-                    + _toml_string(
+                    + _nix_string(
                         "astrumweaver.executors.structured_echo:create_executor"
                     )
                     + ";",
