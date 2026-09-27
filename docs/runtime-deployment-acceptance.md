@@ -66,11 +66,10 @@ sudo astrumweaver-setup-gpu-worker \
   --config ./worker.toml \
   --environment-file ./worker.env \
   --runtime-manifest ./runtime-deployment.json \
-  --gpu-uuid GPU-REDACTED-A \
   --gpu-isolation auto
 ```
 
-The real UUID remains local operator input and must not be copied into public evidence.
+The selected UUID remains only in the local `worker.toml` Worker contract and must not be copied into public evidence.
 
 ## NixOS
 
