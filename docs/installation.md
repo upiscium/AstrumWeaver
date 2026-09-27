@@ -89,6 +89,62 @@ AstrumWeaver schema creation/upgrades are separate: run
 `astrumweaver-migrate`, or explicitly enable the NixOS
 `migrateOnStart` option described below.
 
+## Where configuration files live
+
+The final paths differ by deployment method.
+
+### NixOS
+
+With the NixOS modules, **do not create `control.toml` or `worker.toml`
+manually**. Non-secret configuration is declared in Nix under
+`services.astrumweaver.control` / `services.astrumweaver.worker`; the module
+generates the TOML in the Nix store and points the systemd service at it.
+
+Secret environment files are ordinary host files outside the Nix store. The
+examples in this guide use:
+
+```text
+/etc/astrumweaver/control.env
+/etc/astrumweaver/worker.env
+```
+
+and reference those exact paths through `environmentFile`.
+
+### Generic systemd Linux
+
+For the setup wrappers, `control.toml`, `control.env`, `worker.toml`, and
+`worker.env` are **input/source files**. They may initially live anywhere
+convenient, for example a temporary setup directory in your home directory:
+
+```text
+~/astrumweaver-setup/control.toml
+~/astrumweaver-setup/control.env
+~/astrumweaver-setup/worker.toml
+~/astrumweaver-setup/worker.env
+```
+
+Pass those paths to the setup wrapper with `--config` and
+`--environment-file`. The wrapper copies them into the canonical runtime
+locations:
+
+```text
+/etc/astrumweaver/control.toml
+/etc/astrumweaver/control.env
+/etc/astrumweaver/worker.toml
+/etc/astrumweaver/worker.env
+```
+
+A RuntimeProvider deployment manifest, when used, is installed as:
+
+```text
+/etc/astrumweaver/runtime-deployment.json
+```
+
+After a successful generic-systemd install, systemd reads the canonical
+`/etc/astrumweaver/` copies, not the original setup-directory files.
+
+Keep `*.env` files out of Git. They contain authority/database credentials.
+
 ## Option A — NixOS
 
 Add AstrumWeaver as a flake input:
