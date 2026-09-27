@@ -278,9 +278,70 @@ This path does **not** require a source checkout.
 It assumes the host already has Nix with the `nix-command` and `flakes`
 features available. AstrumWeaver does not bootstrap Nix itself.
 
-Install the immutable role package into a dedicated system profile.
+### Recommended: first-run TUI
 
-### Control package
+Install the combined first-run package:
+
+```sh
+sudo nix profile install \
+  --profile /nix/var/nix/profiles/astrumweaver-installer \
+  github:upiscium/AstrumWeaver#installer
+```
+
+Then run:
+
+```sh
+sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-setup-tui
+```
+
+The default TUI mode is `first-run`. It can wrap the common bootstrap work
+that would otherwise require several manual commands:
+
+```text
+choose Control / Worker / Control+Worker
+        ↓
+Control settings + hidden PostgreSQL URL input
+        ↓
+generate or enter distinct authority tokens
+        ↓
+write canonical Control config/env
+        ↓
+run astrumweaver-migrate
+        ↓
+install/start Control and wait for /v1/ready
+        ↓
+discover NVIDIA GPU UUID/VRAM/compute capability
+        ↓
+select Worker GPU ownership
+        ↓
+generate Worker config/env
+        ↓
+install Worker systemd integration
+        ↓
+smoke debug.echo OR reviewed RuntimeProvider setup
+        ↓
+wait for Worker registration/readiness
+```
+
+Secret prompts use no-echo input. Secret values are omitted from the displayed
+review/digest and are written only through the protected environment-file path.
+
+The TUI does **not** provision PostgreSQL itself, install/replace NVIDIA host
+drivers, configure PCI passthrough, or mutate hypervisor configuration.
+
+For an already-installed Worker where you only want RuntimeProvider setup, use:
+
+```sh
+sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-setup-tui \
+  --mode runtime \
+  --driver astrumweaver.setup.systemd:create_systemd_driver
+```
+
+The manual commands below remain documented for troubleshooting,
+non-interactive deployment, and understanding exactly what the TUI wraps.
+
+### Manual Control package
+
 
 ```sh
 sudo nix profile install \
@@ -339,7 +400,7 @@ sudo /nix/var/nix/profiles/astrumweaver-control/bin/astrumweaver-setup-control-p
   --start
 ```
 
-### Worker package
+### Manual Worker package
 
 Install the Worker package:
 
@@ -426,7 +487,15 @@ Review release/migration changes before enabling a newer Control binary.
 
 ### Generic systemd + Nix profile
 
-Upgrade the dedicated profile:
+For the TUI-first installation, upgrade the combined installer profile:
+
+```sh
+sudo nix profile upgrade \
+  --profile /nix/var/nix/profiles/astrumweaver-installer \
+  --all
+```
+
+If you intentionally installed separate role profiles, upgrade them instead:
 
 ```sh
 sudo nix profile upgrade \
