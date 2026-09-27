@@ -41,11 +41,13 @@ from ..runtime.providers import (
 )
 from .apply import SetupActionDriver, apply_plan, dry_run_plan, explain_plan
 from .contracts import (
+    DeploymentPath,
     SetupActionKind,
     SetupActionResult,
     SetupApplyResult,
     SetupApproval,
     SetupHostSnapshot,
+    thaw_json,
 )
 from .discovery import DiscoveredGpu, discover_local_gpus, discover_local_host
 from .planner import build_runtime_setup_plan
@@ -816,6 +818,416 @@ def run_setup_tui(
         runtime_plan=runtime_plan,
         driver=driver,
     )
+
+
+def _choose_first_run_role(io: TuiIO) -> FirstRunRole:
+    io.write("First-run role:")
+    io.write("  1. Control")
+    io.write("  2. Worker")
+    io.write("  3. Control + Worker")
+    while True:
+        raw = _ask_nonblank(io, "Role", default="3").lower()
+        mapping = {
+            "1": FirstRunRole.CONTROL,
+            "control": FirstRunRole.CONTROL,
+            "2": FirstRunRole.WORKER,
+            "worker": FirstRunRole.WORKER,
+            "3": FirstRunRole.BOTH,
+            "both": FirstRunRole.BOTH,
+        }
+        role = mapping.get(raw)
+        if role is not None:
+            return role
+        io.write("Choose 1/control, 2/worker, or 3/both.")
+
+
+def _choose_execution_mode(io: TuiIO) -> FirstRunExecutionMode:
+    io.write("Worker execution mode:")
+    io.write("  1. smoke — built-in debug.echo")
+    io.write("  2. runtime — choose a first-class RuntimeProvider")
+    while True:
+        raw = _ask_nonblank(io, "Execution mode", default="1").lower()
+        if raw in {"1", "smoke", "debug", "echo"}:
+            return FirstRunExecutionMode.SMOKE
+        if raw in {"2", "runtime", "provider"}:
+            return FirstRunExecutionMode.RUNTIME
+        io.write("Choose 1/smoke or 2/runtime.")
+
+
+def _prompt_control_spec(io: TuiIO) -> ControlBootstrapSpec:
+    bind_host = _ask_nonblank(
+        io,
+        "Control bind host",
+        default="127.0.0.1",
+    )
+    port = _ask_int(io, "Control port", default=9000)
+    if port <= 0 or port > 65535:
+        raise ValueError("Control port must be between 1 and 65535")
+    return ControlBootstrapSpec(
+        bind_host=bind_host,
+        port=port,
+    )
+
+
+def _prompt_control_secrets(io: TuiIO) -> FirstRunSecrets:
+    database_url = _ask_secret_nonblank(
+        io,
+        "PostgreSQL URL (input hidden)",
+    )
+    if _confirm(io, "Generate new client/Worker authority tokens?", default=True):
+        client_token, worker_token = generate_authority_tokens()
+        io.write(
+            "Generated distinct authority tokens. Values will be written only "
+            "to the protected Control environment file."
+        )
+    else:
+        client_token = _ask_secret_nonblank(
+            io,
+            "Client authority token (input hidden)",
+        )
+        worker_token = _ask_secret_nonblank(
+            io,
+            "Worker authority token (input hidden)",
+        )
+    return FirstRunSecrets(
+        database_url=database_url,
+        client_token=client_token,
+        worker_token=worker_token,
+    )
+
+
+def _runtime_manifest_json(runtime_plan: RuntimeTuiPlan) -> str:
+    for action in runtime_plan.plan.actions:
+        if action.kind is not SetupActionKind.RENDER_CONFIG:
+            continue
+        deployment = action.payload.get("runtime_deployment")
+        if deployment is None:
+            continue
+        return json.dumps(
+            thaw_json(deployment),
+            sort_keys=True,
+            indent=2,
+            ensure_ascii=False,
+        ) + "\n"
+    raise RuntimeError("Runtime SetupPlan lacks runtime deployment manifest")
+
+
+def _first_run_review_token(
+    *,
+    role: FirstRunRole,
+    control: ControlBootstrapSpec | None,
+    worker: WorkerSpec | None,
+    control_url: str | None,
+    execution_mode: FirstRunExecutionMode | None,
+) -> str:
+    import hashlib
+
+    payload = {
+        "role": role.value,
+        "control": (
+            None
+            if control is None
+            else {
+                "bind_host": control.bind_host,
+                "port": control.port,
+                "worker_ttl_seconds": control.worker_ttl_seconds,
+                "lease_seconds": control.lease_seconds,
+                "maintenance_interval_seconds": control.maintenance_interval_seconds,
+                "access_log": control.access_log,
+            }
+        ),
+        "worker": (
+            None
+            if worker is None
+            else {
+                "id": worker.worker_id,
+                "class": worker.worker_class,
+                "gpu_uuids": list(worker.gpu_uuids),
+                "capabilities": sorted(worker.capabilities),
+                "resources": {
+                    "gpu_count": worker.resources.gpu_count,
+                    "total_vram_mb": worker.resources.total_vram_mb,
+                    "max_single_gpu_vram_mb": worker.resources.max_single_gpu_vram_mb,
+                },
+            }
+        ),
+        "control_url": control_url,
+        "execution_mode": None if execution_mode is None else execution_mode.value,
+        "secret_refs": {
+            "database_url": role in {FirstRunRole.CONTROL, FirstRunRole.BOTH},
+            "client_token": role in {FirstRunRole.CONTROL, FirstRunRole.BOTH},
+            "worker_token": True,
+        },
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _render_first_run_review(
+    io: TuiIO,
+    *,
+    role: FirstRunRole,
+    control: ControlBootstrapSpec | None,
+    worker: WorkerSpec | None,
+    control_url: str | None,
+    execution_mode: FirstRunExecutionMode | None,
+    digest: str,
+) -> None:
+    io.write("")
+    io.write("First-run review")
+    io.write("=" * 16)
+    io.write(f"Role: {role.value}")
+    if control is not None:
+        io.write(f"Control: {control.bind_host}:{control.port}")
+        io.write("Control actions:")
+        io.write("  - write /etc/astrumweaver/control.toml")
+        io.write("  - write protected /etc/astrumweaver/control.env")
+        io.write("  - run astrumweaver-migrate explicitly")
+        io.write("  - enable/start astrumweaver-control.service")
+        io.write("  - wait for /v1/ready")
+    if worker is not None:
+        io.write(
+            f"Worker: {worker.worker_id} | {worker.worker_class} | "
+            f"{len(worker.gpu_uuids)} GPU(s)"
+        )
+        io.write(f"Control URL: {control_url}")
+        io.write(f"Execution: {execution_mode.value if execution_mode else 'none'}")
+        io.write("Worker actions:")
+        io.write("  - write /etc/astrumweaver/worker.toml")
+        io.write("  - write protected /etc/astrumweaver/worker.env")
+        io.write("  - install systemd Worker integration")
+        if execution_mode is FirstRunExecutionMode.SMOKE:
+            io.write("  - start Worker and wait for registration/readiness")
+        else:
+            io.write("  - hand off to reviewed RuntimeProvider SetupPlan")
+    io.write("Secret values are omitted from this review and digest.")
+    io.write(f"First-run digest: {digest}")
+
+
+def run_first_run_tui(
+    *,
+    io: TuiIO,
+    snapshot: SetupHostSnapshot,
+    gpus: tuple[DiscoveredGpu, ...],
+    catalog: RuntimeCatalog | None = None,
+) -> TuiRunResult:
+    io.clear()
+    io.write("AstrumWeaver first-run setup")
+    io.write("=" * 27)
+    io.write(
+        f"Host: {snapshot.os_id} {snapshot.os_version} | "
+        f"{snapshot.runtime_host.cpu_count} CPUs | "
+        f"{snapshot.runtime_host.host_ram_mb} MiB RAM | "
+        f"{snapshot.deployment_path.value}"
+    )
+
+    role = _choose_first_run_role(io)
+    control_spec: ControlBootstrapSpec | None = None
+    secrets = FirstRunSecrets()
+    if role in {FirstRunRole.CONTROL, FirstRunRole.BOTH}:
+        control_spec = _prompt_control_spec(io)
+        secrets = _prompt_control_secrets(io)
+
+    worker: WorkerSpec | None = None
+    control_url: str | None = None
+    execution_mode: FirstRunExecutionMode | None = None
+    runtime_plan: RuntimeTuiPlan | None = None
+
+    if role in {FirstRunRole.WORKER, FirstRunRole.BOTH}:
+        selected_gpus = _select_gpus(io, gpus)
+        if not selected_gpus and snapshot.deployment_path is DeploymentPath.SYSTEMD:
+            io.write(
+                "Generic systemd first-run Worker setup currently requires "
+                "at least one NVIDIA GPU."
+            )
+            return TuiRunResult(status=TuiRunStatus.BLOCKED)
+        worker = _prompt_worker(io, selected_gpus)
+        execution_mode = _choose_execution_mode(io)
+
+        if role is FirstRunRole.BOTH:
+            assert control_spec is not None
+            control_url = f"http://127.0.0.1:{control_spec.port}"
+            assert secrets.worker_token is not None
+        else:
+            control_url = _ask_nonblank(
+                io,
+                "Control URL",
+                default="http://127.0.0.1:9000",
+            )
+            worker_token = _ask_secret_nonblank(
+                io,
+                "Worker authority token (input hidden)",
+            )
+            secrets = FirstRunSecrets(worker_token=worker_token)
+
+        if execution_mode is FirstRunExecutionMode.RUNTIME:
+            runtime_plan = plan_runtime_for_worker(
+                io=io,
+                snapshot=snapshot,
+                worker=worker,
+                catalog=catalog,
+            )
+            if runtime_plan is None:
+                return TuiRunResult(status=TuiRunStatus.CANCELLED)
+
+    digest = _first_run_review_token(
+        role=role,
+        control=control_spec,
+        worker=worker,
+        control_url=control_url,
+        execution_mode=execution_mode,
+    )
+    _render_first_run_review(
+        io,
+        role=role,
+        control=control_spec,
+        worker=worker,
+        control_url=control_url,
+        execution_mode=execution_mode,
+        digest=digest,
+    )
+
+    if snapshot.deployment_path is DeploymentPath.NIXOS:
+        snippet = render_nixos_bootstrap_snippet(
+            role=role,
+            control=control_spec,
+            worker=worker,
+            control_url=control_url,
+            execution_mode=execution_mode or FirstRunExecutionMode.SMOKE,
+        )
+        output_path = Path(
+            _ask_nonblank(
+                io,
+                "Write generated Nix module snippet to",
+                default="./astrumweaver-first-run.nix",
+            )
+        )
+        expected = f"WRITE {digest[:12]}"
+        typed = io.ask(
+            f"Type '{expected}' to write the reviewed snippet: "
+        ).strip()
+        if typed != expected:
+            io.write("First-run snippet write cancelled.")
+            return TuiRunResult(status=TuiRunStatus.CANCELLED)
+        output_path.write_text(snippet, encoding="utf-8")
+        io.write(f"Wrote Nix module snippet: {output_path}")
+        io.write(
+            "NixOS authority boundary preserved: import/review this file and "
+            "run nixos-rebuild yourself."
+        )
+        if role in {FirstRunRole.CONTROL, FirstRunRole.BOTH}:
+            io.write(
+                "Create /etc/astrumweaver/control.env with the reviewed "
+                "database/client/Worker secrets before rebuilding."
+            )
+        if role in {FirstRunRole.WORKER, FirstRunRole.BOTH}:
+            io.write(
+                "Create /etc/astrumweaver/worker.env with the Worker token "
+                "before rebuilding."
+            )
+        if execution_mode is FirstRunExecutionMode.RUNTIME:
+            io.write(
+                "The generated Nix base Worker intentionally leaves the "
+                "RuntimeProvider block for reviewed Nix integration; "
+                "runtime-only TUI remains available for planning."
+            )
+        return TuiRunResult(
+            status=TuiRunStatus.PLANNED,
+            provider_id=(
+                runtime_plan.provider_id
+                if runtime_plan is not None
+                else None
+            ),
+            plan_digest=digest,
+        )
+
+    if snapshot.deployment_path is not DeploymentPath.SYSTEMD:
+        io.write(
+            "First-run apply is not implemented for this deployment path."
+        )
+        return TuiRunResult(
+            status=TuiRunStatus.BLOCKED,
+            plan_digest=digest,
+        )
+
+    expected = f"APPLY {digest[:12]}"
+    typed = io.ask(
+        f"Type '{expected}' to apply this reviewed first-run setup: "
+    ).strip()
+    if typed != expected:
+        io.write("First-run apply cancelled; no host mutation was started.")
+        return TuiRunResult(
+            status=TuiRunStatus.CANCELLED,
+            plan_digest=digest,
+        )
+
+    installer = SystemdFirstRunInstaller()
+    if control_spec is not None:
+        io.write("Installing Control...")
+        installer.install_control(
+            spec=control_spec,
+            secrets=secrets,
+        )
+        io.write("Control migration applied and /v1/ready is healthy.")
+
+    if worker is not None:
+        assert control_url is not None
+        assert execution_mode is not None
+        assert secrets.worker_token is not None
+        manifest_json = (
+            None
+            if runtime_plan is None
+            else _runtime_manifest_json(runtime_plan)
+        )
+        worker_toml = render_worker_toml(
+            worker,
+            control_url=control_url,
+            execution_mode=execution_mode,
+        )
+        io.write("Installing Worker base configuration...")
+        installer.install_worker(
+            worker_toml=worker_toml,
+            worker_token=secrets.worker_token,
+            gpu_uuids=worker.gpu_uuids,
+            runtime_manifest_json=manifest_json,
+            start=execution_mode is FirstRunExecutionMode.SMOKE,
+        )
+
+        if execution_mode is FirstRunExecutionMode.SMOKE:
+            io.write("Worker is registered and ready.")
+        else:
+            assert runtime_plan is not None
+            from .systemd import create_systemd_driver
+
+            io.write("Base Worker installed; entering RuntimeProvider apply phase.")
+            runtime_result = apply_runtime_tui_plan(
+                io=io,
+                runtime_plan=runtime_plan,
+                driver=create_systemd_driver(),
+            )
+            if runtime_result.status is not TuiRunStatus.APPLIED:
+                return runtime_result
+
+    io.write("")
+    io.write("First-run setup completed.")
+    if control_spec is not None:
+        io.write(
+            "Control: systemctl status astrumweaver-control.service"
+        )
+    if worker is not None:
+        io.write(
+            "Worker: curl -fsS http://127.0.0.1:9100/health"
+        )
+    return TuiRunResult(
+        status=TuiRunStatus.APPLIED,
+        provider_id=(
+            runtime_plan.provider_id
+            if runtime_plan is not None
+            else None
+        ),
+        plan_digest=digest,
+    )
+
 
 def _load_driver(specifier: str) -> SetupActionDriver:
     module_name, separator, attribute_name = specifier.partition(":")
