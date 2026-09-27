@@ -287,6 +287,12 @@ class SystemdFirstRunInstaller:
             candidates.append(self.tool_dir / name)
         argv0 = Path(sys.argv[0])
         if argv0.parent != Path("."):
+            # Keep the invocation path before resolving symlinks. Dedicated
+            # Nix profiles expose a combined bin/ directory whose setup
+            # helpers are siblings of astrumweaver-setup-tui; resolving the
+            # console-script symlink first would jump into the Python store
+            # path and lose those integration helpers.
+            candidates.append(argv0.absolute().parent / name)
             candidates.append(argv0.resolve().parent / name)
         found = shutil.which(name)
         if found:
