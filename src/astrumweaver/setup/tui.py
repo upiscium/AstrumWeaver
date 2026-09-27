@@ -661,27 +661,14 @@ def _render_result(io: TuiIO, result: SetupApplyResult) -> None:
         io.write(line)
 
 
-def run_setup_tui(
+def plan_runtime_for_worker(
     *,
     io: TuiIO,
     snapshot: SetupHostSnapshot,
-    gpus: tuple[DiscoveredGpu, ...],
+    worker: WorkerSpec,
     catalog: RuntimeCatalog | None = None,
-    driver: SetupActionDriver | None = None,
-) -> TuiRunResult:
+) -> RuntimeTuiPlan | None:
     catalog = catalog or default_runtime_catalog()
-    io.clear()
-    io.write("AstrumWeaver Worker/runtime setup")
-    io.write("=" * 34)
-    io.write(
-        f"Host: {snapshot.os_id} {snapshot.os_version} | "
-        f"{snapshot.runtime_host.cpu_count} CPUs | "
-        f"{snapshot.runtime_host.host_ram_mb} MiB RAM | "
-        f"{snapshot.deployment_path.value}"
-    )
-
-    selected_gpus = _select_gpus(io, gpus)
-    worker = _prompt_worker(io, selected_gpus)
     demand = _prompt_demand(io, worker)
 
     while True:
@@ -708,7 +695,7 @@ def run_setup_tui(
             default="runtime",
         ).lower()
         if choice in {"quit", "q"}:
-            return TuiRunResult(status=TuiRunStatus.CANCELLED)
+            return None
         if choice in {"demand", "d"}:
             demand = _prompt_demand(io, worker)
             continue
@@ -720,7 +707,6 @@ def run_setup_tui(
                 provider_id = configured.info.provider_id
                 break
             continue
-        # default: return to chooser
 
     selection = RuntimeSelection(
         mode=RuntimeSelectionMode.EXPLICIT,
@@ -732,6 +718,17 @@ def run_setup_tui(
         selection=selection,
         snapshot=snapshot,
     )
+    return RuntimeTuiPlan(provider_id=provider_id, plan=plan)
+
+
+def apply_runtime_tui_plan(
+    *,
+    io: TuiIO,
+    runtime_plan: RuntimeTuiPlan,
+    driver: SetupActionDriver | None,
+) -> TuiRunResult:
+    provider_id = runtime_plan.provider_id
+    plan = runtime_plan.plan
 
     io.write("")
     io.write(explain_plan(plan))
@@ -740,8 +737,7 @@ def run_setup_tui(
     if driver is None:
         io.write("")
         io.write(
-            "Planning-only mode: no deployment SetupActionDriver is connected. "
-            "Issue #31 supplies the NixOS/systemd mutation driver."
+            "Planning-only mode: no deployment SetupActionDriver is connected."
         )
         io.write(
             "The exact plan above can be reviewed now; no install/config/start action ran."
@@ -785,6 +781,41 @@ def run_setup_tui(
         apply_result=result,
     )
 
+
+def run_setup_tui(
+    *,
+    io: TuiIO,
+    snapshot: SetupHostSnapshot,
+    gpus: tuple[DiscoveredGpu, ...],
+    catalog: RuntimeCatalog | None = None,
+    driver: SetupActionDriver | None = None,
+) -> TuiRunResult:
+    catalog = catalog or default_runtime_catalog()
+    io.clear()
+    io.write("AstrumWeaver Worker/runtime setup")
+    io.write("=" * 34)
+    io.write(
+        f"Host: {snapshot.os_id} {snapshot.os_version} | "
+        f"{snapshot.runtime_host.cpu_count} CPUs | "
+        f"{snapshot.runtime_host.host_ram_mb} MiB RAM | "
+        f"{snapshot.deployment_path.value}"
+    )
+
+    selected_gpus = _select_gpus(io, gpus)
+    worker = _prompt_worker(io, selected_gpus)
+    runtime_plan = plan_runtime_for_worker(
+        io=io,
+        snapshot=snapshot,
+        worker=worker,
+        catalog=catalog,
+    )
+    if runtime_plan is None:
+        return TuiRunResult(status=TuiRunStatus.CANCELLED)
+    return apply_runtime_tui_plan(
+        io=io,
+        runtime_plan=runtime_plan,
+        driver=driver,
+    )
 
 def _load_driver(specifier: str) -> SetupActionDriver:
     module_name, separator, attribute_name = specifier.partition(":")
