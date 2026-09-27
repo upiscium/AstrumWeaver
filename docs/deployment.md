@@ -75,18 +75,18 @@ Example:
 sudo ./setup/setup-gpu-worker.sh \
   --config ./worker.toml \
   --environment-file ./worker.env \
-  --gpu-uuid GPU-example-a \
-  --gpu-uuid GPU-example-b \
   --start
 ```
 
-The expected UUID list is explicit and may contain one or several GPUs.
+The Worker GPU ownership set is read exclusively from
+`[worker].gpu_uuids` in `worker.toml`. The setup CLI has no separate GPU UUID
+argument, so preflight/isolation state cannot diverge from the Worker contract.
 
 The script installs:
 
 - `/etc/astrumweaver/worker.toml`
 - optional `/etc/astrumweaver/worker.env`
-- `/etc/astrumweaver/gpu-uuids`
+- `/etc/astrumweaver/gpu-uuids` derived from `worker.toml`
 - `/usr/local/libexec/astrumweaver/gpu-preflight`
 - `/etc/systemd/system/astrumweaver-worker.service`
 
@@ -113,8 +113,7 @@ A generic systemd Worker can persist an already-reviewed
 sudo astrumweaver-setup-gpu-worker \
   --config ./worker.toml \
   --environment-file ./worker.env \
-  --runtime-manifest ./runtime-deployment.json \
-  --gpu-uuid GPU-example-a
+  --runtime-manifest ./runtime-deployment.json
 ```
 
 The manifest is installed as
