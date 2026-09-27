@@ -305,9 +305,11 @@ Then an existing systemd Linux node can use the packaged wrappers, for example:
 ```sh
 sudo ./result/bin/astrumweaver-setup-gpu-worker \
   --config ./worker.toml \
-  --environment-file ./worker.env \
-  --gpu-uuid GPU-example-a
+  --environment-file ./worker.env
 ```
+
+The setup wrapper derives the expected GPU UUID set from
+`worker.toml` and does not accept a second GPU ownership argument.
 
 The setup layer still does not create a VM/LXC, configure Proxmox, configure IOMMU, or install host GPU drivers.
 
