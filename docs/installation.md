@@ -283,7 +283,7 @@ features available. AstrumWeaver does not bootstrap Nix itself.
 Install the combined first-run package:
 
 ```sh
-sudo nix profile install \
+sudo nix profile add \
   --profile /nix/var/nix/profiles/astrumweaver-installer \
   github:upiscium/AstrumWeaver#installer
 ```
@@ -344,7 +344,7 @@ non-interactive deployment, and understanding exactly what the TUI wraps.
 
 
 ```sh
-sudo nix profile install \
+sudo nix profile add \
   --profile /nix/var/nix/profiles/astrumweaver-control \
   github:upiscium/AstrumWeaver#control
 ```
@@ -405,7 +405,7 @@ sudo /nix/var/nix/profiles/astrumweaver-control/bin/astrumweaver-setup-control-p
 Install the Worker package:
 
 ```sh
-sudo nix profile install \
+sudo nix profile add \
   --profile /nix/var/nix/profiles/astrumweaver-worker \
   github:upiscium/AstrumWeaver#worker
 ```
@@ -458,9 +458,13 @@ sudo /nix/var/nix/profiles/astrumweaver-worker/bin/astrumweaver-setup-gpu-worker
   --config ./worker.toml \
   --environment-file ./worker.env \
   --executable /nix/var/nix/profiles/astrumweaver-worker/bin/astrumweaver-worker \
-  --gpu-uuid GPU-REPLACE-ME \
   --start
 ```
+
+The setup wrapper reads the selected GPU UUID sequence only from
+`worker.toml`'s `[worker].gpu_uuids`. There is intentionally no separate
+`--gpu-uuid` setup argument; `/etc/astrumweaver/gpu-uuids` is generated from
+that canonical Worker configuration for systemd preflight/isolation.
 
 `--gpu-isolation auto` is the default. If the host exposes additional GPUs,
 the setup path attempts to isolate the selected physical GPU set through the
