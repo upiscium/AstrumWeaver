@@ -6,6 +6,7 @@ import argparse
 import getpass
 import importlib
 import json
+import os
 import sys
 from pathlib import Path
 from collections.abc import Callable, Mapping
@@ -933,6 +934,8 @@ def _first_run_review_token(
     worker: WorkerSpec | None,
     control_url: str | None,
     execution_mode: FirstRunExecutionMode | None,
+    runtime_plan_digest: str | None = None,
+    runtime_package_expression: str | None = None,
 ) -> str:
     import hashlib
 
@@ -967,6 +970,8 @@ def _first_run_review_token(
         ),
         "control_url": control_url,
         "execution_mode": None if execution_mode is None else execution_mode.value,
+        "runtime_plan_digest": runtime_plan_digest,
+        "runtime_package_expression": runtime_package_expression,
         "secret_refs": {
             "database_url": role in {FirstRunRole.CONTROL, FirstRunRole.BOTH},
             "client_token": role in {FirstRunRole.CONTROL, FirstRunRole.BOTH},
@@ -987,6 +992,8 @@ def _render_first_run_review(
     control_url: str | None,
     execution_mode: FirstRunExecutionMode | None,
     digest: str,
+    runtime_plan: RuntimeTuiPlan | None = None,
+    runtime_package_expression: str | None = None,
 ) -> None:
     io.write("")
     io.write("First-run review")
@@ -1012,6 +1019,11 @@ def _render_first_run_review(
         )
         io.write(f"Control URL: {control_url}")
         io.write(f"Execution: {execution_mode.value if execution_mode else 'none'}")
+        if runtime_plan is not None:
+            io.write(f"RuntimeProvider: {runtime_plan.provider_id}")
+            io.write(f"Runtime plan digest: {runtime_plan.plan.digest}")
+        if runtime_package_expression is not None:
+            io.write(f"Nix runtime package: {runtime_package_expression}")
         io.write("Worker actions:")
         if deployment_path is DeploymentPath.NIXOS:
             io.write("  - render reviewed NixOS Worker module snippet")
@@ -1059,6 +1071,7 @@ def run_first_run_tui(
     control_url: str | None = None
     execution_mode: FirstRunExecutionMode | None = None
     runtime_plan: RuntimeTuiPlan | None = None
+    nix_runtime_package_expression: str | None = None
 
     if role in {FirstRunRole.WORKER, FirstRunRole.BOTH}:
         selected_gpus = _select_gpus(io, gpus)
@@ -1096,6 +1109,14 @@ def run_first_run_tui(
             )
             if runtime_plan is None:
                 return TuiRunResult(status=TuiRunStatus.CANCELLED)
+            if snapshot.deployment_path is DeploymentPath.NIXOS:
+                nix_runtime_package_expression = _ask_nonblank(
+                    io,
+                    (
+                        "Nix package expression for selected runtime "
+                        "(example: pkgs.ollama)"
+                    ),
+                )
 
     digest = _first_run_review_token(
         role=role,
@@ -1103,6 +1124,12 @@ def run_first_run_tui(
         worker=worker,
         control_url=control_url,
         execution_mode=execution_mode,
+        runtime_plan_digest=(
+            runtime_plan.plan.digest
+            if runtime_plan is not None
+            else None
+        ),
+        runtime_package_expression=nix_runtime_package_expression,
     )
     _render_first_run_review(
         io,
@@ -1113,34 +1140,24 @@ def run_first_run_tui(
         control_url=control_url,
         execution_mode=execution_mode,
         digest=digest,
+        runtime_plan=runtime_plan,
+        runtime_package_expression=nix_runtime_package_expression,
     )
 
     if snapshot.deployment_path is DeploymentPath.NIXOS:
-        if execution_mode is FirstRunExecutionMode.RUNTIME:
-            io.write(
-                "NixOS first-run RuntimeProvider rendering is not yet complete: "
-                "the TUI cannot safely invent the Nix package expression for the "
-                "selected runtime. No invalid module snippet was written."
-            )
-            io.write(
-                "Use smoke mode for first-run, then configure the reviewed "
-                "RuntimeProvider block declaratively in Nix."
-            )
-            return TuiRunResult(
-                status=TuiRunStatus.BLOCKED,
-                provider_id=(
-                    runtime_plan.provider_id
-                    if runtime_plan is not None
-                    else None
-                ),
-                plan_digest=digest,
-            )
+        runtime_deployment = (
+            _runtime_deployment_dict(runtime_plan)
+            if runtime_plan is not None
+            else None
+        )
         snippet = render_nixos_bootstrap_snippet(
             role=role,
             control=control_spec,
             worker=worker,
             control_url=control_url,
             execution_mode=execution_mode or FirstRunExecutionMode.SMOKE,
+            runtime_deployment=runtime_deployment,
+            runtime_package_expression=nix_runtime_package_expression,
         )
         output_path = Path(
             _ask_nonblank(
@@ -1162,15 +1179,33 @@ def run_first_run_tui(
             "NixOS authority boundary preserved: import/review this file and "
             "run nixos-rebuild yourself."
         )
-        if role in {FirstRunRole.CONTROL, FirstRunRole.BOTH}:
+        can_write_env = not hasattr(os, "geteuid") or os.geteuid() == 0
+        if _confirm(
+            io,
+            "Write protected environment files under /etc/astrumweaver now?",
+            default=can_write_env,
+        ):
+            if not can_write_env:
+                raise PermissionError(
+                    "writing /etc/astrumweaver secret files requires root"
+                )
+            if role in {FirstRunRole.CONTROL, FirstRunRole.BOTH}:
+                write_protected_file(
+                    Path("/etc/astrumweaver/control.env"),
+                    render_control_env(secrets),
+                )
+                io.write("Wrote protected /etc/astrumweaver/control.env")
+            if role in {FirstRunRole.WORKER, FirstRunRole.BOTH}:
+                assert secrets.worker_token is not None
+                write_protected_file(
+                    Path("/etc/astrumweaver/worker.env"),
+                    render_worker_env(secrets.worker_token),
+                )
+                io.write("Wrote protected /etc/astrumweaver/worker.env")
+        else:
             io.write(
-                "Create /etc/astrumweaver/control.env with the reviewed "
-                "database/client/Worker secrets before rebuilding."
-            )
-        if role in {FirstRunRole.WORKER, FirstRunRole.BOTH}:
-            io.write(
-                "Create /etc/astrumweaver/worker.env with the Worker token "
-                "before rebuilding."
+                "Secret environment files were not written. Create the "
+                "environmentFile paths from the generated snippet before rebuild."
             )
         return TuiRunResult(
             status=TuiRunStatus.PLANNED,
@@ -1229,6 +1264,7 @@ def run_first_run_tui(
         installer.install_worker(
             worker_toml=worker_toml,
             worker_token=secrets.worker_token,
+            gpu_uuids=worker.gpu_uuids,
             runtime_manifest_json=manifest_json,
             start=execution_mode is FirstRunExecutionMode.SMOKE,
         )
