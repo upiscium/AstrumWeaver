@@ -64,6 +64,13 @@ class ScriptedIO:
         response = self.responses.popleft()
         return response(prompt) if callable(response) else response
 
+    def ask_secret(self, prompt: str) -> str:
+        self.prompts.append(prompt)
+        if not self.responses:
+            raise AssertionError(f"unexpected secret prompt: {prompt}")
+        response = self.responses.popleft()
+        return response(prompt) if callable(response) else response
+
     def clear(self) -> None:
         self.cleared += 1
 
