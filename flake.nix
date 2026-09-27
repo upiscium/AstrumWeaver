@@ -170,6 +170,29 @@
           test -x ${worker}/bin/astrumweaver-setup-gpu-worker
           test -x ${worker}/bin/astrumweaver-setup-tui
           test -x ${worker}/bin/astrumweaver-runtime-deployment-accept
+
+          # Prove that first-run helper discovery works from the actual
+          # combined installer closure without relying on shell PATH.
+          env -i PATH=/usr/bin:/bin \
+            ${installer}/bin/python3 -c '
+import sys
+from astrumweaver.setup.first_run import SystemdFirstRunInstaller
+sys.argv[0] = "${installer}/bin/astrumweaver-setup-tui"
+installer = SystemdFirstRunInstaller()
+expected = {
+    name: "${installer}/bin/" + name
+    for name in (
+        "astrumweaver-setup-control-plane",
+        "astrumweaver-setup-gpu-worker",
+        "astrumweaver-control",
+        "astrumweaver-worker",
+        "astrumweaver-migrate",
+    )
+}
+for name, path in expected.items():
+    actual = installer._resolve_tool(name)
+    assert actual == path, (name, actual, path)
+'
           touch "$out"
         '';
         hardware-accept-cli = pkgs.runCommand "astrumweaver-hardware-accept-cli" { } ''
