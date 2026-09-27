@@ -118,8 +118,14 @@ cleanup() {
 trap cleanup EXIT
 
 GPU_UUID_READER="$REPO_ROOT/libexec/worker-gpu-uuids"
-[[ -x "$GPU_UUID_READER" ]] || die "Worker GPU config reader is unavailable: $GPU_UUID_READER"
-if ! "$GPU_UUID_READER" --config "$CONFIG_SOURCE" >"$declared_tmp"; then
+[[ -f "$GPU_UUID_READER" ]] || die "Worker GPU config reader is unavailable: $GPU_UUID_READER"
+if [[ -x "$GPU_UUID_READER" ]]; then
+  GPU_UUID_READER_CMD=("$GPU_UUID_READER")
+else
+  require_cmd python3
+  GPU_UUID_READER_CMD=(python3 "$GPU_UUID_READER")
+fi
+if ! "${GPU_UUID_READER_CMD[@]}" --config "$CONFIG_SOURCE" >"$declared_tmp"; then
   die "cannot derive GPU ownership from worker.toml"
 fi
 mapfile -t GPU_UUIDS <"$declared_tmp"
