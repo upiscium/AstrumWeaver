@@ -75,7 +75,7 @@ def test_control_setup_refuses_unreviewed_config_overwrite(tmp_path: Path) -> No
 
 def test_worker_setup_stages_exact_gpu_identity_and_is_idempotent(tmp_path: Path) -> None:
     config = tmp_path / "worker.toml"
-    config.write_text("[worker]\nclass = \"modern-single\"\n", encoding="utf-8")
+    config.write_text(\n        "[worker]\\n"\n        "class = \"modern-single\"\\n"\n        "gpu_uuids = [\"GPU-example-b\", \"GPU-example-a\"]\\n",\n        encoding="utf-8",\n    )
     staged = tmp_path / "root"
     command = [
         "bash",
@@ -84,10 +84,6 @@ def test_worker_setup_stages_exact_gpu_identity_and_is_idempotent(tmp_path: Path
         str(config),
         "--executable",
         "/usr/local/bin/astrumweaver-worker",
-        "--gpu-uuid",
-        "GPU-example-b",
-        "--gpu-uuid",
-        "GPU-example-a",
         "--root",
         str(staged),
     ]
@@ -113,7 +109,7 @@ def test_worker_setup_stages_runtime_manifest_and_wires_service(
 ) -> None:
     config = tmp_path / "worker.toml"
     config.write_text(
-        '[worker]\nid = "worker-runtime"\nclass = "gpu-single"\n',
+        '[worker]\nid = "worker-runtime"\nclass = "gpu-single"\n'\n        'gpu_uuids = ["GPU-example-a"]\n',
         encoding="utf-8",
     )
     runtime_manifest = tmp_path / "runtime.json"
@@ -132,8 +128,6 @@ def test_worker_setup_stages_runtime_manifest_and_wires_service(
         str(runtime_manifest),
         "--executable",
         "/usr/local/bin/astrumweaver-worker",
-        "--gpu-uuid",
-        "GPU-example-a",
         "--root",
         str(staged),
     )
@@ -160,7 +154,7 @@ def test_worker_setup_stages_gpu_device_cgroup_isolation(
 ) -> None:
     config = tmp_path / "worker.toml"
     config.write_text(
-        '[worker]\nid = "worker-isolated"\nclass = "gpu-single"\n',
+        '[worker]\nid = "worker-isolated"\nclass = "gpu-single"\n'\n        'gpu_uuids = ["GPU-example-a"]\n',
         encoding="utf-8",
     )
     staged = tmp_path / "root"
@@ -172,8 +166,6 @@ def test_worker_setup_stages_gpu_device_cgroup_isolation(
         str(config),
         "--executable",
         "/usr/local/bin/astrumweaver-worker",
-        "--gpu-uuid",
-        "GPU-example-a",
         "--gpu-isolation",
         "on",
         "--gpu-device",
@@ -210,18 +202,7 @@ def test_staged_gpu_isolation_requires_explicit_uuid_device_mapping(
     tmp_path: Path,
 ) -> None:
     config = tmp_path / "worker.toml"
-    config.write_text("[worker]\n", encoding="utf-8")
-
-    result = run(
-        "bash",
-        str(SETUP / "setup-gpu-worker.sh"),
-        "--config",
-        str(config),
-        "--executable",
-        "/usr/local/bin/astrumweaver-worker",
-        "--gpu-uuid",
-        "GPU-example-a",
-        "--gpu-isolation",
+    config.write_text(\n        '[worker]\\ngpu_uuids = ["GPU-example-a"]\\n',\n        encoding="utf-8",\n    )\n\n    result = run(\n        "bash",\n        str(SETUP / "setup-gpu-worker.sh"),\n        "--config",\n        str(config),\n        "--executable",\n        "/usr/local/bin/astrumweaver-worker",\n        "--gpu-isolation",
         "on",
         "--root",
         str(tmp_path / "root"),
@@ -233,7 +214,20 @@ def test_staged_gpu_isolation_requires_explicit_uuid_device_mapping(
 
 def test_worker_setup_rejects_duplicate_gpu_identity(tmp_path: Path) -> None:
     config = tmp_path / "worker.toml"
-    config.write_text("[worker]\n", encoding="utf-8")
+    config.write_text(\n        '[worker]\\ngpu_uuids = ["GPU-same", "GPU-same"]\\n',\n        encoding="utf-8",\n    )\n\n    result = run(\n        "bash",\n        str(SETUP / "setup-gpu-worker.sh"),\n        "--config",\n        str(config),\n        "--executable",\n        "/usr/local/bin/astrumweaver-worker",\n        "--root",
+        str(tmp_path / "root"),
+    )
+
+    assert result.returncode != 0
+    assert "duplicate" in result.stderr
+
+
+def test_worker_setup_rejects_legacy_gpu_uuid_cli_authority(tmp_path: Path) -> None:
+    config = tmp_path / "worker.toml"
+    config.write_text(
+        '[worker]\ngpu_uuids = ["GPU-config"]\n',
+        encoding="utf-8",
+    )
 
     result = run(
         "bash",
@@ -243,15 +237,13 @@ def test_worker_setup_rejects_duplicate_gpu_identity(tmp_path: Path) -> None:
         "--executable",
         "/usr/local/bin/astrumweaver-worker",
         "--gpu-uuid",
-        "GPU-same",
-        "--gpu-uuid",
-        "GPU-same",
+        "GPU-other",
         "--root",
         str(tmp_path / "root"),
     )
 
     assert result.returncode != 0
-    assert "duplicate" in result.stderr
+    assert "unknown option: --gpu-uuid" in result.stderr
 
 
 def fake_nvidia_smi(tmp_path: Path, output: str) -> dict[str, str]:
