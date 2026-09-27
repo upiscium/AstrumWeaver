@@ -38,6 +38,7 @@ from .discovery import (
     discover_local_gpus,
     discover_local_host,
 )
+from .systemd import SystemdSetupDriver, create_systemd_driver
 from .planner import (
     SetupPlanningError,
     build_runtime_release_plan,
@@ -59,6 +60,7 @@ __all__ = [
     "SetupActionResult",
     "SetupActionResultStatus",
     "SetupActionState",
+    "SystemdSetupDriver",
     "SetupApplyResult",
     "SetupApplyStatus",
     "SetupApproval",
@@ -71,6 +73,7 @@ __all__ = [
     "apply_plan",
     "build_runtime_release_plan",
     "build_runtime_setup_plan",
+    "create_systemd_driver",
     "discover_local_gpus",
     "discover_local_host",
     "dry_run_plan",

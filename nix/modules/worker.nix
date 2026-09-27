@@ -9,6 +9,44 @@ let
     integration = integrationPackage;
   };
   toml = pkgs.formats.toml { };
+  effectiveRuntimeGpuTopology =
+    if cfg.runtime.gpuTopology != null
+    then cfg.runtime.gpuTopology
+    else if cfg.gpuUuids == [ ]
+    then "none"
+    else if builtins.length cfg.gpuUuids == 1
+    then "single_gpu"
+    else "multi_gpu";
+  effectiveRuntimeMinGpuCount =
+    if effectiveRuntimeGpuTopology == "multi_gpu"
+    then builtins.max 2 cfg.runtime.minGpuCount
+    else cfg.runtime.minGpuCount;
+  runtimeManifestData = {
+    schema_version = "v1";
+    provider_id = cfg.runtime.provider;
+    provider_config = cfg.runtime.providerConfig;
+    demand = {
+      model = {
+        model_ref = cfg.runtime.modelRef;
+        model_format = cfg.runtime.modelFormat;
+        topology = cfg.runtime.modelTopology;
+        estimated_size_mb = cfg.runtime.estimatedModelSizeMb;
+        metadata = cfg.runtime.modelMetadata;
+      };
+      residency_policy = cfg.runtime.residencyPolicy;
+      gpu_topology = effectiveRuntimeGpuTopology;
+      min_gpu_count = effectiveRuntimeMinGpuCount;
+      min_total_vram_mb = cfg.runtime.minTotalVramMb;
+      min_single_gpu_vram_mb = cfg.runtime.minSingleGpuVramMb;
+      min_host_ram_mb = cfg.runtime.minHostRamMb;
+      preferred_host_ram_mb = cfg.runtime.preferredHostRamMb;
+      metadata = cfg.runtime.demandMetadata;
+    };
+    setup_intent = null;
+  };
+  runtimeManifest = pkgs.writeText "astrumweaver-runtime-deployment.json" (
+    builtins.toJSON runtimeManifestData
+  );
   coreSettings = {
     worker = {
       id = cfg.workerId;
@@ -20,6 +58,7 @@ let
       max_single_gpu_vram_mb = cfg.maxSingleGpuVramMb;
       capabilities = cfg.capabilities;
       labels = cfg.labels;
+      accelerators = cfg.accelerators;
       max_concurrency = cfg.maxConcurrency;
       gpu_preflight = cfg.gpuUuids != [ ];
       health_host = cfg.healthHost;
@@ -29,6 +68,12 @@ let
       factory = cfg.executorFactory;
       settings = cfg.executorSettings;
     };
+  } // lib.optionalAttrs cfg.runtime.enable {
+    runtime = {
+      manifest = runtimeManifest;
+      startup_timeout_seconds = cfg.runtime.startupTimeoutSeconds;
+      shutdown_timeout_seconds = cfg.runtime.shutdownTimeoutSeconds;
+    };
   };
   generatedConfig = toml.generate "astrumweaver-worker.toml" (
     lib.recursiveUpdate cfg.settings coreSettings
@@ -36,11 +81,27 @@ let
   expectedGpuUuids = pkgs.writeText "astrumweaver-gpu-uuids" (
     lib.concatStringsSep "\n" (lib.sort builtins.lessThan cfg.gpuUuids) + "\n"
   );
+  gpuIsolationDevicePaths = map (
+    uuid: cfg.gpuIsolation.deviceMap.${uuid} or ""
+  ) cfg.gpuUuids;
+  gpuIsolationMap = pkgs.writeText "astrumweaver-gpu-device-map" (
+    lib.concatStringsSep "\n" (
+      map (
+        uuid: "${uuid}=${cfg.gpuIsolation.deviceMap.${uuid} or ""}"
+      ) (lib.sort builtins.lessThan cfg.gpuUuids)
+    ) + "\n"
+  );
   preflight = pkgs.writeShellApplication {
     name = "astrumweaver-gpu-preflight";
     runtimeInputs = [ pkgs.coreutils pkgs.gawk ]
       ++ lib.optional (cfg.nvidiaSmiPackage != null) cfg.nvidiaSmiPackage;
     text = builtins.readFile ../../libexec/gpu-preflight;
+  };
+  gpuDeviceMapVerifier = pkgs.writeShellApplication {
+    name = "astrumweaver-gpu-device-map";
+    runtimeInputs = [ pkgs.coreutils pkgs.gawk ]
+      ++ lib.optional (cfg.nvidiaSmiPackage != null) cfg.nvidiaSmiPackage;
+    text = builtins.readFile ../../libexec/gpu-device-map;
   };
   effectiveCommand =
     if cfg.command == null
@@ -131,6 +192,57 @@ in
       description = "Exact guest-visible NVIDIA GPU UUID set. Leave empty for a non-GPU Worker.";
     };
 
+    gpuIsolation = {
+      enable = lib.mkEnableOption "systemd device-cgroup isolation for the selected GPU UUID set";
+
+      deviceMap = lib.mkOption {
+        type = lib.types.attrsOf lib.types.str;
+        default = { };
+        example = {
+          "GPU-example-a" = "/dev/nvidia0";
+        };
+        description = "Explicit UUID to physical /dev/nvidiaN mapping. Keys must exactly match gpuUuids when isolation is enabled.";
+      };
+
+      auxiliaryDeviceNodes = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [
+          "/dev/nvidiactl"
+          "/dev/nvidia-modeset"
+          "/dev/nvidia-uvm"
+          "/dev/nvidia-uvm-tools"
+        ];
+        description = "Shared NVIDIA control/UVM device nodes required by the runtime service in addition to selected per-GPU nodes.";
+      };
+    };
+
+    accelerators = lib.mkOption {
+      type = lib.types.listOf (lib.types.submodule {
+        options = {
+          uuid = lib.mkOption {
+            type = lib.types.str;
+            description = "Exact GPU UUID for this accelerator fact.";
+          };
+          memory_mb = lib.mkOption {
+            type = lib.types.ints.positive;
+            description = "Per-device VRAM in MiB.";
+          };
+          compute_capability = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = "Validated NVIDIA compute capability, e.g. 8.6.";
+          };
+          device_class = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = "Auditable accelerator device class/model when known.";
+          };
+        };
+      });
+      default = [ ];
+      description = "Optional ordered per-device accelerator facts. UUID order must match gpuUuids.";
+    };
+
     totalVramMb = lib.mkOption {
       type = lib.types.ints.unsigned;
       default = 0;
@@ -207,6 +319,120 @@ in
       default = 9100;
     };
 
+    runtime = {
+      enable = lib.mkEnableOption "RuntimeProvider-managed Worker execution";
+
+      provider = lib.mkOption {
+        type = lib.types.enum [
+          "ollama"
+          "llama-cpp"
+          "vllm"
+          "freetoken"
+          "exllamav3"
+        ];
+        default = "ollama";
+        description = "Explicit first-class RuntimeProvider selected by the operator.";
+      };
+
+      packages = lib.mkOption {
+        type = lib.types.listOf lib.types.package;
+        default = [ ];
+        description = "Packages that provide the selected runtime executable/backend. They are added only to the Worker service closure.";
+      };
+
+      providerConfig = lib.mkOption {
+        type = lib.types.attrs;
+        default = { };
+        description = "Provider-specific non-secret configuration persisted in the runtime deployment manifest.";
+      };
+
+      modelRef = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        description = "Explicit model reference used by the RuntimeProvider.";
+      };
+
+      modelFormat = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        description = "Provider-neutral model/package format.";
+      };
+
+      modelTopology = lib.mkOption {
+        type = lib.types.enum [ "dense" "moe" ];
+        default = "dense";
+      };
+
+      estimatedModelSizeMb = lib.mkOption {
+        type = lib.types.nullOr lib.types.ints.positive;
+        default = null;
+      };
+
+      residencyPolicy = lib.mkOption {
+        type = lib.types.enum [
+          "vram_only"
+          "prefer_vram"
+          "cpu_gpu_hybrid"
+        ];
+        default = "prefer_vram";
+      };
+
+      gpuTopology = lib.mkOption {
+        type = lib.types.nullOr (lib.types.enum [
+          "none"
+          "single_gpu"
+          "multi_gpu"
+        ]);
+        default = null;
+        description = "GPU topology demand. null derives it from the Worker's exact gpuUuids.";
+      };
+
+      minGpuCount = lib.mkOption {
+        type = lib.types.ints.unsigned;
+        default = 0;
+      };
+
+      minTotalVramMb = lib.mkOption {
+        type = lib.types.ints.unsigned;
+        default = 0;
+      };
+
+      minSingleGpuVramMb = lib.mkOption {
+        type = lib.types.ints.unsigned;
+        default = 0;
+      };
+
+      minHostRamMb = lib.mkOption {
+        type = lib.types.ints.unsigned;
+        default = 0;
+      };
+
+      preferredHostRamMb = lib.mkOption {
+        type = lib.types.ints.unsigned;
+        default = 0;
+      };
+
+      modelMetadata = lib.mkOption {
+        type = lib.types.attrs;
+        default = { };
+      };
+
+      demandMetadata = lib.mkOption {
+        type = lib.types.attrs;
+        default = { };
+      };
+
+      startupTimeoutSeconds = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 600;
+      };
+
+      shutdownTimeoutSeconds = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 60;
+      };
+    };
+
     borrowable = {
       enable = lib.mkEnableOption "borrowable GPU ownership mode for a development node";
 
@@ -248,8 +474,36 @@ in
         message = "services.astrumweaver.worker.capabilities must not be empty.";
       }
       {
-        assertion = cfg.executorFactory != "";
-        message = "services.astrumweaver.worker.executorFactory must be set.";
+        assertion =
+          if cfg.runtime.enable
+          then cfg.executorFactory == ""
+          else cfg.executorFactory != "";
+        message = "Configure exactly one Worker execution path: runtime.enable=true with no executorFactory, or a non-empty executorFactory.";
+      }
+      {
+        assertion = !cfg.runtime.enable || cfg.runtime.modelRef != "";
+        message = "services.astrumweaver.worker.runtime.modelRef must be set when RuntimeProvider execution is enabled.";
+      }
+      {
+        assertion = !cfg.runtime.enable || cfg.runtime.modelFormat != "";
+        message = "services.astrumweaver.worker.runtime.modelFormat must be set when RuntimeProvider execution is enabled.";
+      }
+      {
+        assertion = !cfg.runtime.enable || cfg.runtime.packages != [ ];
+        message = "services.astrumweaver.worker.runtime.packages must provide the selected runtime closure.";
+      }
+      {
+        assertion = !cfg.runtime.enable || cfg.runtime.preferredHostRamMb >= cfg.runtime.minHostRamMb;
+        message = "runtime.preferredHostRamMb must be >= runtime.minHostRamMb.";
+      }
+      {
+        assertion =
+          cfg.accelerators == [ ]
+          || (
+            builtins.length cfg.accelerators == builtins.length cfg.gpuUuids
+            && map (item: item.uuid) cfg.accelerators == cfg.gpuUuids
+          );
+        message = "services.astrumweaver.worker.accelerators must be empty or exactly match gpuUuids order.";
       }
       {
         assertion = cfg.maxConcurrency == 1;
@@ -258,6 +512,29 @@ in
       {
         assertion = builtins.length cfg.gpuUuids == builtins.length (lib.unique cfg.gpuUuids);
         message = "services.astrumweaver.worker.gpuUuids must not contain duplicates.";
+      }
+      {
+        assertion =
+          !cfg.gpuIsolation.enable
+          || lib.sort builtins.lessThan (builtins.attrNames cfg.gpuIsolation.deviceMap)
+             == lib.sort builtins.lessThan cfg.gpuUuids;
+        message = "gpuIsolation.deviceMap keys must exactly match services.astrumweaver.worker.gpuUuids.";
+      }
+      {
+        assertion =
+          !cfg.gpuIsolation.enable
+          || builtins.all (
+            path: builtins.match "^/dev/nvidia[0-9]+$" path != null
+          ) gpuIsolationDevicePaths;
+        message = "gpuIsolation.deviceMap values must be physical /dev/nvidiaN device paths.";
+      }
+      {
+        assertion =
+          !cfg.gpuIsolation.enable
+          || builtins.all (
+            path: builtins.match "^/dev/nvidia[-a-zA-Z0-9_/]+$" path != null
+          ) cfg.gpuIsolation.auxiliaryDeviceNodes;
+        message = "gpuIsolation.auxiliaryDeviceNodes must contain NVIDIA /dev paths only.";
       }
       {
         assertion = cfg.gpuUuids == [ ] || cfg.nvidiaSmiPackage != null;
@@ -295,15 +572,32 @@ in
       createHome = lib.mkDefault true;
     };
 
-    environment.systemPackages = [ cfg.package ] ++ lib.optional cfg.borrowable.enable borrowableMode;
+    environment.systemPackages =
+      [ cfg.package ]
+      ++ lib.optional cfg.borrowable.enable borrowableMode;
+
+    systemd.services.astrumweaver-worker-gpu-isolation-preflight =
+      lib.mkIf (cfg.gpuIsolation.enable && cfg.gpuUuids != [ ]) {
+        description = "Verify AstrumWeaver Worker GPU UUID/device mapping";
+        before = [ "astrumweaver-worker.service" ];
+        path = [ gpuDeviceMapVerifier ]
+          ++ lib.optional (cfg.nvidiaSmiPackage != null) cfg.nvidiaSmiPackage;
+        serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${gpuDeviceMapVerifier}/bin/astrumweaver-gpu-device-map verify ${expectedGpuUuids} ${gpuIsolationMap}";
+        };
+      };
 
     systemd.services.astrumweaver-worker = {
       description = "AstrumWeaver Worker";
       wantedBy = [ "multi-user.target" ];
       wants = [ "network-online.target" ];
-      after = [ "network-online.target" ];
+      after = [ "network-online.target" ]
+        ++ lib.optional cfg.gpuIsolation.enable "astrumweaver-worker-gpu-isolation-preflight.service";
+      requires = lib.optional cfg.gpuIsolation.enable "astrumweaver-worker-gpu-isolation-preflight.service";
       path = [ cfg.package ]
         ++ lib.optional (cfg.nvidiaSmiPackage != null) cfg.nvidiaSmiPackage
+        ++ cfg.runtime.packages
         ++ cfg.extraPackages;
 
       serviceConfig = {
@@ -325,6 +619,18 @@ in
         ProtectKernelModules = true;
         ProtectControlGroups = true;
         RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" ];
+      }
+      // lib.optionalAttrs cfg.gpuIsolation.enable {
+        DevicePolicy = "closed";
+        DeviceAllow = map (
+          path: "${path} rw"
+        ) (
+          gpuIsolationDevicePaths
+          ++ cfg.gpuIsolation.auxiliaryDeviceNodes
+        );
+        Environment = [
+          "CUDA_VISIBLE_DEVICES=${lib.concatStringsSep "," cfg.gpuUuids}"
+        ];
       }
       // lib.optionalAttrs (cfg.gpuUuids != [ ]) {
         ExecStartPre = "+${preflight}/bin/astrumweaver-gpu-preflight ${expectedGpuUuids}";

@@ -75,24 +75,72 @@ Example:
 sudo ./setup/setup-gpu-worker.sh \
   --config ./worker.toml \
   --environment-file ./worker.env \
-  --gpu-uuid GPU-example-a \
-  --gpu-uuid GPU-example-b \
   --start
 ```
 
-The expected UUID list is explicit and may contain one or several GPUs.
+The Worker GPU ownership set is read exclusively from
+`[worker].gpu_uuids` in `worker.toml`. The setup CLI has no separate GPU UUID
+argument, so preflight/isolation state cannot diverge from the Worker contract.
 
 The script installs:
 
 - `/etc/astrumweaver/worker.toml`
 - optional `/etc/astrumweaver/worker.env`
-- `/etc/astrumweaver/gpu-uuids`
+- `/etc/astrumweaver/gpu-uuids` derived from `worker.toml`
 - `/usr/local/libexec/astrumweaver/gpu-preflight`
 - `/etc/systemd/system/astrumweaver-worker.service`
 
 For a live install it verifies `nvidia-smi` before the worker can be started.
 
 The systemd unit repeats exact UUID preflight as `ExecStartPre`, so reboot/service restart cannot silently start a worker against a changed GPU set.
+
+When the live host exposes additional GPUs, `--gpu-isolation auto` (the
+default) derives the selected UUID→`/dev/nvidiaN` mapping, verifies it outside
+the Worker cgroup, and installs a systemd drop-in with
+`DevicePolicy=closed` plus exact physical `DeviceAllow` entries. The original
+exact-set preflight then runs inside that restricted cgroup.
+
+For staged `--root` installs, isolation requires reviewed
+`--gpu-device UUID=/dev/nvidiaN` mappings because live GPU discovery is not
+available.
+
+### RuntimeProvider manifest
+
+A generic systemd Worker can persist an already-reviewed
+`RuntimeDeploymentSpec` alongside the Worker configuration:
+
+```sh
+sudo astrumweaver-setup-gpu-worker \
+  --config ./worker.toml \
+  --environment-file ./worker.env \
+  --runtime-manifest ./runtime-deployment.json
+```
+
+The manifest is installed as
+`/etc/astrumweaver/runtime-deployment.json` and passed explicitly to the
+Worker daemon. It contains provider identity, non-secret provider
+configuration and execution demand; secret values remain in the protected
+EnvironmentFile.
+
+The Worker starts the ManagedRuntime and waits for its readiness before
+registering with Control. Worker service shutdown also stops/releases the
+ManagedRuntime. A cleanup failure is surfaced rather than treated as a
+successful release.
+
+For interactive application of a SetupPlan, use the first-party systemd
+driver:
+
+```sh
+sudo astrumweaver-setup-tui \
+  --driver astrumweaver.setup.systemd:create_systemd_driver
+```
+
+The runtime driver does not guess installers. Package installation and
+download/conversion actions remain BLOCKED unless the operator supplies a
+reviewed argv command through
+`ASTRUMWEAVER_RUNTIME_INSTALLERS_JSON`,
+`ASTRUMWEAVER_RUNTIME_DOWNLOADERS_JSON`, or
+`ASTRUMWEAVER_RUNTIME_CONVERTERS_JSON`.
 
 ## Exact GPU identity
 
@@ -123,7 +171,11 @@ GPU-b
 GPU-c
 ```
 
-`/dev/nvidia0` ordering is never used as identity.
+`/dev/nvidia0` ordering is never used as identity. Device nodes are accepted
+only after their UUID mapping is verified against `nvidia-smi`.
+
+See [Runtime Deployment GPU Isolation Acceptance](runtime-deployment-acceptance.md)
+for the private-safe real-host proof procedure.
 
 ## Conflict-safe idempotency
 
@@ -213,4 +265,17 @@ worker process starts
 worker may register with Control
 ```
 
-Therefore worker registration cannot occur before the local GPU identity gate passes.
+For RuntimeProvider-backed Workers the ordering is stricter:
+
+```text
+exact UUID preflight
+    ↓
+ManagedRuntime start + provider health/model readiness
+    ↓
+Worker registration
+    ↓
+job claims
+```
+
+Therefore Worker registration cannot occur before either the local GPU identity
+gate or selected runtime readiness passes.

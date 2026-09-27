@@ -28,7 +28,7 @@ SetupActionDriver
 deployment-specific mutation
 ```
 
-The deployment-specific driver is intentionally deferred to #31. NixOS and generic systemd Linux will implement the same SetupAction contract through different drivers.
+Deployment is now split intentionally by platform: NixOS materializes the selected RuntimeProvider declaratively through the Worker module, while generic systemd Linux uses `SystemdSetupDriver` through the same SetupAction contract.
 
 ## Canonical namespace
 
@@ -242,10 +242,16 @@ apply(action) -> ActionReceipt
 rollback(action, receipt) -> ActionReceipt
 ```
 
-#31 will provide real drivers for:
+The generic systemd implementation is `SystemdSetupDriver`. It materializes reviewed runtime manifests/configuration and delegates package/model mutation only to explicit operator-configured argv commands. It never guesses a package manager or hidden installer.
 
-- NixOS
-- generic systemd Linux
+If the host-visible GPU set is larger than the Worker set,
+`SystemdSetupDriver` accepts the preflight only when the existing Worker host
+integration proves `DevicePolicy=closed`, exact selected physical
+`DeviceAllow` entries, a verified UUID/device mapping, and ordered
+`CUDA_VISIBLE_DEVICES`. The Worker service must still pass the unchanged
+exact-set preflight inside its restricted cgroup.
+
+NixOS uses the same `RuntimeDeploymentSpec` contract declaratively: the module writes an immutable provider+demand manifest and puts explicitly selected runtime packages in the Worker service closure.
 
 The shared planner/apply engine itself does not invoke apt/dnf/pacman/nix/systemctl directly.
 
@@ -275,8 +281,10 @@ It performs host/GPU/Worker discovery, execution-demand editing, compatibility
 explanation, explicit runtime selection, provider-option editing, exact
 SetupPlan review, dry-run, digest-bound approval and structured apply progress.
 
-Without a deployment driver it stops in planning-only mode. #31 supplies the
-NixOS/systemd mutation driver and Worker service integration.
+Without a deployment driver it stops in planning-only mode. On generic
+systemd hosts the TUI can use
+`astrumweaver.setup.systemd:create_systemd_driver`; NixOS normally uses the
+declarative Worker module instead of imperative TUI mutation.
 
 The TUI does not execute ad-hoc provider shell commands outside this backend.
 
@@ -292,3 +300,11 @@ It must not plan or apply:
 - PCI passthrough
 - NVIDIA host-driver installation/replacement
 - arbitrary model download without explicit approval
+
+## Real-host runtime deployment acceptance
+
+The packaged `astrumweaver-runtime-deployment-accept` command validates the
+#31 GPU subset contract on an idle real Worker host and writes redacted
+evidence.
+
+See [Runtime Deployment GPU Isolation Acceptance](runtime-deployment-acceptance.md).

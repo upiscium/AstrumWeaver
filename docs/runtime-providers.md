@@ -212,6 +212,24 @@ See [Runtime Setup Backend](runtime-setup.md) for the canonical planning, approv
 
 Creates a `ManagedRuntime` after setup has materialized the provider.
 
+## Runtime deployment manifest
+
+`RuntimeDeploymentSpec` is the service-side persistence boundary for one
+explicit runtime choice. It contains:
+
+- provider ID
+- non-secret provider configuration
+- provider-neutral ExecutionDemand
+- optionally, the exact reviewed RuntimeSetupIntent
+
+A SetupPlan persists its already-reviewed setup intent. Declarative NixOS
+configuration persists provider+demand and regenerates setup intent from that
+same provider at Worker startup.
+
+The Worker re-runs provider compatibility against current host and Worker facts
+before constructing the ManagedRuntime. A deployment manifest never authorizes
+silent provider substitution.
+
 ## ManagedRuntime
 
 The lifecycle boundary is:

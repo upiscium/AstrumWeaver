@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""Emit the canonical Worker GPU UUID sequence from worker.toml."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+import tomllib
+from pathlib import Path
+
+
+def load_gpu_uuids(path: Path) -> tuple[str, ...]:
+    try:
+        with path.open("rb") as handle:
+            config = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise ValueError(f"cannot read Worker config: {path}") from exc
+
+    worker = config.get("worker")
+    if not isinstance(worker, dict):
+        raise ValueError("Worker config must contain a [worker] table")
+
+    raw = worker.get("gpu_uuids")
+    if not isinstance(raw, list):
+        raise ValueError("worker.gpu_uuids must be a TOML array")
+
+    values: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, str):
+            raise ValueError("worker.gpu_uuids must contain only strings")
+        uuid = item.strip()
+        if not uuid:
+            raise ValueError("worker.gpu_uuids must not contain blank values")
+        if any(char.isspace() for char in uuid):
+            raise ValueError("worker.gpu_uuids values must not contain whitespace")
+        if uuid in seen:
+            raise ValueError("worker.gpu_uuids must not contain duplicates")
+        seen.add(uuid)
+        values.append(uuid)
+
+    if not values:
+        raise ValueError(
+            "generic GPU Worker setup requires at least one worker.gpu_uuids entry"
+        )
+    return tuple(values)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="astrumweaver-worker-gpu-uuids",
+        description="Read the canonical GPU UUID sequence from worker.toml",
+    )
+    parser.add_argument("--config", required=True)
+    args = parser.parse_args(argv)
+
+    try:
+        values = load_gpu_uuids(Path(args.config))
+    except ValueError as exc:
+        print(
+            f"[astrumweaver-worker-gpu-uuids] ERROR: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+
+    for value in values:
+        print(value)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
