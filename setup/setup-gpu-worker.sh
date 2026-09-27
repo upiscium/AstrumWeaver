@@ -19,14 +19,13 @@ GPU_DEVICE_ENTRIES=()
 
 usage() {
   cat <<'USAGE'
-Usage: setup-gpu-worker.sh --config FILE --executable ABSOLUTE_PATH \
-  --gpu-uuid UUID [--gpu-uuid UUID ...] [options]
+Usage: setup-gpu-worker.sh --config FILE --executable ABSOLUTE_PATH [options]
 
 Options:
   --environment-file FILE   Optional systemd EnvironmentFile source.
   --runtime-manifest FILE    Reviewed RuntimeProvider deployment manifest.
   --executable PATH         Optional absolute daemon override; defaults to astrumweaver-worker on PATH.
-  --gpu-uuid UUID           Expected NVIDIA GPU UUID; may be repeated.
+  GPU ownership is read only from worker.gpu_uuids in --config.
   --gpu-isolation MODE      GPU device-cgroup policy: auto|on|off (default: auto).
   --gpu-device UUID=PATH    Reviewed UUID to /dev/nvidiaN mapping; may be repeated.
   --root DIR                Stage files below DIR instead of live /.
@@ -54,9 +53,6 @@ while (($#)); do
     --executable)
       (($# >= 2)) || die "--executable requires a value"
       EXECUTABLE="$2"; shift 2 ;;
-    --gpu-uuid)
-      (($# >= 2)) || die "--gpu-uuid requires a value"
-      GPU_UUIDS+=("$2"); shift 2 ;;
     --gpu-isolation)
       (($# >= 2)) || die "--gpu-isolation requires a value"
       GPU_ISOLATION="$2"; shift 2 ;;
@@ -87,13 +83,7 @@ if [[ -n "$RUNTIME_MANIFEST_SOURCE" ]]; then
   [[ -f "$RUNTIME_MANIFEST_SOURCE" ]] || die "runtime manifest does not exist: $RUNTIME_MANIFEST_SOURCE"
 fi
 [[ "$GPU_ISOLATION" =~ ^(auto|on|off)$ ]] || die "--gpu-isolation must be auto, on, or off"
-((${#GPU_UUIDS[@]} > 0)) || die "at least one --gpu-uuid is required"
 [[ "$SERVICE_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "invalid service user"
-
-for uuid in "${GPU_UUIDS[@]}"; do
-  [[ -n "$uuid" ]] || die "GPU UUID must not be blank"
-  [[ "$uuid" != *[[:space:]]* ]] || die "GPU UUID must not contain whitespace"
-done
 
 ROOT="$(normalize_root "$ROOT")"
 EXECUTABLE="$(resolve_executable "$EXECUTABLE" "$ROOT" astrumweaver-worker)"
@@ -117,19 +107,24 @@ ISOLATION_DROPIN_DEST="$DROPIN_DIR/10-gpu-isolation.conf"
 install -d -m 0750 "$ETC_DIR" "$STATE_DIR"
 install -d -m 0755 "$UNIT_DIR" "$LIBEXEC_DIR"
 
+declared_tmp="$(mktemp)"
 expected_tmp="$(mktemp)"
 device_map_tmp="$(mktemp)"
 isolation_unit_tmp="$(mktemp)"
 isolation_dropin_tmp="$(mktemp)"
 cleanup() {
-  rm -f "$expected_tmp" "$device_map_tmp" "$isolation_unit_tmp" "$isolation_dropin_tmp"
+  rm -f "$declared_tmp" "$expected_tmp" "$device_map_tmp" "$isolation_unit_tmp" "$isolation_dropin_tmp"
 }
 trap cleanup EXIT
 
-printf '%s\n' "${GPU_UUIDS[@]}" | sort >"$expected_tmp"
-if [[ -n "$(uniq -d "$expected_tmp")" ]]; then
-  die "duplicate --gpu-uuid values are not allowed"
+GPU_UUID_READER="$REPO_ROOT/libexec/worker-gpu-uuids"
+[[ -x "$GPU_UUID_READER" ]] || die "Worker GPU config reader is unavailable: $GPU_UUID_READER"
+if ! "$GPU_UUID_READER" --config "$CONFIG_SOURCE" >"$declared_tmp"; then
+  die "cannot derive GPU ownership from worker.toml"
 fi
+mapfile -t GPU_UUIDS <"$declared_tmp"
+((${#GPU_UUIDS[@]} > 0)) || die "worker.toml declares no GPU UUIDs"
+sort "$declared_tmp" >"$expected_tmp"
 
 if ((${#GPU_DEVICE_ENTRIES[@]} > 0)); then
   for entry in "${GPU_DEVICE_ENTRIES[@]}"; do
@@ -142,7 +137,7 @@ if ((${#GPU_DEVICE_ENTRIES[@]} > 0)); then
   cut -d= -f1 "$device_map_tmp" >"${device_map_tmp}.keys"
   if ! cmp -s "$expected_tmp" "${device_map_tmp}.keys"; then
     rm -f "${device_map_tmp}.keys"
-    die "--gpu-device UUID keys must exactly match --gpu-uuid values"
+    die "--gpu-device UUID keys must exactly match worker.toml gpu_uuids"
   fi
   rm -f "${device_map_tmp}.keys"
   if [[ -n "$(cut -d= -f2 "$device_map_tmp" | sort | uniq -d)" ]]; then
