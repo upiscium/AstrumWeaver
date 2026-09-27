@@ -561,10 +561,13 @@ equal values are rejected before the second role changes anything. A live
 existing account must have the same-name group as its primary group, with the
 matching GID. An empty, pre-provisioned same-name group is reused with
 `useradd --gid` when the account is created.
-The operator must reserve these role-private numeric UID/GIDs across all
-configured NSS identity sources. Setup checks the two role accounts directly
-and enumerated group members; it cannot certify non-enumerable remote accounts
-or protect against a privileged administrator later granting group access.
+Setup enumerates `getent passwd` and `getent group` and rejects any differently
+named entry sharing a role's numeric UID or private GID, including aliases of
+the shared traversal group's GID. This check also covers an existing group
+before its role user is created. Failed enumeration is rejected, not treated
+as an empty identity database. The operator must still reserve numeric IDs
+across all configured NSS sources: setup cannot certify non-enumerable remote
+accounts or protect against a privileged administrator later granting access.
 When both units already exist, each helper also requires the peer unit's live
 user. Account and state migration is deliberate manual work; do not remove the
 existing `astrumweaver` Worker account to make a retry pass.

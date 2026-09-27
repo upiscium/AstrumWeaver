@@ -269,7 +269,7 @@ pkgs.testers.runNixOSTest {
             f"{rm} -rf /etc/systemd/system/astrumweaver-worker.service.d"
         )
 
-    def snapshot(machine, name, paths=snapshot_paths, users=[]):
+    def snapshot(machine, name, paths=snapshot_paths, users=[], groups=[]):
         records = []
         for path in paths:
             records.append(
@@ -279,18 +279,33 @@ pkgs.testers.runNixOSTest {
         for user in users:
             records.append(f"printf 'passwd:{user} '; getent passwd {user} 2>/dev/null || true")
             records.append(f"printf 'groups:{user} '; {id} -nG {user} 2>/dev/null || true")
+        for group in groups:
+            records.append(f"printf 'group:{group} '; getent group {group} 2>/dev/null || true")
         machine.succeed("{ " + "; ".join(records) + f"; }} > /tmp/{name}")
 
-    def check_snapshot(machine, name, paths=snapshot_paths, users=[]):
-        snapshot(machine, name + ".after", paths, users)
+    def check_snapshot(machine, name, paths=snapshot_paths, users=[], groups=[]):
+        snapshot(machine, name + ".after", paths, users, groups)
         machine.succeed(f"{cmp} -s /tmp/{name} /tmp/{name}.after")
 
-    def reject(machine, name, command, users=[], needle=None, paths=snapshot_paths):
-        snapshot(machine, name, paths, users)
+    def reject(machine, name, command, users=[], needle=None, paths=snapshot_paths, groups=[]):
+        snapshot(machine, name, paths, users, groups)
         machine.succeed(f"if {command} >/tmp/{name}.err 2>&1; then exit 1; fi")
         if needle:
             machine.succeed(f"{grep} -F -- '{needle}' /tmp/{name}.err")
-        check_snapshot(machine, name, paths, users)
+        check_snapshot(machine, name, paths, users, groups)
+
+    def reject_numeric(machine, name, role, user, kind, users, groups):
+        command = control_cmd(user) if role == "control" else worker_cmd(user)
+        reject(machine, name, command, users=users,
+               needle=f"numeric {kind} alias", groups=groups)
+
+    def remove_fixture_alias(machine, user=None, group=None):
+        if user:
+            machine.succeed(f"userdel {user}")
+        if group:
+            # This test-only alias intentionally shares a primary GID. Remove
+            # its named entry, retaining the real role group with that GID.
+            machine.succeed(f"groupdel --force {group}")
 
     exercise_order(controlFirst, "control")
     exercise_order(workerFirst, "worker")
@@ -403,5 +418,80 @@ pkgs.testers.runNixOSTest {
     )
     reject(negativeFixtures, "dropin-override", control_cmd("astrumweaver-control"),
            users=["astrumweaver-control"])
+
+    for index, role in enumerate(["control", "worker"], 1):
+        clear(negativeFixtures)
+        user = f"numeric-{role}-uid"
+        alias = f"{user}-alias"
+        negativeFixtures.succeed(f"groupadd --gid {41000 + index} {user}; "
+                                 f"useradd --uid {41100 + index} --gid {user} --no-create-home --home-dir /var/empty {user}; "
+                                 f"useradd --non-unique --uid {41100 + index} --gid nogroup --no-create-home --home-dir /var/empty {alias}")
+        reject_numeric(negativeFixtures, f"own-{role}-uid-alias", role, user, "UID",
+                       users=[user, alias], groups=[user, "astrumweaver-config"])
+        remove_fixture_alias(negativeFixtures, user=alias)
+
+    for index, role in enumerate(["control", "worker"], 1):
+        clear(negativeFixtures)
+        user = f"numeric-{role}-gid"
+        alias = f"{user}-alias"
+        negativeFixtures.succeed(f"groupadd --gid {42000 + index} {user}; "
+                                 f"groupadd --non-unique --gid {42000 + index} {alias}; "
+                                 f"useradd --uid {42100 + index} --gid {user} --no-create-home --home-dir /var/empty {user}; "
+                                 f"gpasswd --add nobody {alias}; test -z \"$(getent group {user} | {cut} -d: -f4)\"")
+        reject_numeric(negativeFixtures, f"own-{role}-gid-alias", role, user, "GID",
+                       users=[user], groups=[user, alias, "astrumweaver-config"])
+        remove_fixture_alias(negativeFixtures, group=alias)
+
+    for index, role in enumerate(["control", "worker"], 1):
+        clear(negativeFixtures)
+        user = f"numeric-{role}-absent"
+        alias = f"{user}-alias"
+        negativeFixtures.succeed(f"groupadd --gid {43000 + index} {user}; "
+                                 f"groupadd --non-unique --gid {43000 + index} {alias}; "
+                                 f"gpasswd --add nobody {alias}; test -z \"$(getent group {user} | {cut} -d: -f4)\"; "
+                                 f"! getent passwd {user}")
+        reject_numeric(negativeFixtures, f"absent-{role}-gid-alias", role, user, "GID",
+                       users=[user], groups=[user, alias, "astrumweaver-config"])
+        remove_fixture_alias(negativeFixtures, group=alias)
+
+    clear(negativeFixtures)
+    config_gid = negativeFixtures.succeed(
+        f"getent group astrumweaver-config | {cut} -d: -f3"
+    ).strip()
+    config_alias = "numeric-config-gid-alias"
+    negativeFixtures.succeed(f"groupadd --non-unique --gid {config_gid} {config_alias}; "
+                             f"gpasswd --add nobody {config_alias}")
+    for role in ["control", "worker"]:
+        clear(negativeFixtures)
+        user = f"numeric-config-{role}"
+        reject_numeric(negativeFixtures, f"shared-config-{role}-gid-alias", role, user, "GID",
+                       users=[user], groups=["astrumweaver-config", config_alias])
+    remove_fixture_alias(negativeFixtures, group=config_alias)
+
+    # Exercise the installed peer path as well as the requested role path.
+    for index, kind in enumerate(["UID", "GID"], 1):
+        clear(negativeFixtures)
+        peer = f"numeric-peer-{kind.lower()}-worker"
+        user = f"numeric-peer-{kind.lower()}-control"
+        alias_group = f"numeric-peer-{kind.lower()}-alias"
+        install(negativeFixtures, "worker", peer)
+        if kind == "UID":
+            alias = f"{peer}-alias"
+            peer_uid = negativeFixtures.succeed(f"getent passwd {peer} | {cut} -d: -f3").strip()
+            negativeFixtures.succeed(f"groupadd --gid {44000 + index} {alias_group}; "
+                                     f"useradd --non-unique --uid {peer_uid} --gid {alias_group} --no-create-home --home-dir /var/empty {alias}")
+            alias_users = [peer, user, alias]
+        else:
+            peer_gid = negativeFixtures.succeed(f"getent group {peer} | {cut} -d: -f3").strip()
+            negativeFixtures.succeed(f"groupadd --non-unique --gid {peer_gid} {alias_group}; "
+                                     f"gpasswd --add nobody {alias_group}")
+            alias_users = [peer, user]
+        reject_numeric(negativeFixtures, f"peer-{kind.lower()}-alias", "control", user, kind,
+                       users=alias_users,
+                       groups=["astrumweaver-config", peer, alias_group])
+        if kind == "UID":
+            remove_fixture_alias(negativeFixtures, user=alias, group=alias_group)
+        else:
+            remove_fixture_alias(negativeFixtures, group=alias_group)
   '';
 }

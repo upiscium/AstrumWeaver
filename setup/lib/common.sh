@@ -204,11 +204,35 @@ group_members() {
 validate_id() {
   [[ "$2" =~ ^[1-9][0-9]*$ ]] || die "$3 has invalid $1 '$2'; UID/GID must be nonzero"
 }
+validate_unique_numeric_id() {
+  local database="$1" owner="$2" expected="$3" kind records name password number rest found=0
+  case "$database" in
+    passwd) kind=UID ;;
+    group) kind=GID ;;
+    *) die "unsupported identity database: $database" ;;
+  esac
+  # Capture enumeration before scanning: process substitution would hide a
+  # failing getent behind a successful loop. Never print passwd/group records.
+  records="$(getent "$database")" || die "cannot enumerate $database identities; refusing setup"
+  while IFS=: read -r name password number rest; do
+    [[ -n "$name" && "$number" =~ ^[0-9]+$ ]] \
+      || die "invalid $database enumeration; refusing setup"
+    # UID and GID are distinct namespaces. Compare only within this database,
+    # numerically (including leading zeros), never UID against GID.
+    if ((10#$number == 10#$expected)); then
+      [[ "$name" == "$owner" ]] \
+        || die "numeric $kind alias: '$owner' and '$name' share $kind $expected; refusing setup"
+      found=1
+    fi
+  done <<<"$records"
+  [[ "$found" == 1 ]] || die "cannot confirm '$owner' in $database enumeration; refusing setup"
+}
 validate_config_group_preflight() {
   local gid reserved reserved_gid
   CONFIG_GROUP_GID=''
   if gid="$(group_gid "$CONFIG_GROUP_NAME" 2>/dev/null)"; then
     validate_id GID "$gid" "shared configuration group '$CONFIG_GROUP_NAME'"
+    validate_unique_numeric_id group "$CONFIG_GROUP_NAME" "$gid"
     CONFIG_GROUP_GID="$gid"
     for reserved in root video render; do
       if reserved_gid="$(group_gid "$reserved" 2>/dev/null)" && [[ "$gid" == "$reserved_gid" ]]; then
@@ -225,6 +249,7 @@ validate_role_group() {
     root|astrumweaver-config|video|render) die "role-private primary group '$name' is reserved" ;;
   esac
   validate_id GID "$gid" "role-private group '$name'"
+  validate_unique_numeric_id group "$name" "$gid"
   [[ -z "$CONFIG_GROUP_GID" || "$gid" != "$CONFIG_GROUP_GID" ]] \
     || die "role-private group '$name' aliases shared configuration group by numeric GID"
   for reserved in root video render; do
@@ -241,6 +266,7 @@ validate_existing_live_service_user() {
   [[ -n "$ids" ]] || return 0
   IFS=: read -r uid primary <<<"$ids"
   validate_id UID "$uid" "existing service account '$user'"
+  validate_unique_numeric_id passwd "$user" "$uid"
   validate_id GID "$primary" "existing service account '$user' primary group"
   gid="$(group_gid "$user" 2>/dev/null || true)"
   [[ -n "$gid" ]] || die "existing service account '$user' has no same-name service group '$user'; refusing setup"
