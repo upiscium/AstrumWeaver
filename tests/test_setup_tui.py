@@ -569,7 +569,7 @@ def test_first_run_systemd_wraps_control_migration_gpu_and_worker(
     assert len(installer.worker_calls) == 1
 
     worker_call = installer.worker_calls[0]
-    assert worker_call["gpu_uuids"] == ("GPU-one",)
+    assert "gpu_uuids" not in worker_call
     assert worker_call["start"] is True
     assert "GPU-one" in worker_call["worker_toml"]
     assert (
