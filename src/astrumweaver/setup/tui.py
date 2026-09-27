@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import importlib
+import json
 import sys
+from pathlib import Path
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -46,6 +49,16 @@ from .contracts import (
 )
 from .discovery import DiscoveredGpu, discover_local_gpus, discover_local_host
 from .planner import build_runtime_setup_plan
+from .first_run import (
+    ControlBootstrapSpec,
+    FirstRunExecutionMode,
+    FirstRunRole,
+    FirstRunSecrets,
+    SystemdFirstRunInstaller,
+    generate_authority_tokens,
+    render_nixos_bootstrap_snippet,
+    render_worker_toml,
+)
 
 
 @runtime_checkable
@@ -53,6 +66,8 @@ class TuiIO(Protocol):
     def write(self, text: str = "") -> None: ...
 
     def ask(self, prompt: str) -> str: ...
+
+    def ask_secret(self, prompt: str) -> str: ...
 
     def clear(self) -> None: ...
 
@@ -66,6 +81,9 @@ class ConsoleIO:
 
     def ask(self, prompt: str) -> str:
         return input(prompt)
+
+    def ask_secret(self, prompt: str) -> str:
+        return getpass.getpass(prompt)
 
     def clear(self) -> None:
         if self.clear_screen and sys.stdout.isatty():
@@ -86,6 +104,12 @@ class TuiRunResult:
     provider_id: str | None = None
     plan_digest: str | None = None
     apply_result: SetupApplyResult | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeTuiPlan:
+    provider_id: str
+    plan: object
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,6 +275,14 @@ def _ask_nonblank(io: TuiIO, prompt: str, *, default: str | None = None) -> str:
         if value:
             return value
         io.write("Value must not be blank.")
+
+
+def _ask_secret_nonblank(io: TuiIO, prompt: str) -> str:
+    while True:
+        raw = io.ask_secret(prompt + ": ").strip()
+        if raw:
+            return raw
+        io.write("Secret value must not be blank.")
 
 
 def _ask_int(io: TuiIO, prompt: str, *, default: int = 0) -> int:
