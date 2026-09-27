@@ -1264,7 +1264,6 @@ def run_first_run_tui(
         installer.install_worker(
             worker_toml=worker_toml,
             worker_token=secrets.worker_token,
-            gpu_uuids=worker.gpu_uuids,
             runtime_manifest_json=manifest_json,
             start=execution_mode is FirstRunExecutionMode.SMOKE,
         )
