@@ -18,6 +18,9 @@
       worker = pkgs.callPackage ./nix/worker-support.nix {
         inherit astrumweaver integration;
       };
+      installer = pkgs.callPackage ./nix/installer-support.nix {
+        inherit astrumweaver integration;
+      };
       fakeNvidia = pkgs.writeShellScriptBin "nvidia-smi" ''
         if [ "$1" = "--query-gpu=uuid" ]; then
           echo GPU-example-smoke
@@ -138,7 +141,7 @@
     in
     {
       packages.${system} = {
-        inherit astrumweaver control worker integration;
+        inherit astrumweaver control worker installer integration;
         default = astrumweaver;
       };
 
@@ -151,9 +154,15 @@
       nixosConfigurations.smoke = moduleSmoke;
 
       checks.${system} = {
-        inherit astrumweaver control worker integration;
+        inherit astrumweaver control worker installer integration;
 
         installation-surface = pkgs.runCommand "astrumweaver-installation-surface" { } ''
+          test -x ${installer}/bin/astrumweaver-setup-tui
+          test -x ${installer}/bin/astrumweaver-control
+          test -x ${installer}/bin/astrumweaver-migrate
+          test -x ${installer}/bin/astrumweaver-worker
+          test -x ${installer}/bin/astrumweaver-setup-control-plane
+          test -x ${installer}/bin/astrumweaver-setup-gpu-worker
           test -x ${control}/bin/astrumweaver-control
           test -x ${control}/bin/astrumweaver-migrate
           test -x ${control}/bin/astrumweaver-setup-control-plane
