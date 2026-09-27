@@ -1,4 +1,4 @@
-# Interactive Worker/runtime Setup TUI
+# Interactive Setup TUI
 
 AstrumWeaver provides a keyboard-first terminal setup wizard:
 
@@ -6,15 +6,55 @@ AstrumWeaver provides a keyboard-first terminal setup wizard:
 astrumweaver-setup-tui
 ```
 
-The TUI is a frontend over the same provider-neutral runtime contracts and
-deterministic SetupPlan backend used by non-interactive automation. It does not
-execute runtime-specific shell commands itself.
+The default mode is now **first-run**. It wraps the common Control/Worker host
+bootstrap and then reuses the existing deterministic RuntimeProvider setup
+backend when requested.
 
-## Flow
+## First-run flow
 
 ```text
 local host discovery
     ↓
+choose role: Control / Worker / Control+Worker
+    ↓
+Control phase (when selected)
+  - Control bind settings
+  - hidden PostgreSQL URL input
+  - generate or enter client/Worker authority tokens
+  - write canonical config/env
+  - run migration
+  - install/start Control
+  - wait for /v1/ready
+    ↓
+Worker phase (when selected)
+  - NVIDIA GPU discovery
+  - choose GPU ownership
+  - Worker identity/class
+  - generate canonical Worker config/env
+  - install systemd integration
+    ↓
+choose execution mode
+  - smoke: built-in debug.echo
+  - runtime: existing RuntimeProvider wizard
+    ↓
+health/readiness summary
+```
+
+For generic systemd first-run apply, run the TUI as root. Secret values are
+collected with no-echo input and are never placed in the first-run digest,
+Runtime SetupPlan, progress output, or public evidence.
+
+## Runtime-only flow
+
+The previous Worker/runtime wizard remains available:
+
+```sh
+astrumweaver-setup-tui --mode runtime
+```
+
+Its flow remains:
+
+```text
 NVIDIA GPU discovery
     ↓
 choose Worker GPU ownership
@@ -29,17 +69,9 @@ USER selects runtime
     ↓
 optional provider-specific settings
     ↓
-compatibility re-check
-    ↓
 deterministic SetupPlan
     ↓
-dry-run through SetupActionDriver
-    ↓
-exact plan confirmation
-    ↓
-shared apply_plan()
-    ↓
-progress/result/recovery guidance
+dry-run / exact plan confirmation / apply
 ```
 
 ## Runtime authority
@@ -176,7 +208,7 @@ Driver evidence payloads are intentionally not dumped by the TUI.
 The TUI remains usable without deployment authority. Without a driver, running:
 
 ```sh
-astrumweaver-setup-tui
+astrumweaver-setup-tui --mode runtime
 ```
 
 completes host/Worker/demand/runtime selection and produces the exact reviewed
@@ -187,6 +219,7 @@ can be connected with:
 
 ```sh
 sudo astrumweaver-setup-tui \
+  --mode runtime \
   --driver astrumweaver.setup.systemd:create_systemd_driver
 ```
 
@@ -225,3 +258,16 @@ This keeps it practical in:
 
 All operations are keyboard-only and the package adds no TUI framework
 dependency.
+
+
+## NixOS first-run boundary
+
+On NixOS, first-run mode does not rewrite an existing flake or
+`configuration.nix`. For smoke-mode Control/Worker bootstrap it can render a
+deterministic module snippet for review/import while preserving
+`nixos-rebuild` as the operator-owned mutation boundary.
+
+RuntimeProvider-first snippet generation currently fails closed rather than
+inventing a Nix package expression for the selected runtime. Configure the
+reviewed `services.astrumweaver.worker.runtime` block declaratively after the
+base snippet, or use runtime mode for planning.
