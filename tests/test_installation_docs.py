@@ -55,6 +55,10 @@ def test_installation_guide_tracks_supported_package_surface() -> None:
     assert "complete supported host deployment" in text
     assert "PostgreSQL 17.x" in text
     assert "validated and recommended major version" in text
+    assert "/etc/astrumweaver/control.toml" in text
+    assert "/etc/astrumweaver/control.env" in text
+    assert "/etc/astrumweaver/worker.toml" in text
+    assert "/etc/astrumweaver/worker.env" in text
 
 
 def test_getting_started_proves_real_control_worker_round_trip() -> None:
