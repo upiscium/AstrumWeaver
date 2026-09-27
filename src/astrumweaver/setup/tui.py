@@ -1250,7 +1250,16 @@ def _load_driver(specifier: str) -> SetupActionDriver:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Interactive AstrumWeaver Worker/runtime setup wizard"
+        description="Interactive AstrumWeaver first-run and RuntimeProvider setup wizard"
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("first-run", "runtime"),
+        default="first-run",
+        help=(
+            "first-run configures Control/Worker bootstrap; runtime preserves "
+            "the existing Worker/RuntimeProvider-only wizard"
+        ),
     )
     parser.add_argument(
         "--driver",
@@ -1272,13 +1281,26 @@ def main(argv: list[str] | None = None) -> int:
     try:
         snapshot = discover_local_host()
         gpus = discover_local_gpus()
-        driver = _load_driver(args.driver) if args.driver else None
-        result = run_setup_tui(
-            io=ConsoleIO(clear_screen=not args.no_clear),
-            snapshot=snapshot,
-            gpus=gpus,
-            driver=driver,
-        )
+        io = ConsoleIO(clear_screen=not args.no_clear)
+        if args.mode == "runtime":
+            driver = _load_driver(args.driver) if args.driver else None
+            result = run_setup_tui(
+                io=io,
+                snapshot=snapshot,
+                gpus=gpus,
+                driver=driver,
+            )
+        else:
+            if args.driver:
+                raise ValueError(
+                    "--driver applies only to --mode runtime; first-run "
+                    "selects its deployment integration automatically"
+                )
+            result = run_first_run_tui(
+                io=io,
+                snapshot=snapshot,
+                gpus=gpus,
+            )
     except (EOFError, KeyboardInterrupt):
         print("\nSetup cancelled.", file=sys.stderr)
         return 130
