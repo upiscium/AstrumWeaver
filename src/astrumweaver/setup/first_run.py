@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets as secrets_module
 import shutil
 import subprocess
@@ -213,6 +214,39 @@ def render_worker_toml(
             ]
         )
     return "\n".join(lines) + "\n"
+
+
+def write_protected_file(path: Path, content: str) -> None:
+    """Write a root-owned secret/config input without silently replacing drift."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        existing = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        existing = None
+    if existing is not None:
+        if existing != content:
+            raise RuntimeError(
+                f"refusing to replace existing protected file with different content: {path}"
+            )
+        os.chmod(path, 0o600)
+        return
+
+    fd, raw_tmp = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        dir=str(path.parent),
+    )
+    tmp = Path(raw_tmp)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+        os.chmod(path, 0o600)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -469,6 +503,8 @@ def render_nixos_bootstrap_snippet(
     execution_mode: FirstRunExecutionMode = FirstRunExecutionMode.SMOKE,
     control_env_path: str = "/etc/astrumweaver/control.env",
     worker_env_path: str = "/etc/astrumweaver/worker.env",
+    runtime_deployment: Mapping[str, object] | None = None,
+    runtime_package_expression: str | None = None,
 ) -> str:
     """Render deterministic Nix config without mutating operator Nix sources."""
 
@@ -531,11 +567,86 @@ def render_nixos_bootstrap_snippet(
                 ]
             )
         else:
+            if runtime_deployment is None or runtime_package_expression is None:
+                raise ValueError(
+                    "RuntimeProvider Nix rendering requires reviewed deployment "
+                    "data and an explicit Nix package expression"
+                )
+            package_expr = runtime_package_expression.strip()
+            if not re.fullmatch(
+                r"[A-Za-z_][A-Za-z0-9_'-]*(?:\.[A-Za-z0-9_+'-]+)*",
+                package_expr,
+            ):
+                raise ValueError(
+                    "runtime package expression must be a simple Nix attribute "
+                    "path such as pkgs.ollama or myPkgs.vllm"
+                )
+            provider_id = str(runtime_deployment["provider_id"])
+            provider_config = dict(
+                runtime_deployment.get("provider_config") or {}
+            )
+            demand = dict(runtime_deployment["demand"])
+            model = dict(demand["model"])
             lines.extend(
                 [
-                    "    # RuntimeProvider settings are generated/reviewed by",
-                    "    # the runtime phase of astrumweaver-setup-tui.",
-                    "    # Do not set executorFactory when runtime.enable = true.",
+                    "    runtime = {",
+                    "      enable = true;",
+                    f"      provider = {_nix_string(provider_id)};",
+                    f"      packages = [ {package_expr} ];",
+                    f"      modelRef = {_nix_string(str(model['model_ref']))};",
+                    f"      modelFormat = {_nix_string(str(model['model_format']))};",
+                    f"      modelTopology = {_nix_string(str(model['topology']))};",
+                    f"      residencyPolicy = {_nix_string(str(demand['residency_policy']))};",
+                ]
+            )
+            if model.get("estimated_size_mb") is not None:
+                lines.append(
+                    "      estimatedModelSizeMb = "
+                    f"{int(model['estimated_size_mb'])};"
+                )
+            if demand.get("gpu_topology") is not None:
+                lines.append(
+                    "      gpuTopology = "
+                    + _nix_string(str(demand["gpu_topology"]))
+                    + ";"
+                )
+            for nix_name, demand_name in (
+                ("minGpuCount", "min_gpu_count"),
+                ("minTotalVramMb", "min_total_vram_mb"),
+                ("minSingleGpuVramMb", "min_single_gpu_vram_mb"),
+                ("minHostRamMb", "min_host_ram_mb"),
+                ("preferredHostRamMb", "preferred_host_ram_mb"),
+            ):
+                lines.append(
+                    f"      {nix_name} = {int(demand.get(demand_name, 0))};"
+                )
+            provider_json = json.dumps(
+                provider_config,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            model_metadata_json = json.dumps(
+                dict(model.get("metadata") or {}),
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            demand_metadata_json = json.dumps(
+                dict(demand.get("metadata") or {}),
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            lines.extend(
+                [
+                    "      providerConfig = builtins.fromJSON "
+                    + _nix_string(provider_json)
+                    + ";",
+                    "      modelMetadata = builtins.fromJSON "
+                    + _nix_string(model_metadata_json)
+                    + ";",
+                    "      demandMetadata = builtins.fromJSON "
+                    + _nix_string(demand_metadata_json)
+                    + ";",
+                    "    };",
                 ]
             )
         lines.extend(["  };", ""])
@@ -557,4 +668,5 @@ __all__ = [
     "render_nixos_bootstrap_snippet",
     "render_worker_env",
     "render_worker_toml",
+    "write_protected_file",
 ]
