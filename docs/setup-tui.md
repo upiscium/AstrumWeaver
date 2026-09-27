@@ -1,10 +1,17 @@
 # Interactive Setup TUI
 
-AstrumWeaver provides a keyboard-first terminal setup wizard:
+AstrumWeaver provides a keyboard-first terminal setup wizard.
+
+For the recommended generic-systemd installation using the dedicated installer
+profile, run it with the profile path directly:
 
 ```sh
-astrumweaver-setup-tui
+sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-setup-tui
 ```
+
+A bare `astrumweaver-setup-tui` command is also valid when the installer
+profile's `bin` directory is already on `PATH`. The first-run implementation
+does not require you to modify `PATH` when using the absolute profile path.
 
 The default mode is now **first-run**. It wraps the common Control/Worker host
 bootstrap and then reuses the existing deterministic RuntimeProvider setup
@@ -49,7 +56,8 @@ Runtime SetupPlan, progress output, or public evidence.
 The previous Worker/runtime wizard remains available:
 
 ```sh
-astrumweaver-setup-tui --mode runtime
+sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-setup-tui \
+  --mode runtime
 ```
 
 Its flow remains:
@@ -218,7 +226,7 @@ On an already-integrated generic systemd Worker host, the first-party driver
 can be connected with:
 
 ```sh
-sudo astrumweaver-setup-tui \
+sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-setup-tui \
   --mode runtime \
   --driver astrumweaver.setup.systemd:create_systemd_driver
 ```
