@@ -20,6 +20,7 @@ For `x86_64-linux`:
 packages.x86_64-linux.astrumweaver
 packages.x86_64-linux.control
 packages.x86_64-linux.worker
+packages.x86_64-linux.installer
 packages.x86_64-linux.integration
 packages.x86_64-linux.default
 ```
@@ -47,6 +48,18 @@ Worker support closure containing:
 - GPU preflight/setup integration assets
 
 It includes the packaged `astrumweaver-worker` entrypoint.
+
+### installer
+
+Combined generic-systemd first-run closure containing:
+
+- AstrumWeaver Control + Worker entrypoints
+- psycopg and PostgreSQL migration assets
+- host integration/setup wrappers
+- `astrumweaver-setup-tui`
+
+Install this package when you want one profile that can bootstrap Control,
+Worker, or both without a source checkout.
 
 ### integration
 
