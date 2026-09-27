@@ -112,6 +112,49 @@ def test_smoke_worker_toml_uses_built_in_echo_executor() -> None:
     assert "runtime" not in parsed
 
 
+def test_nixos_runtime_snippet_embeds_reviewed_provider_demand_and_package() -> None:
+    deployment = {
+        "provider_id": "vllm",
+        "provider_config": {
+            "gpu_memory_utilization": 0.9,
+        },
+        "demand": {
+            "model": {
+                "model_ref": "/srv/models/example",
+                "model_format": "safetensors",
+                "topology": "dense",
+                "estimated_size_mb": 16000,
+                "metadata": {},
+            },
+            "residency_policy": "vram_only",
+            "gpu_topology": "single_gpu",
+            "min_gpu_count": 0,
+            "min_total_vram_mb": 12000,
+            "min_single_gpu_vram_mb": 12000,
+            "min_host_ram_mb": 0,
+            "preferred_host_ram_mb": 0,
+            "metadata": {},
+        },
+    }
+
+    snippet = render_nixos_bootstrap_snippet(
+        role=FirstRunRole.WORKER,
+        worker=worker(),
+        control_url="http://control.internal:9000",
+        execution_mode=FirstRunExecutionMode.RUNTIME,
+        runtime_deployment=deployment,
+        runtime_package_expression="pkgs.vllm",
+    )
+
+    assert "runtime = {" in snippet
+    assert 'provider = "vllm";' in snippet
+    assert "packages = [ pkgs.vllm ];" in snippet
+    assert 'modelRef = "/srv/models/example";' in snippet
+    assert 'residencyPolicy = "vram_only";' in snippet
+    assert "providerConfig = builtins.fromJSON" in snippet
+    assert "executorFactory" not in snippet
+
+
 def test_nixos_snippet_uses_nix_lists_without_json_commas() -> None:
     snippet = render_nixos_bootstrap_snippet(
         role=FirstRunRole.WORKER,
@@ -207,6 +250,7 @@ def test_worker_bootstrap_passes_discovered_gpu_and_runtime_manifest() -> None:
             execution_mode=FirstRunExecutionMode.RUNTIME,
         ),
         worker_token="worker-secret",
+        gpu_uuids=("GPU-private-a",),
         runtime_manifest_json='{"schema_version":"v1"}\n',
         start=False,
     )
@@ -216,7 +260,8 @@ def test_worker_bootstrap_passes_discovered_gpu_and_runtime_manifest() -> None:
     assert len(installer.calls) == 1
     args = installer.calls[0].args
     assert args[0] == "/tools/astrumweaver-setup-gpu-worker"
-    assert "--gpu-uuid" not in args
+    assert "--gpu-uuid" in args
+    assert args[args.index("--gpu-uuid") + 1] == "GPU-private-a"
     assert "--runtime-manifest" in args
     assert "--start" not in args
     assert installer.ready_urls == []
@@ -232,6 +277,7 @@ def test_worker_smoke_bootstrap_starts_and_waits_for_registered_health() -> None
             execution_mode=FirstRunExecutionMode.SMOKE,
         ),
         worker_token="worker-secret",
+        gpu_uuids=("GPU-private-a",),
         start=True,
     )
 
