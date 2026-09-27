@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import sys
 import tomllib
 from dataclasses import dataclass
+from pathlib import Path
 
 from astrumweaver import AcceleratorDevice, ResourceShape, WorkerSpec
 from astrumweaver.setup.first_run import (
@@ -202,6 +204,37 @@ class RecordingInstaller(SystemdFirstRunInstaller):
     ) -> bool:
         self.ready_urls.append((url, require_registered))
         return True
+
+
+def test_resolve_tool_prefers_invoking_profile_bin_without_path(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    profile_bin = tmp_path / "profile" / "bin"
+    profile_bin.mkdir(parents=True)
+    tui = profile_bin / "astrumweaver-setup-tui"
+    tui.write_text("#!/bin/sh\n", encoding="utf-8")
+    tui.chmod(0o755)
+
+    helper_names = (
+        "astrumweaver-setup-control-plane",
+        "astrumweaver-setup-gpu-worker",
+        "astrumweaver-control",
+        "astrumweaver-worker",
+        "astrumweaver-migrate",
+    )
+    for name in helper_names:
+        helper = profile_bin / name
+        helper.write_text("#!/bin/sh\n", encoding="utf-8")
+        helper.chmod(0o755)
+
+    monkeypatch.setattr(sys, "argv", [str(tui)])
+    monkeypatch.setenv("PATH", "")
+
+    installer = SystemdFirstRunInstaller(tool_dir=None)
+
+    for name in helper_names:
+        assert installer._resolve_tool(name) == str(profile_bin / name)
 
 
 def test_control_bootstrap_orders_install_migration_start_readiness() -> None:
