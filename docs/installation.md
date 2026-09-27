@@ -14,7 +14,7 @@ real `debug.echo` job.
 | Host | Installation path | Status |
 | --- | --- | --- |
 | NixOS x86_64-linux | Flake + NixOS module | Recommended / first-class |
-| Other systemd Linux x86_64 | Nix package + packaged setup wrapper | Supported |
+| Other systemd Linux x86_64 | `#installer` Nix profile + first-run TUI | Recommended / supported |
 | pip-only deployment | Python package only | Not a complete host installation |
 | Docker/Kubernetes | — | Not currently provided |
 
