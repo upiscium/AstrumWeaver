@@ -7,6 +7,7 @@ After=network-online.target
 Type=simple
 User=@USER@
 Group=@USER@
+SupplementaryGroups=astrumweaver-config
 EnvironmentFile=-/etc/astrumweaver/worker.env
 ExecStartPre=+/usr/local/libexec/astrumweaver/gpu-preflight /etc/astrumweaver/gpu-uuids
 ExecStart=@EXECUTABLE@ --config /etc/astrumweaver/worker.toml @RUNTIME_ARG@

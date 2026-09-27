@@ -145,6 +145,33 @@ After a successful generic-systemd install, systemd reads the canonical
 
 Keep `*.env` files out of Git. They contain authority/database credentials.
 
+The role-separated defaults in this section apply to the **generic systemd
+helpers only**. The NixOS modules are unchanged and retain their existing
+configurable `user`, `group`, and state-directory behavior; this is not a claim
+of global NixOS role isolation.
+
+For generic systemd, `/etc/astrumweaver` is shared as `root:astrumweaver-config`
+with mode `0710`: `astrumweaver-config` is a **traverse-only** supplementary
+group, not a file-reading group. Role-managed files are `root:<role-group>`
+with mode `0640`, so Control and Worker cannot read each other's files. The
+defaults are deliberately different:
+
+- Control uses `astrumweaver-control` for both `User=` and `Group=`, and
+  `/var/lib/astrumweaver-control` for its state and home.
+- Worker remains `astrumweaver` for both `User=` and `Group=`, and keeps
+  `/var/lib/astrumweaver` for its state and home so existing runtime behavior is
+  preserved.
+
+Both services have `SupplementaryGroups=astrumweaver-config`; neither service
+gets the other role's private group. Distinct custom `--user` accounts are
+supported, in either install order, but equal Control and Worker values are
+rejected. An existing live account must have the same-name group as its
+primary group, with the matching GID. If the account is absent but that
+same-name group was pre-provisioned and is empty,
+the helper reuses it with `useradd --gid`; it does not reuse a peer or shared
+role group. See the exact [Control unit template](../systemd/astrumweaver-control.service.in)
+and [Worker unit template](../systemd/astrumweaver-worker.service.in).
+
 ## Option A — NixOS
 
 Add AstrumWeaver as a flake input:
@@ -522,22 +549,37 @@ If the new Control binary contains new database migrations, run
 
 ### Retrying an interrupted generic systemd first-run
 
-Control and Worker share `/etc/astrumweaver` and `/var/lib/astrumweaver`.
-Both setup helpers therefore require the **same service user and same-name
-group** (default `astrumweaver`). Custom `--user NAME` remains supported when
-used consistently for both roles. Conflicting or ambiguous installed unit
-identities, and identity overrides in role drop-ins, are rejected before the
-shared paths are changed. Account migration is not implicit.
+This section is for the generic systemd helpers. Control defaults to the
+`astrumweaver-control` user/group and `/var/lib/astrumweaver-control`; Worker
+remains `astrumweaver` and `/var/lib/astrumweaver`. The shared
+`/etc/astrumweaver` directory is `root:astrumweaver-config 0710` (traverse
+only), while each role-managed file is `root:<role-group> 0640`. Both units
+use `SupplementaryGroups=astrumweaver-config`, never the peer's private group.
+
+Distinct custom `--user NAME` values are supported in either install order;
+equal values are rejected before the second role changes anything. A live
+existing account must have the same-name group as its primary group, with the
+matching GID. An empty, pre-provisioned same-name group is reused with
+`useradd --gid` when the account is created.
+The operator must reserve these role-private numeric UID/GIDs across all
+configured NSS identity sources. Setup checks the two role accounts directly
+and enumerated group members; it cannot certify non-enumerable remote accounts
+or protect against a privileged administrator later granting group access.
+When both units already exist, each helper also requires the peer unit's live
+user. Account and state migration is deliberate manual work; do not remove the
+existing `astrumweaver` Worker account to make a retry pass.
 
 Updating a Nix profile only updates binaries; it does not repair host files.
-Re-running the updated setup helpers with the same reviewed inputs reconciles
-`/etc/astrumweaver` to `root:<service-group> 0750`, state to service ownership
-with mode `0750`, and role config/env/GPU/runtime files to
-`root:<service-group> 0640`. This also repairs an earlier `root:root 0750`
-configuration directory. No world-readable permissions are needed.
+Re-running the updated setup helpers with the same reviewed inputs is the
+normal fresh/retry path: it repairs `/etc/astrumweaver` to
+`root:astrumweaver-config 0710`, state to the selected role ownership with
+mode `0750`, and role config/env/GPU/runtime files to `root:<role-group> 0640`.
+No world-readable permissions are needed.
 
 The helpers deliberately refuse to overwrite different configuration or unit
-content. Do not regenerate Control tokens or discard existing secrets merely
+content. In particular, an old role unit from the shared-account templates is
+not silently replaced; follow the [manual role-separation migration](deployment.md#migrating-an-older-generic-systemd-installation)
+instead. Do not regenerate Control tokens or discard existing secrets merely
 to retry. For an earlier failed **smoke** install, stop the Worker and review
 `/etc/astrumweaver/worker.toml` locally:
 
@@ -566,7 +608,7 @@ sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-setup-gpu-wor
   --start
 ```
 
-Use the original shared `--user` if customized. If an installed unit uses a
+Use each role's distinct reviewed `--user` if customized. If an installed unit uses a
 different executable profile, keep that original stable executable path while
 upgrading its profile, or explicitly review a unit migration; setup will not
 silently replace it. For runtime retry, also pass the existing reviewed

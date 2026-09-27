@@ -29,13 +29,15 @@ Options:
   --gpu-isolation MODE      GPU device-cgroup policy: auto|on|off (default: auto).
   --gpu-device UUID=PATH    Reviewed UUID to /dev/nvidiaN mapping; may be repeated.
   --root DIR                Stage files below DIR instead of live /.
-  --user NAME               Shared Control/Worker service account and group (default: astrumweaver).
+  --user NAME               Worker service account and group (default: astrumweaver).
   --start                   Enable and start the service after installation.
   -h, --help                Show this help.
 
-Control and Worker share /etc/astrumweaver and /var/lib/astrumweaver. Use the
-same --user NAME for both setup scripts; an existing role unit with a different
-or ambiguous User=/Group= identity is rejected rather than migrated.
+Control and Worker share the traverse-only /etc/astrumweaver directory, but use
+separate role accounts and state directories. Worker remains astrumweaver with
+/var/lib/astrumweaver for SystemdSetupDriver compatibility; when both roles are
+installed, their --user values must differ. Existing role identity/state
+changes are rejected pending an explicit migration review.
 
 The node and GPU exposure must already exist. The script does not configure
 Proxmox, PCI passthrough, IOMMU, or host NVIDIA drivers. When GPU isolation is
@@ -88,6 +90,7 @@ if [[ -n "$RUNTIME_MANIFEST_SOURCE" ]]; then
 fi
 [[ "$GPU_ISOLATION" =~ ^(auto|on|off)$ ]] || die "--gpu-isolation must be auto, on, or off"
 [[ "$SERVICE_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "invalid service user"
+validate_role_user_name "$SERVICE_USER"
 
 ROOT="$(normalize_root "$ROOT")"
 ETC_DIR="$(root_path "$ROOT" /etc/astrumweaver)"
@@ -105,9 +108,27 @@ DEVICE_MAP_HELPER_DEST="$LIBEXEC_DIR/gpu-device-map"
 UNIT_DEST="$UNIT_DIR/astrumweaver-worker.service"
 ISOLATION_UNIT_DEST="$UNIT_DIR/astrumweaver-worker-gpu-isolation-preflight.service"
 ISOLATION_DROPIN_DEST="$DROPIN_DIR/10-gpu-isolation.conf"
+runtime_arg=''
+if [[ -n "$RUNTIME_MANIFEST_SOURCE" ]]; then
+  runtime_arg='--runtime-manifest /etc/astrumweaver/runtime-deployment.json'
+fi
 
-validate_shared_service_identity "$ROOT" "$SERVICE_USER"
+validate_role_unit_pair "$ROOT" worker "$SERVICE_USER" astrumweaver
+validate_legacy_shared_state_path "$ROOT" worker
 EXECUTABLE="$(resolve_executable "$EXECUTABLE" "$ROOT" astrumweaver-worker)"
+reject_symlink_path \
+  "$ETC_DIR" "$STATE_DIR" "$CONFIG_DEST" "$ENV_DEST" \
+  "$RUNTIME_MANIFEST_DEST" "$GPU_UUID_DEST" "$GPU_DEVICE_MAP_DEST" \
+  "$PREFLIGHT_DEST" "$DEVICE_MAP_HELPER_DEST" "$UNIT_DEST" \
+  "$ISOLATION_UNIT_DEST" "$ISOLATION_DROPIN_DEST"
+validate_unit_template \
+  "$REPO_ROOT/systemd/astrumweaver-worker.service.in" \
+  "$UNIT_DEST" \
+  "$EXECUTABLE" \
+  "$SERVICE_USER" \
+  "$runtime_arg" \
+  worker \
+  astrumweaver
 
 declared_tmp="$(mktemp)"
 expected_tmp="$(mktemp)"
@@ -154,12 +175,17 @@ if ((${#GPU_DEVICE_ENTRIES[@]} > 0)); then
 fi
 
 if [[ "$ROOT" == "/" ]]; then
-  ensure_live_service_user "$SERVICE_USER"
+  validate_live_service_accounts worker "$SERVICE_USER"
+  ensure_live_service_user "$SERVICE_USER" "$STATE_DIR" worker
+  ensure_service_config_membership "$SERVICE_USER"
+  validate_live_service_accounts worker "$SERVICE_USER"
 fi
 
-install -d -m 0750 "$ETC_DIR" "$STATE_DIR"
+install -d -m 0710 "$ETC_DIR"
+install -d -m 0750 "$STATE_DIR"
 install -d -m 0755 "$UNIT_DIR" "$LIBEXEC_DIR"
-reconcile_service_directories "$ROOT" "$SERVICE_USER" "$ETC_DIR" "$STATE_DIR"
+reconcile_service_directories \
+  "$ROOT" "$SERVICE_USER" "$CONFIG_GROUP_NAME" "$ETC_DIR" "$STATE_DIR"
 
 install_same_or_fail "$CONFIG_SOURCE" "$CONFIG_DEST" 0640
 if [[ -n "$ENV_SOURCE" ]]; then
@@ -171,11 +197,6 @@ fi
 install_same_or_fail "$expected_tmp" "$GPU_UUID_DEST" 0640
 install_same_or_fail "$REPO_ROOT/libexec/gpu-preflight" "$PREFLIGHT_DEST" 0755
 install_same_or_fail "$REPO_ROOT/libexec/gpu-device-map" "$DEVICE_MAP_HELPER_DEST" 0755
-
-runtime_arg=''
-if [[ -n "$RUNTIME_MANIFEST_SOURCE" ]]; then
-  runtime_arg='--runtime-manifest /etc/astrumweaver/runtime-deployment.json'
-fi
 
 render_unit \
   "$REPO_ROOT/systemd/astrumweaver-worker.service.in" \

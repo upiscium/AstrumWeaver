@@ -11,7 +11,7 @@ ENV_SOURCE=''
 EXECUTABLE=''
 ROOT='/'
 START=0
-SERVICE_USER='astrumweaver'
+SERVICE_USER='astrumweaver-control'
 
 usage() {
   cat <<'USAGE'
@@ -21,13 +21,15 @@ Options:
   --environment-file FILE   Optional systemd EnvironmentFile source.
   --executable PATH         Optional absolute daemon override; defaults to astrumweaver-control on PATH.
   --root DIR                Stage files below DIR instead of live /.
-  --user NAME               Shared Control/Worker service account and group (default: astrumweaver).
+  --user NAME               Control service account and group (default: astrumweaver-control).
   --start                   Enable and start the service after installation.
   -h, --help                Show this help.
 
-Control and Worker share /etc/astrumweaver and /var/lib/astrumweaver. Use the
-same --user NAME for both setup scripts; an existing role unit with a different
-or ambiguous User=/Group= identity is rejected rather than migrated.
+Control and Worker share the traverse-only /etc/astrumweaver directory, but use
+separate role accounts and state directories. Control defaults to the
+astrumweaver-control account and /var/lib/astrumweaver-control; when both roles
+are installed, their --user values must differ. Existing role identity/state
+changes are rejected pending an explicit migration review.
 
 The script configures an existing Linux node only. It never creates a VM/LXC,
 network, storage pool, database host, or other infrastructure.
@@ -66,24 +68,41 @@ if [[ -n "$ENV_SOURCE" ]]; then
   [[ -f "$ENV_SOURCE" ]] || die "environment file does not exist: $ENV_SOURCE"
 fi
 [[ "$SERVICE_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "invalid service user"
+validate_role_user_name "$SERVICE_USER"
 
 ROOT="$(normalize_root "$ROOT")"
 ETC_DIR="$(root_path "$ROOT" /etc/astrumweaver)"
-STATE_DIR="$(root_path "$ROOT" /var/lib/astrumweaver)"
+STATE_DIR="$(root_path "$ROOT" /var/lib/astrumweaver-control)"
 UNIT_DIR="$(root_path "$ROOT" /etc/systemd/system)"
 CONFIG_DEST="$ETC_DIR/control.toml"
 ENV_DEST="$ETC_DIR/control.env"
 UNIT_DEST="$UNIT_DIR/astrumweaver-control.service"
 
-validate_shared_service_identity "$ROOT" "$SERVICE_USER"
+validate_role_unit_pair "$ROOT" control "$SERVICE_USER" astrumweaver-control
+validate_legacy_shared_state_path "$ROOT" control
 EXECUTABLE="$(resolve_executable "$EXECUTABLE" "$ROOT" astrumweaver-control)"
+reject_symlink_path \
+  "$ETC_DIR" "$STATE_DIR" "$CONFIG_DEST" "$ENV_DEST" "$UNIT_DEST"
+validate_unit_template \
+  "$REPO_ROOT/systemd/astrumweaver-control.service.in" \
+  "$UNIT_DEST" \
+  "$EXECUTABLE" \
+  "$SERVICE_USER" \
+  '' \
+  control \
+  astrumweaver-control
 if [[ "$ROOT" == "/" ]]; then
-  ensure_live_service_user "$SERVICE_USER"
+  validate_live_service_accounts control "$SERVICE_USER"
+  ensure_live_service_user "$SERVICE_USER" "$STATE_DIR" control
+  ensure_service_config_membership "$SERVICE_USER"
+  validate_live_service_accounts control "$SERVICE_USER"
 fi
 
-install -d -m 0750 "$ETC_DIR" "$STATE_DIR"
+install -d -m 0710 "$ETC_DIR"
+install -d -m 0750 "$STATE_DIR"
 install -d -m 0755 "$UNIT_DIR"
-reconcile_service_directories "$ROOT" "$SERVICE_USER" "$ETC_DIR" "$STATE_DIR"
+reconcile_service_directories \
+  "$ROOT" "$SERVICE_USER" "$CONFIG_GROUP_NAME" "$ETC_DIR" "$STATE_DIR"
 install_same_or_fail "$CONFIG_SOURCE" "$CONFIG_DEST" 0640
 if [[ -n "$ENV_SOURCE" ]]; then
   install_same_or_fail "$ENV_SOURCE" "$ENV_DEST" 0640
