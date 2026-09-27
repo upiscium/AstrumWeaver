@@ -26,7 +26,7 @@ problems.
 Current supported installation paths are:
 
 - **NixOS x86_64-linux:** flake + NixOS module — recommended.
-- **Other systemd Linux x86_64:** Nix role package + packaged setup wrapper.
+- **Other systemd Linux x86_64:** Nix `#installer` package + first-run TUI.
 - **pip-only:** useful for development, but not currently a complete supported host deployment.
 
 AstrumWeaver assumes the Linux node, networking, PostgreSQL service, GPU
