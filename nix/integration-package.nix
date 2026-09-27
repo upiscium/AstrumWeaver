@@ -1,4 +1,4 @@
-{ stdenvNoCC, lib, bash }:
+{ stdenvNoCC, lib, bash, python312 }:
 
 stdenvNoCC.mkDerivation {
   pname = "astrumweaver-integration";
@@ -20,12 +20,17 @@ stdenvNoCC.mkDerivation {
     cp systemd/astrumweaver-worker.service.in "$assetRoot/systemd/"
     cp libexec/gpu-preflight "$assetRoot/libexec/"
     cp libexec/gpu-device-map "$assetRoot/libexec/"
+    cp libexec/worker-gpu-uuids "$assetRoot/libexec/"
+
+    substituteInPlace "$assetRoot/libexec/worker-gpu-uuids" \
+      --replace-fail "#!/usr/bin/env python3" "#!${python312}/bin/python3"
 
     chmod +x \
       "$assetRoot/setup/setup-control-plane.sh" \
       "$assetRoot/setup/setup-gpu-worker.sh" \
       "$assetRoot/libexec/gpu-preflight" \
-      "$assetRoot/libexec/gpu-device-map"
+      "$assetRoot/libexec/gpu-device-map" \
+      "$assetRoot/libexec/worker-gpu-uuids"
 
     cat >"$out/bin/astrumweaver-setup-control-plane" <<EOF
     #!${bash}/bin/bash
