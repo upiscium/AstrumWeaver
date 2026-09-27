@@ -40,6 +40,7 @@ from astrumweaver.setup.tui import (
     TuiRunStatus,
     build_worker_spec,
     configure_provider,
+    run_first_run_tui,
     run_setup_tui,
 )
 
@@ -186,6 +187,25 @@ def snapshot() -> SetupHostSnapshot:
         package_manager="nix",
         available_commands=frozenset({"nix", "systemctl", "nvidia-smi"}),
         privilege_mode=PrivilegeMode.SUDO,
+    )
+
+
+def systemd_snapshot() -> SetupHostSnapshot:
+    return SetupHostSnapshot(
+        runtime_host=RuntimeHostFacts(
+            cpu_count=16,
+            host_ram_mb=65536,
+            architecture="x86_64",
+        ),
+        deployment_path=DeploymentPath.SYSTEMD,
+        os_id="debian",
+        os_version="13",
+        service_manager="systemd",
+        package_manager="nix",
+        available_commands=frozenset(
+            {"nix", "systemctl", "nvidia-smi"}
+        ),
+        privilege_mode=PrivilegeMode.ROOT,
     )
 
 
@@ -462,3 +482,181 @@ def test_tui_cancelled_when_exact_apply_token_is_not_entered() -> None:
 
     assert result.status is TuiRunStatus.CANCELLED
     assert driver.applied == []
+
+
+class FakeFirstRunInstaller:
+    instances: list["FakeFirstRunInstaller"] = []
+
+    def __init__(self) -> None:
+        self.control_calls = []
+        self.worker_calls = []
+        type(self).instances.append(self)
+
+    def install_control(self, *, spec, secrets):
+        self.control_calls.append((spec, secrets))
+        from astrumweaver.setup.first_run import SystemdBootstrapResult
+
+        return SystemdBootstrapResult(
+            control_installed=True,
+            control_ready=True,
+            migration_applied=True,
+        )
+
+    def install_worker(self, **kwargs):
+        self.worker_calls.append(kwargs)
+        from astrumweaver.setup.first_run import SystemdBootstrapResult
+
+        return SystemdBootstrapResult(
+            worker_installed=True,
+            worker_ready=bool(kwargs["start"]),
+        )
+
+
+def _exact_first_run_apply(prompt: str) -> str:
+    marker = "Type '"
+    assert marker in prompt
+    return prompt.split(marker, 1)[1].split("'", 1)[0]
+
+
+def _exact_first_run_write(prompt: str) -> str:
+    marker = "Type '"
+    assert marker in prompt
+    return prompt.split(marker, 1)[1].split("'", 1)[0]
+
+
+def test_first_run_systemd_wraps_control_migration_gpu_and_worker(
+    monkeypatch,
+) -> None:
+    from astrumweaver.setup import tui as tui_module
+
+    FakeFirstRunInstaller.instances.clear()
+    monkeypatch.setattr(
+        tui_module,
+        "SystemdFirstRunInstaller",
+        FakeFirstRunInstaller,
+    )
+    monkeypatch.setattr(
+        tui_module,
+        "generate_authority_tokens",
+        lambda: ("client-private-generated", "worker-private-generated"),
+    )
+
+    io = ScriptedIO(
+        [
+            "",  # role: both
+            "",  # Control bind host
+            "",  # Control port
+            "postgresql://db-private/astrumweaver",  # hidden
+            "",  # generate tokens
+            "",  # all GPUs
+            "",  # Worker ID
+            "",  # Worker class
+            "",  # smoke execution
+            _exact_first_run_apply,
+        ]
+    )
+
+    result = run_first_run_tui(
+        io=io,
+        snapshot=systemd_snapshot(),
+        gpus=one_gpu(),
+        catalog=RuntimeCatalog((FakeProvider(),)),
+    )
+
+    assert result.status is TuiRunStatus.APPLIED
+    installer = FakeFirstRunInstaller.instances[-1]
+    assert len(installer.control_calls) == 1
+    assert len(installer.worker_calls) == 1
+
+    worker_call = installer.worker_calls[0]
+    assert worker_call["gpu_uuids"] == ("GPU-one",)
+    assert worker_call["start"] is True
+    assert "GPU-one" in worker_call["worker_toml"]
+    assert (
+        "astrumweaver.executors.structured_echo:create_executor"
+        in worker_call["worker_toml"]
+    )
+
+    output = "\n".join(io.output)
+    assert "postgresql://db-private/astrumweaver" not in output
+    assert "client-private-generated" not in output
+    assert "worker-private-generated" not in output
+    assert "Control migration applied" in output
+    assert "Worker is registered and ready" in output
+
+
+def test_first_run_nixos_writes_reviewable_smoke_snippet(
+    tmp_path,
+) -> None:
+    output_path = tmp_path / "astrumweaver-first-run.nix"
+    io = ScriptedIO(
+        [
+            "2",  # worker only
+            "",  # all GPUs
+            "",  # Worker ID
+            "",  # Worker class
+            "",  # smoke
+            "http://control.example:9000",
+            "worker-private-token",  # hidden
+            str(output_path),
+            _exact_first_run_write,
+        ]
+    )
+
+    result = run_first_run_tui(
+        io=io,
+        snapshot=snapshot(),
+        gpus=one_gpu(),
+    )
+
+    assert result.status is TuiRunStatus.PLANNED
+    rendered = output_path.read_text(encoding="utf-8")
+    assert 'workerId = "worker-1";' in rendered
+    assert 'gpuUuids = [ "GPU-one" ];' in rendered
+    assert (
+        'executorFactory = "astrumweaver.executors.structured_echo:create_executor";'
+        in rendered
+    )
+    assert "worker-private-token" not in rendered
+
+
+def test_first_run_nixos_runtime_fails_closed_before_invalid_snippet(
+    tmp_path,
+) -> None:
+    output_path = tmp_path / "should-not-exist.nix"
+    io = ScriptedIO(
+        [
+            "2",  # worker only
+            "",  # all GPUs
+            "",  # Worker ID
+            "",  # Worker class
+            "2",  # runtime
+            "http://control.example:9000",
+            "worker-private-token",  # hidden
+            # runtime planner
+            "org/model",
+            "fake",
+            "",  # dense
+            "",  # residency
+            "",  # model size
+            "",  # min total VRAM
+            "",  # min single VRAM
+            "",  # min RAM
+            "",  # preferred RAM
+            "fake",
+        ]
+    )
+
+    result = run_first_run_tui(
+        io=io,
+        snapshot=snapshot(),
+        gpus=one_gpu(),
+        catalog=RuntimeCatalog((FakeProvider(),)),
+    )
+
+    assert result.status is TuiRunStatus.BLOCKED
+    assert not output_path.exists()
+    assert any(
+        "cannot safely invent the Nix package expression" in line
+        for line in io.output
+    )
