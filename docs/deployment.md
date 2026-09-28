@@ -37,6 +37,41 @@ The Nix flake provides immutable AstrumWeaver Control/Worker daemon packages and
 
 Keeping these concerns separate allows the same setup contract to work with a Nix package, a release artifact, or another reviewed packaging mechanism.
 
+For the combined generic-systemd installer profile, the packaged TUI launcher
+explicitly supplies its lexical profile `bin` directory to first-run setup.
+Transient setup helpers and the persistent daemon `ExecStart` values are
+resolved through that explicit authority, not through Python console-script
+`sys.argv[0]`, a resolved store sibling, or an ambient `PATH`. Profile
+upgrades consequently keep the unit text stable while the profile symlink
+selects the new daemon closure. A pre-existing `/nix/store/...` daemon path is
+treated as a legacy unit and is refused until the operator performs the
+reviewed migration; it is never silently overwritten.
+
+## Generic systemd role layout
+
+The role separation below applies only to the generic systemd setup helpers.
+NixOS modules are unchanged and keep their existing configurable `user`,
+`group`, and state-directory behavior; this section does not claim global
+NixOS isolation.
+
+The helpers share `/etc/astrumweaver` as `root:astrumweaver-config` with mode
+`0710`. `astrumweaver-config` is a **traverse-only** supplementary group:
+neither role is granted the other role's private group. Each role-managed file
+is `root:<role-group>` with mode `0640`.
+
+- Control defaults to `User=Group=astrumweaver-control` and state/home
+  `/var/lib/astrumweaver-control`.
+- Worker remains `User=Group=astrumweaver` and state/home
+  `/var/lib/astrumweaver`, preserving its runtime layout.
+
+Distinct custom `--user` accounts are supported, but equal Control and Worker
+values are rejected. An existing account must have the same-name group as its
+primary group, with the matching GID. If an empty same-name group was
+pre-provisioned, the helper reuses it with `useradd --gid`; peer/private groups
+are not reused. Both units contain
+`SupplementaryGroups=astrumweaver-config`. The exact base units are the
+[Control template](../systemd/astrumweaver-control.service.in) and [Worker template](../systemd/astrumweaver-worker.service.in).
+
 ## Control Plane
 
 Example:
@@ -52,9 +87,10 @@ The script:
 
 - requires an existing Linux/systemd host
 - installs configuration under `/etc/astrumweaver/`
-- creates the `astrumweaver` service account when needed
+- creates the `astrumweaver-control` service account and same-name group when
+  needed (or uses the reviewed `--user` account)
 - installs `astrumweaver-control.service`
-- creates/uses `/var/lib/astrumweaver/`
+- creates/uses `/var/lib/astrumweaver-control/`
 - optionally enables and starts the service
 
 It does not provision PostgreSQL itself. The configured Control Plane must point at an already-available durable database.
@@ -89,6 +125,11 @@ The script installs:
 - `/etc/astrumweaver/gpu-uuids` derived from `worker.toml`
 - `/usr/local/libexec/astrumweaver/gpu-preflight`
 - `/etc/systemd/system/astrumweaver-worker.service`
+
+The Worker account and `/var/lib/astrumweaver/` layout are intentionally
+preserved. Its role files remain readable by the Worker private group, while
+the shared configuration directory grants only traversal through
+`astrumweaver-config`.
 
 For a live install it verifies `nvidia-smi` before the worker can be started.
 
@@ -131,7 +172,7 @@ For interactive application of a SetupPlan, use the first-party systemd
 driver:
 
 ```sh
-sudo astrumweaver-setup-tui \
+sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-setup-tui \
   --driver astrumweaver.setup.systemd:create_systemd_driver
 ```
 
@@ -190,9 +231,177 @@ Running the same command again:
 
 If an existing managed file differs, setup **fails** instead of silently overwriting it.
 
-To change configuration, the operator must deliberately replace/remove the old managed file through a reviewed change procedure before rerunning setup.
+The helpers compare an existing role unit before writing it. An old unit from
+the shared-account templates therefore refuses replacement; use the manual
+migration below rather than deleting the unit to bypass the comparison. For
+ordinary fresh/retry runs, the same reviewed inputs repair expected modes and
+converge without replacing unrelated state.
 
 This policy prevents a generic bootstrap command from unexpectedly changing worker identity or service authority.
+
+## Migrating an older generic systemd installation
+
+This procedure is for an older generic install where Control and Worker used a
+shared `astrumweaver` identity/state layout. It is intentionally manual:
+preserve the existing executable paths, credentials, state, and reviewed
+drop-ins. Do not silently remove secrets or state, and do not remove the
+existing Worker account. In a full Control + Worker migration, the old
+`/var/lib/astrumweaver` remains Worker state; do not blanket-rename or
+`chown` it. Any Control-owned data must be identified and moved deliberately.
+
+1. Stop **both** units and verify that each is inactive before restarting
+   anything:
+
+   ```sh
+   sudo systemctl stop astrumweaver-control.service astrumweaver-worker.service
+   for unit in astrumweaver-control.service astrumweaver-worker.service; do
+     state="$(sudo systemctl is-active "$unit" 2>/dev/null || true)"
+     printf '%s: %s\n' "$unit" "$state"
+     test "$state" = inactive || exit 1
+   done
+   ```
+
+2. While both are stopped, protect the old Control files, then make a local
+   root-only backup:
+
+   ```sh
+   sudo chown root:root /etc/astrumweaver/control.toml /etc/astrumweaver/control.env
+   sudo chmod 0600 /etc/astrumweaver/control.toml /etc/astrumweaver/control.env
+   sudo install -d -o root -g root -m 0700 /root/astrumweaver-role-migration
+   sudo install -o root -g root -m 0600 \
+     /etc/astrumweaver/control.toml /root/astrumweaver-role-migration/control.toml
+   sudo install -o root -g root -m 0600 \
+     /etc/astrumweaver/control.env /root/astrumweaver-role-migration/control.env
+   ```
+
+3. Edit the existing Control unit; do not replace it with a newly generated
+   unit:
+
+   ```sh
+   sudoedit /etc/systemd/system/astrumweaver-control.service
+   ```
+
+   Change the role identity and state, inserting the supplementary group
+   **immediately after `Group=`** exactly as in the [Control unit template](../systemd/astrumweaver-control.service.in):
+
+   ```ini
+   User=astrumweaver-control
+   Group=astrumweaver-control
+   SupplementaryGroups=astrumweaver-config
+   ```
+
+   Change the existing `StateDirectory=` value to
+   `StateDirectory=astrumweaver-control` in its existing location.
+
+   Preserve the existing `ExecStart=` command arguments and every other line.
+   If its executable token is an immutable `/nix/store/.../astrumweaver-control`
+   path, replace only that token with the stable installer-profile path:
+
+   ```ini
+   ExecStart=/nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-control --config /etc/astrumweaver/control.toml
+   ```
+
+   Otherwise preserve the reviewed existing executable path. Do not add a
+   peer private group.
+
+4. Edit the existing Worker unit and insert the same line immediately after
+   its existing `Group=` line, matching the [Worker unit template](../systemd/astrumweaver-worker.service.in):
+
+   ```sh
+   sudoedit /etc/systemd/system/astrumweaver-worker.service
+   ```
+
+   The relevant lines must be:
+
+   ```ini
+   Group=astrumweaver
+   SupplementaryGroups=astrumweaver-config
+   ```
+
+   Keep `User=Group=astrumweaver`, its `StateDirectory=astrumweaver`, and all
+   existing `ExecStart=` command arguments. If its executable token is an
+   immutable `/nix/store/.../astrumweaver-worker` path, replace only that
+   token with:
+
+   ```ini
+   ExecStart=/nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-worker --config /etc/astrumweaver/worker.toml
+   ```
+
+   Otherwise preserve the reviewed existing executable path. Preserve all preflight,
+   RuntimeProvider, and GPU drop-ins. No role-identity drop-in may override
+   `User=`, `Group=`, `StateDirectory=`, or `SupplementaryGroups=`; remove any
+   old identity supplementary override during this deliberate review while
+   retaining the non-identity drop-in behavior.
+
+5. Reconcile Control **first**, without `--start`, using the existing
+   executable path. Because the Worker unit is present, its live
+   `astrumweaver` account must still exist; the Control helper then creates the
+   new `astrumweaver-control` account/group and state:
+
+   ```sh
+   sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-setup-control-plane \
+     --config /etc/astrumweaver/control.toml \
+     --environment-file /etc/astrumweaver/control.env \
+     --user astrumweaver-control \
+     --executable /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-control
+   ```
+
+   Then reconcile Worker, again without `--start`, with the original reviewed
+   runtime manifest/isolation inputs when applicable:
+
+   ```sh
+   sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-setup-gpu-worker \
+     --config /etc/astrumweaver/worker.toml \
+     --environment-file /etc/astrumweaver/worker.env \
+     --user astrumweaver \
+     --executable /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-worker
+   ```
+
+   The Worker helper now sees the live Control peer. Pass the existing
+   `--runtime-manifest`, `--gpu-isolation`, and reviewed `--gpu-device` values
+   as applicable; do not change the stable `ExecStart` or drop-in behavior just
+   to make comparison pass. For a customized installation, substitute the
+   distinct account names present in the edited units; never use the same
+   `--user` value for both roles.
+
+6. Only after both helpers succeed, reload and start Control before Worker:
+
+   ```sh
+   sudo systemctl daemon-reload
+   sudo systemctl start astrumweaver-control.service
+   sudo systemctl start astrumweaver-worker.service
+   ```
+
+### Control-only legacy state
+
+If there is no Worker unit but `/var/lib/astrumweaver` exists, the Control
+helper rejects it as orphaned legacy state. This is not permission repair: do
+not delete it or blanket-`chown` it. Stop Control, verify it is inactive, and
+confirm there is no Worker unit, process, or operator-managed Worker before
+continuing. Do not run the `mv` below until that confirmation is complete. Make
+a root-only local backup of the legacy directory, then—and only then—rename
+that directory to a non-existing review/quarantine path:
+
+```sh
+sudo systemctl stop astrumweaver-control.service
+test "$(sudo systemctl is-active astrumweaver-control.service 2>/dev/null || true)" = inactive
+sudo install -d -o root -g root -m 0700 /root/astrumweaver-role-migration
+sudo tar -C /var/lib/astrumweaver \
+  -cf /root/astrumweaver-role-migration/legacy-state.tar .
+sudo chown root:root /root/astrumweaver-role-migration/legacy-state.tar
+sudo chmod 0600 /root/astrumweaver-role-migration/legacy-state.tar
+sudo test ! -e /var/lib/astrumweaver-legacy-review || exit 1
+sudo test ! -L /var/lib/astrumweaver-legacy-review || exit 1
+sudo mv -- /var/lib/astrumweaver /var/lib/astrumweaver-legacy-review
+sudo chown root:root /var/lib/astrumweaver-legacy-review
+sudo chmod 0700 /var/lib/astrumweaver-legacy-review
+```
+
+After the Control unit edit above, rerun only the Control helper. It creates
+`/var/lib/astrumweaver-control`; manually review the quarantine and move only
+data confirmed to be Control-owned into the new path, with deliberate
+per-entry ownership/mode changes. If a Worker cannot be ruled out, stop here
+and use the full migration procedure instead.
 
 ## Staged installs
 
@@ -242,8 +451,12 @@ AstrumWeaver does not alter LXC privilege mode, cgroup device rules, bind mounts
 Environment files may contain deployment secrets and therefore:
 
 - must not be committed to the public repository
-- are installed mode `0640`
-- are readable by root and the AstrumWeaver service account
+- are installed mode `0640`, owned by `root:<role-group>`
+- are readable by root and only their corresponding role account
+
+The shared configuration group can traverse `/etc/astrumweaver` but cannot
+read these files. Splitting files does not revoke values already exposed:
+rotate existing database or authority credentials if compromise is suspected.
 
 Non-secret role configuration belongs in the TOML configuration file.
 

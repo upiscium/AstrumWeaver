@@ -4,6 +4,7 @@ import subprocess
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
@@ -487,7 +488,8 @@ def test_tui_cancelled_when_exact_apply_token_is_not_entered() -> None:
 class FakeFirstRunInstaller:
     instances: list["FakeFirstRunInstaller"] = []
 
-    def __init__(self) -> None:
+    def __init__(self, *, tool_dir: Path | None = None) -> None:
+        self.tool_dir = tool_dir
         self.control_calls = []
         self.worker_calls = []
         type(self).instances.append(self)
@@ -561,10 +563,12 @@ def test_first_run_systemd_wraps_control_migration_gpu_and_worker(
         snapshot=systemd_snapshot(),
         gpus=one_gpu(),
         catalog=RuntimeCatalog((FakeProvider(),)),
+        packaged_tool_dir=Path("/profile/bin"),
     )
 
     assert result.status is TuiRunStatus.APPLIED
     installer = FakeFirstRunInstaller.instances[-1]
+    assert installer.tool_dir == Path("/profile/bin")
     assert len(installer.control_calls) == 1
     assert len(installer.worker_calls) == 1
 
@@ -663,6 +667,8 @@ def test_first_run_nixos_runtime_writes_reviewed_provider_snippet(
     assert result.provider_id == "fake"
     rendered = output_path.read_text(encoding="utf-8")
     assert "runtime = {" in rendered
+    assert 'capabilities = [ "llm.chat" "text.generate" ];' in rendered
+    assert '"debug.echo"' not in rendered
     assert 'provider = "fake";' in rendered
     assert "packages = [ pkgs.fake ];" in rendered
     assert 'modelRef = "org/model";' in rendered

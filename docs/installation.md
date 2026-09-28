@@ -145,6 +145,33 @@ After a successful generic-systemd install, systemd reads the canonical
 
 Keep `*.env` files out of Git. They contain authority/database credentials.
 
+The role-separated defaults in this section apply to the **generic systemd
+helpers only**. The NixOS modules are unchanged and retain their existing
+configurable `user`, `group`, and state-directory behavior; this is not a claim
+of global NixOS role isolation.
+
+For generic systemd, `/etc/astrumweaver` is shared as `root:astrumweaver-config`
+with mode `0710`: `astrumweaver-config` is a **traverse-only** supplementary
+group, not a file-reading group. Role-managed files are `root:<role-group>`
+with mode `0640`, so Control and Worker cannot read each other's files. The
+defaults are deliberately different:
+
+- Control uses `astrumweaver-control` for both `User=` and `Group=`, and
+  `/var/lib/astrumweaver-control` for its state and home.
+- Worker remains `astrumweaver` for both `User=` and `Group=`, and keeps
+  `/var/lib/astrumweaver` for its state and home so existing runtime behavior is
+  preserved.
+
+Both services have `SupplementaryGroups=astrumweaver-config`; neither service
+gets the other role's private group. Distinct custom `--user` accounts are
+supported, in either install order, but equal Control and Worker values are
+rejected. An existing live account must have the same-name group as its
+primary group, with the matching GID. If the account is absent but that
+same-name group was pre-provisioned and is empty,
+the helper reuses it with `useradd --gid`; it does not reuse a peer or shared
+role group. See the exact [Control unit template](../systemd/astrumweaver-control.service.in)
+and [Worker unit template](../systemd/astrumweaver-worker.service.in).
+
 ## Option A — NixOS
 
 Add AstrumWeaver as a flake input:
@@ -283,7 +310,8 @@ features available. AstrumWeaver does not bootstrap Nix itself.
 Install the combined first-run package:
 
 ```sh
-sudo nix profile add \
+NIX_BIN="$(command -v nix)"
+sudo "$NIX_BIN" profile add \
   --profile /nix/var/nix/profiles/astrumweaver-installer \
   github:upiscium/AstrumWeaver#installer
 ```
@@ -293,6 +321,18 @@ Then run:
 ```sh
 sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-setup-tui
 ```
+
+The installer-profile TUI entrypoint is a packaging wrapper. It passes the
+lexical profile `bin` directory explicitly into first-run setup, so Python
+console-script `sys.argv[0]` and the ambient `PATH` are not used to discover
+the setup helpers. The same stable profile paths are passed as the persistent
+Control/Worker daemon executables in the generated systemd units. A profile
+upgrade therefore changes the symlink target without changing unit text.
+
+Do not put a `/nix/store/...` daemon path into a generic systemd unit. If an
+older installation already has a store-pinned `ExecStart`, setup refuses to
+replace it; follow [the reviewed legacy-unit migration procedure](deployment.md#migrating-an-older-generic-systemd-installation)
+first.
 
 The default TUI mode is `first-run`. It can wrap the common bootstrap work
 that would otherwise require several manual commands:
@@ -344,7 +384,8 @@ non-interactive deployment, and understanding exactly what the TUI wraps.
 
 
 ```sh
-sudo nix profile add \
+NIX_BIN="$(command -v nix)"
+sudo "$NIX_BIN" profile add \
   --profile /nix/var/nix/profiles/astrumweaver-control \
   github:upiscium/AstrumWeaver#control
 ```
@@ -405,7 +446,8 @@ sudo /nix/var/nix/profiles/astrumweaver-control/bin/astrumweaver-setup-control-p
 Install the Worker package:
 
 ```sh
-sudo nix profile add \
+NIX_BIN="$(command -v nix)"
+sudo "$NIX_BIN" profile add \
   --profile /nix/var/nix/profiles/astrumweaver-worker \
   github:upiscium/AstrumWeaver#worker
 ```
@@ -494,7 +536,8 @@ Review release/migration changes before enabling a newer Control binary.
 For the TUI-first installation, upgrade the combined installer profile:
 
 ```sh
-sudo nix profile upgrade \
+NIX_BIN="$(command -v nix)"
+sudo "$NIX_BIN" profile upgrade \
   --profile /nix/var/nix/profiles/astrumweaver-installer \
   --all
 ```
@@ -502,17 +545,95 @@ sudo nix profile upgrade \
 If you intentionally installed separate role profiles, upgrade them instead:
 
 ```sh
-sudo nix profile upgrade \
+NIX_BIN="$(command -v nix)"
+sudo "$NIX_BIN" profile upgrade \
   --profile /nix/var/nix/profiles/astrumweaver-control \
   --all
 
-sudo nix profile upgrade \
+NIX_BIN="$(command -v nix)"
+sudo "$NIX_BIN" profile upgrade \
   --profile /nix/var/nix/profiles/astrumweaver-worker \
   --all
 ```
 
 If the new Control binary contains new database migrations, run
 `astrumweaver-migrate` before considering Control ready.
+
+### Retrying an interrupted generic systemd first-run
+
+This section is for the generic systemd helpers. Control defaults to the
+`astrumweaver-control` user/group and `/var/lib/astrumweaver-control`; Worker
+remains `astrumweaver` and `/var/lib/astrumweaver`. The shared
+`/etc/astrumweaver` directory is `root:astrumweaver-config 0710` (traverse
+only), while each role-managed file is `root:<role-group> 0640`. Both units
+use `SupplementaryGroups=astrumweaver-config`, never the peer's private group.
+
+Distinct custom `--user NAME` values are supported in either install order;
+equal values are rejected before the second role changes anything. A live
+existing account must have the same-name group as its primary group, with the
+matching GID. An empty, pre-provisioned same-name group is reused with
+`useradd --gid` when the account is created.
+Setup enumerates `getent passwd` and `getent group` and rejects any differently
+named entry sharing a role's numeric UID or private GID, including aliases of
+the shared traversal group's GID. This check also covers an existing group
+before its role user is created. Failed enumeration is rejected, not treated
+as an empty identity database. The operator must still reserve numeric IDs
+across all configured NSS sources: setup cannot certify non-enumerable remote
+accounts or protect against a privileged administrator later granting access.
+When both units already exist, each helper also requires the peer unit's live
+user. Account and state migration is deliberate manual work; do not remove the
+existing `astrumweaver` Worker account to make a retry pass.
+
+Updating a Nix profile only updates binaries; it does not repair host files.
+Re-running the updated setup helpers with the same reviewed inputs is the
+normal fresh/retry path: it repairs `/etc/astrumweaver` to
+`root:astrumweaver-config 0710`, state to the selected role ownership with
+mode `0750`, and role config/env/GPU/runtime files to `root:<role-group> 0640`.
+No world-readable permissions are needed.
+
+The helpers deliberately refuse to overwrite different configuration or unit
+content. In particular, an old role unit from the shared-account templates is
+not silently replaced; follow the [manual role-separation migration](deployment.md#migrating-an-older-generic-systemd-installation)
+instead. Do not regenerate Control tokens or discard existing secrets merely
+to retry. For an earlier failed **smoke** install, stop the Worker and review
+`/etc/astrumweaver/worker.toml` locally:
+
+```sh
+sudo systemctl stop astrumweaver-worker.service
+sudoedit /etc/astrumweaver/worker.toml
+```
+
+Only when `[executor].factory` is
+`astrumweaver.executors.structured_echo:create_executor`, set
+`[worker].capabilities = ["debug.echo"]`. Preserve GPU ownership, identity,
+Control URL and all other reviewed settings. Do not make this change to a
+RuntimeProvider configuration. Then reconcile using the existing protected
+files (omit the Control command on a Worker-only host):
+
+```sh
+sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-setup-control-plane \
+  --config /etc/astrumweaver/control.toml \
+  --environment-file /etc/astrumweaver/control.env \
+  --executable /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-control
+
+sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-setup-gpu-worker \
+  --config /etc/astrumweaver/worker.toml \
+  --environment-file /etc/astrumweaver/worker.env \
+  --executable /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-worker \
+  --start
+```
+
+Use each role's distinct reviewed `--user` if customized. If an installed unit uses a
+different executable profile, keep that original stable executable path while
+upgrading its profile, or explicitly review a unit migration; setup will not
+silently replace it. For runtime retry, also pass the existing reviewed
+`--runtime-manifest /etc/astrumweaver/runtime-deployment.json`; keep existing
+isolation policy (`--gpu-isolation on` if explicitly enabled).
+After reconciliation, restart already-running affected services to pick up
+the updated binaries/configuration. If Control migration never completed,
+finish the documented migration/start step before testing Worker registration.
+Check `/v1/ready`, Worker `/health`, and the
+[debug.echo round-trip](getting-started.md#verify-the-installation).
 
 ## What is not an installation method yet
 

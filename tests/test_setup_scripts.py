@@ -4,10 +4,22 @@ import os
 from pathlib import Path
 import subprocess
 
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SETUP = ROOT / "setup"
 PREFLIGHT = ROOT / "libexec" / "gpu-preflight"
+
+
+def assert_no_trailing_whitespace(text: str) -> None:
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        assert line == line.rstrip(" \t"), (
+            f"generated unit line {line_number} has trailing whitespace: {line!r}"
+        )
+
+
+def exec_start_line(unit: str) -> str:
+    return next(line for line in unit.splitlines() if line.startswith("ExecStart="))
 
 
 def run(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -47,7 +59,11 @@ def test_control_setup_stages_existing_node_idempotently(tmp_path: Path) -> None
     unit = (staged / "etc/systemd/system/astrumweaver-control.service").read_text(
         encoding="utf-8"
     )
-    assert "ExecStart=/usr/local/bin/astrumweaver-control --config /etc/astrumweaver/control.toml" in unit
+    assert exec_start_line(unit) == (
+        "ExecStart=/usr/local/bin/astrumweaver-control "
+        "--config /etc/astrumweaver/control.toml"
+    )
+    assert_no_trailing_whitespace(unit)
 
 
 def test_control_setup_refuses_unreviewed_config_overwrite(tmp_path: Path) -> None:
@@ -71,6 +87,73 @@ def test_control_setup_refuses_unreviewed_config_overwrite(tmp_path: Path) -> No
 
     assert changed.returncode != 0
     assert "refusing overwrite" in changed.stderr
+
+
+@pytest.mark.parametrize(
+    ("script", "daemon", "config_name", "config_text", "unit_name"),
+    (
+        (
+            "setup-control-plane.sh",
+            "astrumweaver-control",
+            "control.toml",
+            '[control]\nlisten = "127.0.0.1:9000"\n',
+            "astrumweaver-control.service",
+        ),
+        (
+            "setup-gpu-worker.sh",
+            "astrumweaver-worker",
+            "worker.toml",
+            '[worker]\ngpu_uuids = ["GPU-legacy"]\n',
+            "astrumweaver-worker.service",
+        ),
+    ),
+)
+def test_setup_rejects_legacy_store_pinned_unit_without_mutation(
+    tmp_path: Path,
+    script: str,
+    daemon: str,
+    config_name: str,
+    config_text: str,
+    unit_name: str,
+) -> None:
+    config = tmp_path / config_name
+    config.write_text(config_text, encoding="utf-8")
+    staged = tmp_path / "root"
+    legacy_executable = f"/nix/store/legacy-astrumweaver/bin/{daemon}"
+    stable_executable = str(tmp_path / "profile" / "bin" / daemon)
+
+    first = run(
+        "bash",
+        str(SETUP / script),
+        "--config",
+        str(config),
+        "--executable",
+        legacy_executable,
+        "--root",
+        str(staged),
+    )
+    assert first.returncode == 0, first.stderr
+
+    unit = staged / "etc/systemd/system" / unit_name
+    unit_before = unit.read_bytes()
+    config_dest = staged / "etc/astrumweaver" / config_name
+    config_before = config_dest.read_bytes()
+
+    changed = run(
+        "bash",
+        str(SETUP / script),
+        "--config",
+        str(config),
+        "--executable",
+        stable_executable,
+        "--root",
+        str(staged),
+    )
+
+    assert changed.returncode != 0
+    assert "legacy store-pinned" in changed.stderr
+    assert unit.read_bytes() == unit_before
+    assert config_dest.read_bytes() == config_before
 
 
 def test_worker_setup_stages_exact_gpu_identity_and_is_idempotent(tmp_path: Path) -> None:
@@ -106,7 +189,11 @@ def test_worker_setup_stages_exact_gpu_identity_and_is_idempotent(tmp_path: Path
         encoding="utf-8"
     )
     assert "gpu-preflight /etc/astrumweaver/gpu-uuids" in unit
-    assert "ExecStart=/usr/local/bin/astrumweaver-worker --config /etc/astrumweaver/worker.toml" in unit
+    assert exec_start_line(unit) == (
+        "ExecStart=/usr/local/bin/astrumweaver-worker "
+        "--config /etc/astrumweaver/worker.toml"
+    )
+    assert_no_trailing_whitespace(unit)
 
 
 def test_worker_setup_stages_runtime_manifest_and_wires_service(
@@ -149,10 +236,64 @@ def test_worker_setup_stages_runtime_manifest_and_wires_service(
         staged
         / "etc/systemd/system/astrumweaver-worker.service"
     ).read_text(encoding="utf-8")
-    assert (
+    assert exec_start_line(unit) == (
+        "ExecStart=/usr/local/bin/astrumweaver-worker "
+        "--config /etc/astrumweaver/worker.toml "
         "--runtime-manifest /etc/astrumweaver/runtime-deployment.json"
-        in unit
     )
+    assert_no_trailing_whitespace(unit)
+
+
+@pytest.mark.parametrize("runtime", [False, True])
+def test_worker_setup_converges_after_manual_store_to_profile_migration(
+    tmp_path: Path, runtime: bool
+) -> None:
+    config = tmp_path / "worker.toml"
+    config.write_text(
+        '[worker]\nid = "worker-migration"\nclass = "gpu-single"\n'
+        'gpu_uuids = ["GPU-example-a"]\n',
+        encoding="utf-8",
+    )
+    runtime_manifest = tmp_path / "runtime.json"
+    runtime_manifest.write_text(
+        '{"schema_version":"v1","provider_id":"test"}\n',
+        encoding="utf-8",
+    )
+    staged = tmp_path / "root"
+    legacy = "/nix/store/legacy-astrumweaver/bin/astrumweaver-worker"
+    stable = "/nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-worker"
+
+    command = [
+        "bash",
+        str(SETUP / "setup-gpu-worker.sh"),
+        "--config",
+        str(config),
+    ]
+    if runtime:
+        command.extend(["--runtime-manifest", str(runtime_manifest)])
+    command.extend(["--executable", legacy, "--root", str(staged)])
+
+    first = run(*command)
+    assert first.returncode == 0, first.stderr
+    unit_path = staged / "etc/systemd/system/astrumweaver-worker.service"
+    legacy_unit = unit_path.read_text(encoding="utf-8")
+    assert_no_trailing_whitespace(legacy_unit)
+
+    migrated_unit = legacy_unit.replace(
+        f"ExecStart={legacy}", f"ExecStart={stable}", 1
+    )
+    assert migrated_unit != legacy_unit
+    assert migrated_unit.replace(stable, legacy, 1) == legacy_unit
+    unit_path.write_text(migrated_unit, encoding="utf-8")
+
+    rerun = list(command)
+    executable_index = rerun.index("--executable") + 1
+    rerun[executable_index] = stable
+    converged = run(*rerun)
+
+    assert converged.returncode == 0, converged.stderr
+    assert unit_path.read_text(encoding="utf-8") == migrated_unit
+    assert_no_trailing_whitespace(migrated_unit)
 
 
 def test_worker_setup_stages_gpu_device_cgroup_isolation(
@@ -190,6 +331,12 @@ def test_worker_setup_stages_gpu_device_cgroup_isolation(
         staged
         / "etc/systemd/system/astrumweaver-worker.service.d/10-gpu-isolation.conf"
     ).read_text(encoding="utf-8")
+    assert_no_trailing_whitespace(
+        (
+            staged / "etc/systemd/system/astrumweaver-worker.service"
+        ).read_text(encoding="utf-8")
+    )
+    assert_no_trailing_whitespace(dropin)
     assert "DevicePolicy=closed" in dropin
     assert "DeviceAllow=/dev/nvidia3 rw" in dropin
     assert "Environment=CUDA_VISIBLE_DEVICES=GPU-example-a" in dropin
@@ -203,6 +350,7 @@ def test_worker_setup_stages_gpu_device_cgroup_isolation(
         / "etc/systemd/system/astrumweaver-worker-gpu-isolation-preflight.service"
     ).read_text(encoding="utf-8")
     assert "gpu-device-map verify" in verifier_unit
+    assert_no_trailing_whitespace(verifier_unit)
 
 
 def test_staged_gpu_isolation_requires_explicit_uuid_device_mapping(

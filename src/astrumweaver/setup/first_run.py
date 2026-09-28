@@ -6,6 +6,7 @@ RuntimeProvider planning remains in setup.tui/setup.planner.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
@@ -122,17 +123,53 @@ def render_control_env(secrets: FirstRunSecrets) -> str:
         )
     ):
         raise ValueError("Control bootstrap requires database/client/Worker secrets")
-    return (
-        f"ASTRUMWEAVER_DATABASE_URL={secrets.database_url}\n"
-        f"ASTRUMWEAVER_CLIENT_TOKEN={secrets.client_token}\n"
-        f"ASTRUMWEAVER_WORKER_TOKEN={secrets.worker_token}\n"
+    return "".join(
+        (
+            _render_systemd_environment_line(
+                "ASTRUMWEAVER_DATABASE_URL", secrets.database_url
+            ),
+            _render_systemd_environment_line(
+                "ASTRUMWEAVER_CLIENT_TOKEN", secrets.client_token
+            ),
+            _render_systemd_environment_line(
+                "ASTRUMWEAVER_WORKER_TOKEN", secrets.worker_token
+            ),
+        )
     )
 
 
 def render_worker_env(worker_token: str) -> str:
     if not worker_token.strip():
         raise ValueError("Worker token must not be blank")
-    return f"ASTRUMWEAVER_WORKER_TOKEN={worker_token}\n"
+    return _render_systemd_environment_line(
+        "ASTRUMWEAVER_WORKER_TOKEN", worker_token
+    )
+
+
+def _render_systemd_environment_line(name: str, value: str) -> str:
+    """Render one safely quoted systemd EnvironmentFile assignment."""
+
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in value):
+        raise ValueError(f"{name} must not contain control characters")
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'{name}="{escaped}"\n'
+
+
+def control_url_for_bind_host(bind_host: str, port: int) -> str:
+    """Build a local Worker/readiness URL for a Control bind address."""
+
+    host = bind_host.strip()
+    if host in {"0.0.0.0", "::", "[::]"}:
+        host = "127.0.0.1"
+    elif host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        formatted_host = host
+    else:
+        formatted_host = f"[{host}]" if address.version == 6 else host
+    return f"http://{formatted_host}:{port}"
 
 
 def render_worker_toml(
@@ -148,6 +185,7 @@ def render_worker_toml(
         raise ValueError("Control URL must not be blank")
     if not 1 <= health_port <= 65535:
         raise ValueError("Worker health port must be between 1 and 65535")
+    _validate_smoke_capabilities(worker, execution_mode)
 
     capabilities = tuple(sorted(worker.capabilities))
     gpu_uuids = tuple(worker.gpu_uuids)
@@ -216,6 +254,16 @@ def render_worker_toml(
     return "\n".join(lines) + "\n"
 
 
+def _validate_smoke_capabilities(
+    worker: WorkerSpec, execution_mode: FirstRunExecutionMode,
+) -> None:
+    if (
+        execution_mode is FirstRunExecutionMode.SMOKE
+        and worker.capabilities != frozenset({"debug.echo"})
+    ):
+        raise ValueError("smoke WorkerSpec must advertise only debug.echo")
+
+
 def write_protected_file(path: Path, content: str) -> None:
     """Write a root-owned secret/config input without silently replacing drift."""
 
@@ -259,7 +307,14 @@ class SystemdBootstrapResult:
 
 
 class SystemdFirstRunInstaller:
-    """Use packaged integration wrappers to perform existing-node bootstrap."""
+    """Use packaged integration wrappers to perform existing-node bootstrap.
+
+    ``tool_dir`` is an explicit packaging authority.  When supplied, every
+    helper and daemon executable is resolved lexically from that directory;
+    neither ``sys.argv[0]`` nor the ambient ``PATH`` may select a different
+    closure.  This is important because setup helpers are transient commands,
+    while the daemon path is persisted in a systemd unit.
+    """
 
     def __init__(
         self,
@@ -269,6 +324,10 @@ class SystemdFirstRunInstaller:
         poll_interval_seconds: float = 0.5,
         ready_timeout_seconds: float = 60.0,
     ) -> None:
+        if tool_dir is not None and not tool_dir.is_absolute():
+            raise ValueError(
+                f"packaged tool directory must be absolute: {tool_dir}"
+            )
         self.tool_dir = tool_dir
         self.systemctl = systemctl
         self.poll_interval_seconds = poll_interval_seconds
@@ -282,11 +341,18 @@ class SystemdFirstRunInstaller:
             )
 
     def _resolve_tool(self, name: str) -> str:
-        candidates: list[Path] = []
         if self.tool_dir is not None:
-            candidates.append(self.tool_dir / name)
+            candidate = self.tool_dir / name
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+            raise RuntimeError(
+                "required packaged command is unavailable from the explicit "
+                f"packaged tool authority: {name}"
+            )
+
+        candidates: list[Path] = []
         argv0 = Path(sys.argv[0])
-        if argv0.parent != Path("."):
+        if os.sep in sys.argv[0]:
             # Keep the invocation path before resolving symlinks. Dedicated
             # Nix profiles expose a combined bin/ directory whose setup
             # helpers are siblings of astrumweaver-setup-tui; resolving the
@@ -303,6 +369,23 @@ class SystemdFirstRunInstaller:
         raise RuntimeError(
             f"required packaged command is unavailable: {name}"
         )
+
+    def _resolve_packaged_tool(self, name: str) -> str:
+        """Resolve a transient helper from the explicit package authority."""
+
+        return self._resolve_tool(name)
+
+    def _resolve_persistent_daemon(self, name: str) -> str:
+        """Resolve the executable path that will be persisted in ExecStart."""
+
+        resolved = self._resolve_tool(name)
+        if self.tool_dir is None and resolved.startswith("/nix/store/"):
+            raise RuntimeError(
+                "persistent daemon executable resolved to an immutable Nix "
+                "store path; invoke the packaged TUI or supply an explicit "
+                "profile tool authority"
+            )
+        return resolved
 
     @contextmanager
     def _temporary_file(
@@ -375,6 +458,35 @@ class SystemdFirstRunInstaller:
                 time.sleep(self.poll_interval_seconds)
         return False
 
+    @staticmethod
+    def _diagnostics(role: str, port: int) -> str:
+        endpoint = "v1/ready" if role == "control" else "health"
+        # Only fixed unit names and a validated, non-secret port are emitted.
+        # Never include subprocess argv/env, DB URLs, tokens or GPU identity.
+        return (
+            "Inspect:\n"
+            f"  systemctl status astrumweaver-{role}.service\n"
+            f"  journalctl -u astrumweaver-{role}.service -b\n"
+            f"  curl http://127.0.0.1:{port}/{endpoint}\n"
+            "Use the configured local bind address if loopback is not enabled."
+        )
+
+    def _run_service(
+        self,
+        args: list[str],
+        *,
+        role: str,
+        port: int,
+        env: Mapping[str, str] | None = None,
+    ) -> None:
+        try:
+            self._run(args, env=env)
+        except (OSError, subprocess.CalledProcessError):
+            raise RuntimeError(
+                f"{role.capitalize()} setup/migration/start command failed.\n"
+                + self._diagnostics(role, port)
+            ) from None
+
     def install_control(
         self,
         *,
@@ -382,9 +494,9 @@ class SystemdFirstRunInstaller:
         secrets: FirstRunSecrets,
     ) -> SystemdBootstrapResult:
         self._require_root()
-        setup = self._resolve_tool("astrumweaver-setup-control-plane")
-        executable = self._resolve_tool("astrumweaver-control")
-        migrate = self._resolve_tool("astrumweaver-migrate")
+        setup = self._resolve_packaged_tool("astrumweaver-setup-control-plane")
+        executable = self._resolve_persistent_daemon("astrumweaver-control")
+        migrate = self._resolve_packaged_tool("astrumweaver-migrate")
 
         with self._temporary_file(
             render_control_toml(spec),
@@ -393,7 +505,7 @@ class SystemdFirstRunInstaller:
             render_control_env(secrets),
             suffix=".env",
         ) as env_path:
-            self._run(
+            self._run_service(
                 [
                     setup,
                     "--config",
@@ -402,7 +514,9 @@ class SystemdFirstRunInstaller:
                     str(env_path),
                     "--executable",
                     executable,
-                ]
+                ],
+                role="control",
+                port=spec.port,
             )
 
         migration_env = dict(os.environ)
@@ -410,25 +524,27 @@ class SystemdFirstRunInstaller:
         migration_env["ASTRUMWEAVER_DATABASE_URL"] = (
             secrets.database_url
         )
-        self._run([migrate], env=migration_env)
-        self._run(
+        self._run_service(
+            [migrate], env=migration_env, role="control", port=spec.port
+        )
+        self._run_service(
             [
                 self.systemctl,
                 "enable",
                 "--now",
                 "astrumweaver-control.service",
-            ]
+            ],
+            role="control",
+            port=spec.port,
         )
 
-        host = spec.bind_host
-        if host in {"0.0.0.0", "::", "[::]"}:
-            host = "127.0.0.1"
         ready = self._wait_json_ready(
-            f"http://{host}:{spec.port}/v1/ready"
+            control_url_for_bind_host(spec.bind_host, spec.port) + "/v1/ready"
         )
         if not ready:
             raise RuntimeError(
-                "Control service did not become ready after migration/start"
+                "Control service did not become ready after migration/start.\n"
+                + self._diagnostics("control", spec.port)
             )
         return SystemdBootstrapResult(
             control_installed=True,
@@ -445,8 +561,8 @@ class SystemdFirstRunInstaller:
         start: bool,
     ) -> SystemdBootstrapResult:
         self._require_root()
-        setup = self._resolve_tool("astrumweaver-setup-gpu-worker")
-        executable = self._resolve_tool("astrumweaver-worker")
+        setup = self._resolve_packaged_tool("astrumweaver-setup-gpu-worker")
+        executable = self._resolve_persistent_daemon("astrumweaver-worker")
 
         with self._temporary_file(
             worker_toml,
@@ -478,11 +594,11 @@ class SystemdFirstRunInstaller:
                     )
                     if start:
                         args.append("--start")
-                    self._run(args)
+                    self._run_service(args, role="worker", port=9100)
             else:
                 if start:
                     args.append("--start")
-                self._run(args)
+                self._run_service(args, role="worker", port=9100)
 
         ready = False
         if start:
@@ -492,7 +608,8 @@ class SystemdFirstRunInstaller:
             )
             if not ready:
                 raise RuntimeError(
-                    "Worker service did not become ready/registered"
+                    "Worker service did not become ready/registered.\n"
+                    + self._diagnostics("worker", 9100)
                 )
         return SystemdBootstrapResult(
             worker_installed=True,
@@ -542,6 +659,7 @@ def render_nixos_bootstrap_snippet(
     if role in {FirstRunRole.WORKER, FirstRunRole.BOTH}:
         if worker is None or control_url is None:
             raise ValueError("Worker role requires WorkerSpec/control URL")
+        _validate_smoke_capabilities(worker, execution_mode)
         lines.extend(
             [
                 "  services.astrumweaver.worker = {",
@@ -668,6 +786,7 @@ __all__ = [
     "FirstRunSecrets",
     "SystemdBootstrapResult",
     "SystemdFirstRunInstaller",
+    "control_url_for_bind_host",
     "generate_authority_tokens",
     "render_control_env",
     "render_control_toml",
