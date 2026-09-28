@@ -37,6 +37,16 @@ The Nix flake provides immutable AstrumWeaver Control/Worker daemon packages and
 
 Keeping these concerns separate allows the same setup contract to work with a Nix package, a release artifact, or another reviewed packaging mechanism.
 
+For the combined generic-systemd installer profile, the packaged TUI launcher
+explicitly supplies its lexical profile `bin` directory to first-run setup.
+Transient setup helpers and the persistent daemon `ExecStart` values are
+resolved through that explicit authority, not through Python console-script
+`sys.argv[0]`, a resolved store sibling, or an ambient `PATH`. Profile
+upgrades consequently keep the unit text stable while the profile symlink
+selects the new daemon closure. A pre-existing `/nix/store/...` daemon path is
+treated as a legacy unit and is refused until the operator performs the
+reviewed migration; it is never silently overwritten.
+
 ## Generic systemd role layout
 
 The role separation below applies only to the generic systemd setup helpers.
@@ -283,8 +293,16 @@ existing Worker account. In a full Control + Worker migration, the old
    Change the existing `StateDirectory=` value to
    `StateDirectory=astrumweaver-control` in its existing location.
 
-   Preserve the existing `ExecStart=` stable executable path and every other
-   line. Do not add a peer private group.
+   Preserve the existing `ExecStart=` command arguments and every other line.
+   If its executable token is an immutable `/nix/store/.../astrumweaver-control`
+   path, replace only that token with the stable installer-profile path:
+
+   ```ini
+   ExecStart=/nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-control --config /etc/astrumweaver/control.toml
+   ```
+
+   Otherwise preserve the reviewed existing executable path. Do not add a
+   peer private group.
 
 4. Edit the existing Worker unit and insert the same line immediately after
    its existing `Group=` line, matching the [Worker unit template](../systemd/astrumweaver-worker.service.in):
@@ -300,8 +318,16 @@ existing Worker account. In a full Control + Worker migration, the old
    SupplementaryGroups=astrumweaver-config
    ```
 
-   Keep `User=Group=astrumweaver`, its `StateDirectory=astrumweaver`, the
-   existing `ExecStart=` path, and all other lines. Preserve all preflight,
+   Keep `User=Group=astrumweaver`, its `StateDirectory=astrumweaver`, and all
+   existing `ExecStart=` command arguments. If its executable token is an
+   immutable `/nix/store/.../astrumweaver-worker` path, replace only that
+   token with:
+
+   ```ini
+   ExecStart=/nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-worker --config /etc/astrumweaver/worker.toml
+   ```
+
+   Otherwise preserve the reviewed existing executable path. Preserve all preflight,
    RuntimeProvider, and GPU drop-ins. No role-identity drop-in may override
    `User=`, `Group=`, `StateDirectory=`, or `SupplementaryGroups=`; remove any
    old identity supplementary override during this deliberate review while
@@ -317,7 +343,7 @@ existing Worker account. In a full Control + Worker migration, the old
      --config /etc/astrumweaver/control.toml \
      --environment-file /etc/astrumweaver/control.env \
      --user astrumweaver-control \
-     --executable /absolute/path/from-existing-control-ExecStart
+     --executable /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-control
    ```
 
    Then reconcile Worker, again without `--start`, with the original reviewed
@@ -328,7 +354,7 @@ existing Worker account. In a full Control + Worker migration, the old
      --config /etc/astrumweaver/worker.toml \
      --environment-file /etc/astrumweaver/worker.env \
      --user astrumweaver \
-     --executable /absolute/path/from-existing-worker-ExecStart
+     --executable /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-worker
    ```
 
    The Worker helper now sees the live Control peer. Pass the existing

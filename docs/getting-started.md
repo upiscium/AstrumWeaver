@@ -262,6 +262,7 @@ The interactive setup frontend is:
 
 ```sh
 sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-setup-tui \
+  --mode runtime \
   --driver astrumweaver.setup.systemd:create_systemd_driver
 ```
 

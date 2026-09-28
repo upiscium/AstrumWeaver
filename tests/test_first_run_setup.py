@@ -12,6 +12,7 @@ import pytest
 from astrumweaver import AcceleratorDevice, ResourceShape, WorkerSpec
 from astrumweaver.setup.first_run import (
     ControlBootstrapSpec,
+    control_url_for_bind_host,
     FirstRunExecutionMode,
     FirstRunRole,
     FirstRunSecrets,
@@ -77,8 +78,31 @@ def test_control_rendering_keeps_secret_values_out_of_toml() -> None:
     assert "worker-secret" not in toml_text
 
     assert "ASTRUMWEAVER_DATABASE_URL=" in env_text
-    assert "ASTRUMWEAVER_CLIENT_TOKEN=client-secret" in env_text
-    assert "ASTRUMWEAVER_WORKER_TOKEN=worker-secret" in env_text
+    assert 'ASTRUMWEAVER_CLIENT_TOKEN="client-secret"' in env_text
+    assert 'ASTRUMWEAVER_WORKER_TOKEN="worker-secret"' in env_text
+
+
+def test_systemd_environment_values_are_quoted_and_control_characters_rejected() -> None:
+    env = render_worker_env('token"with\\slashes')
+    assert env == 'ASTRUMWEAVER_WORKER_TOKEN="token\\"with\\\\slashes"\n'
+
+    with pytest.raises(ValueError, match="control characters"):
+        render_worker_env("token\nInjected=value")
+
+
+@pytest.mark.parametrize(
+    ("bind_host", "expected"),
+    (
+        ("192.0.2.10", "http://192.0.2.10:9000"),
+        ("0.0.0.0", "http://127.0.0.1:9000"),
+        ("::1", "http://[::1]:9000"),
+        ("[::1]", "http://[::1]:9000"),
+    ),
+)
+def test_control_url_for_bind_host_formats_local_and_ipv6_addresses(
+    bind_host: str, expected: str
+) -> None:
+    assert control_url_for_bind_host(bind_host, 9000) == expected
 
 
 def test_worker_toml_is_generated_from_discovered_worker_contract() -> None:
@@ -240,6 +264,77 @@ def test_resolve_tool_prefers_invoking_profile_bin_without_path(
         assert installer._resolve_tool(name) == str(profile_bin / name)
 
 
+def test_explicit_packaged_tool_dir_is_the_only_resolution_authority(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    profile_bin = tmp_path / "profile" / "bin"
+    store_bin = tmp_path / "store" / "bin"
+    path_bin = tmp_path / "path" / "bin"
+    for directory in (profile_bin, store_bin, path_bin):
+        directory.mkdir(parents=True)
+
+    name = "astrumweaver-worker"
+    for directory, marker in (
+        (profile_bin, "profile"),
+        (store_bin, "store"),
+        (path_bin, "path"),
+    ):
+        executable = directory / name
+        executable.write_text(f"#!/bin/sh\n# {marker}\n", encoding="utf-8")
+        executable.chmod(0o755)
+
+    monkeypatch.setattr(sys, "argv", [str(store_bin / "astrumweaver-setup-tui")])
+    monkeypatch.setenv("PATH", str(path_bin))
+
+    installer = SystemdFirstRunInstaller(tool_dir=profile_bin)
+
+    assert installer._resolve_tool(name) == str(profile_bin / name)
+
+    (profile_bin / name).unlink()
+    with pytest.raises(RuntimeError, match="explicit packaged tool authority"):
+        installer._resolve_tool(name)
+
+
+def test_packaging_check_exposes_only_the_explicit_tool_authority(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    from astrumweaver.setup.tui import _check_packaging
+
+    profile_bin = tmp_path / "profile" / "bin"
+    profile_bin.mkdir(parents=True)
+    for name in (
+        "astrumweaver-setup-control-plane",
+        "astrumweaver-setup-gpu-worker",
+        "astrumweaver-control",
+        "astrumweaver-worker",
+        "astrumweaver-migrate",
+    ):
+        executable = profile_bin / name
+        executable.write_text("#!/bin/sh\n", encoding="utf-8")
+        executable.chmod(0o755)
+
+    assert _check_packaging(profile_bin) == 0
+    output = capsys.readouterr().out
+    assert f"packaged tool authority: {profile_bin}" in output
+    assert f"astrumweaver-worker: {profile_bin / 'astrumweaver-worker'}" in output
+
+
+def test_persistent_daemon_resolution_rejects_immutable_store_path(
+    monkeypatch,
+) -> None:
+    installer = SystemdFirstRunInstaller()
+    monkeypatch.setattr(
+        installer,
+        "_resolve_tool",
+        lambda name: f"/nix/store/current/bin/{name}",
+    )
+
+    with pytest.raises(RuntimeError, match="immutable Nix store path"):
+        installer._resolve_persistent_daemon("astrumweaver-worker")
+
+
 def test_control_bootstrap_orders_install_migration_start_readiness() -> None:
     installer = RecordingInstaller()
     secrets = FirstRunSecrets(
@@ -338,7 +433,7 @@ def test_first_run_secrets_repr_does_not_expose_values() -> None:
 
 def test_worker_env_contains_only_worker_authority() -> None:
     env = render_worker_env("worker-secret")
-    assert env == "ASTRUMWEAVER_WORKER_TOKEN=worker-secret\n"
+    assert env == 'ASTRUMWEAVER_WORKER_TOKEN="worker-secret"\n'
     assert "CLIENT" not in env
     assert "DATABASE" not in env
 

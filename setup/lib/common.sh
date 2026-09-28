@@ -163,7 +163,14 @@ validate_unit_template() {
   reject_symlink_path "$destination"
   if [[ -e "$destination" ]]; then
     [[ -f "$destination" ]] || die "destination exists but is not a file: $destination"
-    cmp -s "$temporary" "$destination" || { rm -f "$temporary"; die "destination differs; refusing overwrite: $destination"; }
+    if ! cmp -s "$temporary" "$destination"; then
+      if grep -Eq '^ExecStart=/nix/store/[^[:space:]]+/bin/astrumweaver-(control|worker)([[:space:]]|$)' "$destination"; then
+        rm -f "$temporary"
+        die "legacy store-pinned $role service executable detected in $destination; perform the reviewed unit migration before changing ExecStart (refusing overwrite)"
+      fi
+      rm -f "$temporary"
+      die "destination differs; refusing overwrite: $destination"
+    fi
   fi
   rm -f "$temporary"
 }

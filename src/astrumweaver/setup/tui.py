@@ -7,6 +7,7 @@ import getpass
 import importlib
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from collections.abc import Callable, Mapping
@@ -54,6 +55,7 @@ from .discovery import DiscoveredGpu, discover_local_gpus, discover_local_host
 from .planner import build_runtime_setup_plan
 from .first_run import (
     ControlBootstrapSpec,
+    control_url_for_bind_host,
     FirstRunExecutionMode,
     FirstRunRole,
     FirstRunSecrets,
@@ -1050,6 +1052,7 @@ def run_first_run_tui(
     snapshot: SetupHostSnapshot,
     gpus: tuple[DiscoveredGpu, ...],
     catalog: RuntimeCatalog | None = None,
+    packaged_tool_dir: Path | None = None,
 ) -> TuiRunResult:
     io.clear()
     io.write("AstrumWeaver first-run setup")
@@ -1092,7 +1095,9 @@ def run_first_run_tui(
 
         if role is FirstRunRole.BOTH:
             assert control_spec is not None
-            control_url = f"http://127.0.0.1:{control_spec.port}"
+            control_url = control_url_for_bind_host(
+                control_spec.bind_host, control_spec.port
+            )
             assert secrets.worker_token is not None
         else:
             control_url = _ask_nonblank(
@@ -1243,7 +1248,11 @@ def run_first_run_tui(
             plan_digest=digest,
         )
 
-    installer = SystemdFirstRunInstaller()
+    installer = (
+        SystemdFirstRunInstaller()
+        if packaged_tool_dir is None
+        else SystemdFirstRunInstaller(tool_dir=packaged_tool_dir)
+    )
     if control_spec is not None:
         io.write("Installing Control...")
         installer.install_control(
@@ -1354,12 +1363,60 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="do not clear the terminal at startup",
     )
+    parser.add_argument(
+        "--packaged-tool-dir",
+        type=Path,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--check-packaging",
+        action="store_true",
+        help=(
+            "validate the packaged first-run tool authority without starting "
+            "the interactive wizard"
+        ),
+    )
     return parser
+
+
+def _check_packaging(tool_dir: Path | None) -> int:
+    if tool_dir is None:
+        raise ValueError(
+            "packaging check requires the package-provided tool authority"
+        )
+    installer = SystemdFirstRunInstaller(tool_dir=tool_dir)
+    names = (
+        "astrumweaver-setup-control-plane",
+        "astrumweaver-setup-gpu-worker",
+        "astrumweaver-control",
+        "astrumweaver-worker",
+        "astrumweaver-migrate",
+    )
+    print(f"packaged tool authority: {tool_dir}")
+    for name in names:
+        try:
+            resolved = Path(installer._resolve_tool(name))
+        except RuntimeError as exc:
+            raise RuntimeError(f"{exc} (authority={tool_dir})") from None
+        if resolved.parent != tool_dir:
+            raise RuntimeError(
+                f"packaged command escaped explicit tool authority: {name}"
+            )
+        subprocess.run(
+            [str(resolved), "--help"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        print(f"{name}: {resolved}")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.check_packaging:
+            return _check_packaging(args.packaged_tool_dir)
         snapshot = discover_local_host()
         gpus = discover_local_gpus()
         io = ConsoleIO(clear_screen=not args.no_clear)
@@ -1381,6 +1438,7 @@ def main(argv: list[str] | None = None) -> int:
                 io=io,
                 snapshot=snapshot,
                 gpus=gpus,
+                packaged_tool_dir=args.packaged_tool_dir,
             )
     except (EOFError, KeyboardInterrupt):
         print("\nSetup cancelled.", file=sys.stderr)

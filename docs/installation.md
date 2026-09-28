@@ -322,6 +322,18 @@ Then run:
 sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-setup-tui
 ```
 
+The installer-profile TUI entrypoint is a packaging wrapper. It passes the
+lexical profile `bin` directory explicitly into first-run setup, so Python
+console-script `sys.argv[0]` and the ambient `PATH` are not used to discover
+the setup helpers. The same stable profile paths are passed as the persistent
+Control/Worker daemon executables in the generated systemd units. A profile
+upgrade therefore changes the symlink target without changing unit text.
+
+Do not put a `/nix/store/...` daemon path into a generic systemd unit. If an
+older installation already has a store-pinned `ExecStart`, setup refuses to
+replace it; follow [the reviewed legacy-unit migration procedure](deployment.md#migrating-an-older-generic-systemd-installation)
+first.
+
 The default TUI mode is `first-run`. It can wrap the common bootstrap work
 that would otherwise require several manual commands:
 

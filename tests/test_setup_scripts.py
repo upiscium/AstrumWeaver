@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import subprocess
 
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SETUP = ROOT / "setup"
@@ -71,6 +72,73 @@ def test_control_setup_refuses_unreviewed_config_overwrite(tmp_path: Path) -> No
 
     assert changed.returncode != 0
     assert "refusing overwrite" in changed.stderr
+
+
+@pytest.mark.parametrize(
+    ("script", "daemon", "config_name", "config_text", "unit_name"),
+    (
+        (
+            "setup-control-plane.sh",
+            "astrumweaver-control",
+            "control.toml",
+            '[control]\nlisten = "127.0.0.1:9000"\n',
+            "astrumweaver-control.service",
+        ),
+        (
+            "setup-gpu-worker.sh",
+            "astrumweaver-worker",
+            "worker.toml",
+            '[worker]\ngpu_uuids = ["GPU-legacy"]\n',
+            "astrumweaver-worker.service",
+        ),
+    ),
+)
+def test_setup_rejects_legacy_store_pinned_unit_without_mutation(
+    tmp_path: Path,
+    script: str,
+    daemon: str,
+    config_name: str,
+    config_text: str,
+    unit_name: str,
+) -> None:
+    config = tmp_path / config_name
+    config.write_text(config_text, encoding="utf-8")
+    staged = tmp_path / "root"
+    legacy_executable = f"/nix/store/legacy-astrumweaver/bin/{daemon}"
+    stable_executable = str(tmp_path / "profile" / "bin" / daemon)
+
+    first = run(
+        "bash",
+        str(SETUP / script),
+        "--config",
+        str(config),
+        "--executable",
+        legacy_executable,
+        "--root",
+        str(staged),
+    )
+    assert first.returncode == 0, first.stderr
+
+    unit = staged / "etc/systemd/system" / unit_name
+    unit_before = unit.read_bytes()
+    config_dest = staged / "etc/astrumweaver" / config_name
+    config_before = config_dest.read_bytes()
+
+    changed = run(
+        "bash",
+        str(SETUP / script),
+        "--config",
+        str(config),
+        "--executable",
+        stable_executable,
+        "--root",
+        str(staged),
+    )
+
+    assert changed.returncode != 0
+    assert "legacy store-pinned" in changed.stderr
+    assert unit.read_bytes() == unit_before
+    assert config_dest.read_bytes() == config_before
 
 
 def test_worker_setup_stages_exact_gpu_identity_and_is_idempotent(tmp_path: Path) -> None:

@@ -175,34 +175,73 @@
           test -x ${worker}/bin/astrumweaver-setup-tui
           test -x ${worker}/bin/astrumweaver-runtime-deployment-accept
 
-          # Prove that first-run helper discovery works from the actual
-          # combined installer closure without relying on shell PATH.
-          ln -s ${installer} "$TMPDIR/installer-profile"
-          env -i PATH=${pkgs.coreutils}/bin:${pkgs.bash}/bin PROFILE="$TMPDIR/installer-profile" \
-            ${installer}/bin/python3 -c '
-import os
-import subprocess
-import sys
-from astrumweaver.setup.first_run import SystemdFirstRunInstaller
-profile_bin = os.environ["PROFILE"] + "/bin/"
-sys.argv[0] = profile_bin + "astrumweaver-setup-tui"
-installer = SystemdFirstRunInstaller()
-expected = {
-    name: profile_bin + name
-    for name in (
-        "astrumweaver-setup-tui",
-        "astrumweaver-setup-control-plane",
-        "astrumweaver-setup-gpu-worker",
-        "astrumweaver-control",
-        "astrumweaver-worker",
-        "astrumweaver-migrate",
-    )
-}
-for name, path in expected.items():
-    actual = installer._resolve_tool(name)
-    assert actual == path, (name, actual, path)
-    subprocess.run([actual, "--help"], check=True, stdout=subprocess.DEVNULL)
-'
+          # Execute the actual packaged TUI wrapper through a profile-like
+          # symlink.  The wrapper must pass that lexical bin directory into
+          # Python; synthetic sys.argv[0] assignment is deliberately not used.
+          TEST_ROOT="$PWD/installation-surface-test"
+          mkdir -p "$TEST_ROOT/installer-generation-a" "$TEST_ROOT/installer-generation-b"
+          cp -a ${installer}/. "$TEST_ROOT/installer-generation-a/"
+          cp -a ${installer}/. "$TEST_ROOT/installer-generation-b/"
+          ln -s "$TEST_ROOT/installer-generation-a" "$TEST_ROOT/installer-profile"
+          PROFILE="$TEST_ROOT/installer-profile"
+          MINIMAL_PATH=${pkgs.coreutils}/bin:${pkgs.bash}/bin
+          PATH="$MINIMAL_PATH" \
+            "$PROFILE/bin/astrumweaver-setup-tui" --check-packaging \
+            > "$TEST_ROOT/packaging-a"
+          grep -Fq "packaged tool authority: $PROFILE/bin" "$TEST_ROOT/packaging-a"
+          grep -Fq "astrumweaver-worker: $PROFILE/bin/astrumweaver-worker" "$TEST_ROOT/packaging-a"
+          grep -Fq "astrumweaver-control: $PROFILE/bin/astrumweaver-control" "$TEST_ROOT/packaging-a"
+          (
+            cd "$TEST_ROOT"
+            PATH="$PROFILE/bin:$MINIMAL_PATH" astrumweaver-setup-tui --check-packaging \
+              > "$TEST_ROOT/packaging-bare"
+          )
+          grep -Fq "packaged tool authority: $PROFILE/bin" "$TEST_ROOT/packaging-bare"
+
+          mkdir -p "$TEST_ROOT/input" "$TEST_ROOT/root"
+          cat > "$TEST_ROOT/input/control.toml" <<'EOF'
+[control]
+host = "127.0.0.1"
+port = 9000
+EOF
+          cat > "$TEST_ROOT/input/worker.toml" <<'EOF'
+[worker]
+id = "profile-convergence-worker"
+class = "modern-single"
+gpu_uuids = ["GPU-profile-convergence"]
+EOF
+          "$PROFILE/bin/astrumweaver-setup-control-plane" \
+            --config "$TEST_ROOT/input/control.toml" \
+            --executable "$PROFILE/bin/astrumweaver-control" \
+            --root "$TEST_ROOT/root"
+          "$PROFILE/bin/astrumweaver-setup-gpu-worker" \
+            --config "$TEST_ROOT/input/worker.toml" \
+            --executable "$PROFILE/bin/astrumweaver-worker" \
+            --root "$TEST_ROOT/root"
+          cp "$TEST_ROOT/root/etc/systemd/system/astrumweaver-control.service" "$TEST_ROOT/control-a"
+          cp "$TEST_ROOT/root/etc/systemd/system/astrumweaver-worker.service" "$TEST_ROOT/worker-a"
+          grep -Fq "ExecStart=$PROFILE/bin/astrumweaver-control " "$TEST_ROOT/control-a"
+          grep -Fq "ExecStart=$PROFILE/bin/astrumweaver-worker " "$TEST_ROOT/worker-a"
+          ! grep -Fq "/nix/store/" "$TEST_ROOT/control-a"
+          ! grep -Fq "/nix/store/" "$TEST_ROOT/worker-a"
+
+          rm -f "$PROFILE"
+          ln -s "$TEST_ROOT/installer-generation-b" "$PROFILE"
+          PATH="$MINIMAL_PATH" \
+            "$PROFILE/bin/astrumweaver-setup-tui" --check-packaging \
+            > "$TEST_ROOT/packaging-b"
+          grep -Fq "packaged tool authority: $PROFILE/bin" "$TEST_ROOT/packaging-b"
+          "$PROFILE/bin/astrumweaver-setup-control-plane" \
+            --config "$TEST_ROOT/input/control.toml" \
+            --executable "$PROFILE/bin/astrumweaver-control" \
+            --root "$TEST_ROOT/root"
+          "$PROFILE/bin/astrumweaver-setup-gpu-worker" \
+            --config "$TEST_ROOT/input/worker.toml" \
+            --executable "$PROFILE/bin/astrumweaver-worker" \
+            --root "$TEST_ROOT/root"
+          cmp "$TEST_ROOT/control-a" "$TEST_ROOT/root/etc/systemd/system/astrumweaver-control.service"
+          cmp "$TEST_ROOT/worker-a" "$TEST_ROOT/root/etc/systemd/system/astrumweaver-worker.service"
+          test "$(readlink "$PROFILE")" = "$TEST_ROOT/installer-generation-b"
           touch "$out"
         '';
         hardware-accept-cli = pkgs.runCommand "astrumweaver-hardware-accept-cli" { } ''
