@@ -110,7 +110,7 @@ ISOLATION_UNIT_DEST="$UNIT_DIR/astrumweaver-worker-gpu-isolation-preflight.servi
 ISOLATION_DROPIN_DEST="$DROPIN_DIR/10-gpu-isolation.conf"
 runtime_arg=''
 if [[ -n "$RUNTIME_MANIFEST_SOURCE" ]]; then
-  runtime_arg='--runtime-manifest /etc/astrumweaver/runtime-deployment.json'
+  runtime_arg=' --runtime-manifest /etc/astrumweaver/runtime-deployment.json'
 fi
 
 validate_role_unit_pair "$ROOT" worker "$SERVICE_USER" astrumweaver
