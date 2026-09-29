@@ -182,6 +182,7 @@ pkgs.testers.runNixOSTest {
         role_layout(machine, "control", control_user)
         role_layout(machine, "worker", worker_user)
         machine.succeed(f"{grep} -Fx -- 'GPU-permission-test=/dev/nvidia0' /etc/astrumweaver/gpu-device-map")
+        machine.succeed("test -f /usr/local/libexec/astrumweaver/gpu_mapping.py")
         machine.succeed(
             f"{grep} -F -- '{fake_daemon_path} --config /etc/astrumweaver/worker.toml "
             "--runtime-manifest /etc/astrumweaver/runtime-deployment.json' "

@@ -116,9 +116,10 @@ sudo astrumweaver-runtime-deployment-accept \
 For a NixOS deployment use `--deployment-path nixos`.
 
 The acceptance command invokes the packaged `astrumweaver-gpu-device-map`
-helper, which uses `nvidia-smi` for current visibility and `/proc` only for
-UUID-to-minor resolution. If the helper is not on `PATH`, pass its path with
-`--gpu-device-map`.
+helper, which uses `nvidia-smi` for current visibility and the
+`uuid,minor_number` query for the primary UUID-to-minor mapping. It falls back
+to `/proc` only when that minor query is unsupported. If the helper is not on
+`PATH`, pass its path with `--gpu-device-map`.
 
 The default evidence path is:
 

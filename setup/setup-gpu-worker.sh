@@ -105,6 +105,7 @@ GPU_UUID_DEST="$ETC_DIR/gpu-uuids"
 GPU_DEVICE_MAP_DEST="$ETC_DIR/gpu-device-map"
 PREFLIGHT_DEST="$LIBEXEC_DIR/gpu-preflight"
 DEVICE_MAP_HELPER_DEST="$LIBEXEC_DIR/gpu-device-map"
+GPU_MAPPING_PYTHON_DEST="$LIBEXEC_DIR/gpu_mapping.py"
 UNIT_DEST="$UNIT_DIR/astrumweaver-worker.service"
 ISOLATION_UNIT_DEST="$UNIT_DIR/astrumweaver-worker-gpu-isolation-preflight.service"
 ISOLATION_DROPIN_DEST="$DROPIN_DIR/10-gpu-isolation.conf"
@@ -119,7 +120,7 @@ EXECUTABLE="$(resolve_executable "$EXECUTABLE" "$ROOT" astrumweaver-worker)"
 reject_symlink_path \
   "$ETC_DIR" "$STATE_DIR" "$CONFIG_DEST" "$ENV_DEST" \
   "$RUNTIME_MANIFEST_DEST" "$GPU_UUID_DEST" "$GPU_DEVICE_MAP_DEST" \
-  "$PREFLIGHT_DEST" "$DEVICE_MAP_HELPER_DEST" "$UNIT_DEST" \
+  "$PREFLIGHT_DEST" "$DEVICE_MAP_HELPER_DEST" "$GPU_MAPPING_PYTHON_DEST" "$UNIT_DEST" \
   "$ISOLATION_UNIT_DEST" "$ISOLATION_DROPIN_DEST"
 validate_unit_template \
   "$REPO_ROOT/systemd/astrumweaver-worker.service.in" \
@@ -142,6 +143,11 @@ trap cleanup EXIT
 
 GPU_UUID_READER="$REPO_ROOT/libexec/worker-gpu-uuids"
 [[ -f "$GPU_UUID_READER" ]] || die "Worker GPU config reader is unavailable: $GPU_UUID_READER"
+GPU_MAPPING_PYTHON_SOURCE="$REPO_ROOT/libexec/gpu_mapping.py"
+if [[ ! -f "$GPU_MAPPING_PYTHON_SOURCE" ]]; then
+  GPU_MAPPING_PYTHON_SOURCE="$REPO_ROOT/src/astrumweaver/validation/gpu_mapping.py"
+fi
+[[ -f "$GPU_MAPPING_PYTHON_SOURCE" ]] || die "canonical GPU mapper is unavailable"
 if [[ -x "$GPU_UUID_READER" ]]; then
   GPU_UUID_READER_CMD=("$GPU_UUID_READER")
 else
@@ -197,6 +203,7 @@ fi
 install_same_or_fail "$expected_tmp" "$GPU_UUID_DEST" 0640
 install_same_or_fail "$REPO_ROOT/libexec/gpu-preflight" "$PREFLIGHT_DEST" 0755
 install_same_or_fail "$REPO_ROOT/libexec/gpu-device-map" "$DEVICE_MAP_HELPER_DEST" 0755
+install_same_or_fail "$GPU_MAPPING_PYTHON_SOURCE" "$GPU_MAPPING_PYTHON_DEST" 0640
 
 render_unit \
   "$REPO_ROOT/systemd/astrumweaver-worker.service.in" \

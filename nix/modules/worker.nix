@@ -91,6 +91,9 @@ let
       ) (lib.sort builtins.lessThan cfg.gpuUuids)
     ) + "\n"
   );
+  gpuMappingPython = pkgs.writeText "astrumweaver-gpu-mapping.py" (
+    builtins.readFile ../../src/astrumweaver/validation/gpu_mapping.py
+  );
   preflight = pkgs.writeShellApplication {
     name = "astrumweaver-gpu-preflight";
     runtimeInputs = [ pkgs.coreutils pkgs.gawk ]
@@ -99,9 +102,11 @@ let
   };
   gpuDeviceMapVerifier = pkgs.writeShellApplication {
     name = "astrumweaver-gpu-device-map";
-    runtimeInputs = [ pkgs.coreutils pkgs.gawk ]
+    runtimeInputs = [ pkgs.coreutils pkgs.gawk pkgs.python312 ]
       ++ lib.optional (cfg.nvidiaSmiPackage != null) cfg.nvidiaSmiPackage;
-    text = builtins.readFile ../../libexec/gpu-device-map;
+    text = ''
+      exec ${pkgs.python312}/bin/python3 ${gpuMappingPython} "$@"
+    '';
   };
   effectiveCommand =
     if cfg.command == null

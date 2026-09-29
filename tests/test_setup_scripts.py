@@ -185,6 +185,7 @@ def test_worker_setup_stages_exact_gpu_identity_and_is_idempotent(tmp_path: Path
         encoding="utf-8"
     ) == "GPU-example-a\nGPU-example-b\n"
     assert (staged / "usr/local/libexec/astrumweaver/gpu-preflight").exists()
+    assert (staged / "usr/local/libexec/astrumweaver/gpu_mapping.py").exists()
     unit = (staged / "etc/systemd/system/astrumweaver-worker.service").read_text(
         encoding="utf-8"
     )
@@ -445,13 +446,30 @@ def fake_gpu_mapping_host(
     visible: tuple[str, ...],
     proc_entries: tuple[tuple[str, str], ...],
     valid_minors: tuple[str, ...],
+    primary_entries: tuple[tuple[str, str], ...] | None = None,
+    primary_failure: tuple[int, str] | None = None,
 ) -> tuple[list[str], Path, Path]:
     bin_dir = tmp_path / "map-bin"
     bin_dir.mkdir()
     executable = bin_dir / "nvidia-smi"
     visible_lines = "".join(f"  printf '%s\\n' {uuid!r}\n" for uuid in visible)
+    primary_lines = "".join(
+        f"  printf '%s, %s\\n' {uuid!r} {minor!r}\n"
+        for uuid, minor in (primary_entries or ())
+    )
+    if primary_entries is not None:
+        primary_query = f"{primary_lines}  exit 0\n"
+    else:
+        failure_code, failure_stderr = primary_failure or (2, "")
+        primary_query = (
+            f"  printf '%s' {failure_stderr!r} >&2\n"
+            f"  exit {failure_code}\n"
+        )
     executable.write_text(
         "#!/usr/bin/env bash\n"
+        "if [[ \"$1\" == \"--query-gpu=uuid,minor_number\" ]]; then\n"
+        f"{primary_query}"
+        "fi\n"
         "if [[ \"$1\" == \"--query-gpu=uuid\" ]]; then\n"
         f"{visible_lines}"
         "  exit 0\n"
@@ -503,6 +521,7 @@ def test_gpu_device_map_discovers_selected_uuid_to_proc_minor_mapping(
             ("GPU-stale", "99"),
         ),
         valid_minors=("2", "7"),
+        primary_failure=(2, "Unknown field: minor_number\n"),
     )
 
     result = run(
@@ -515,6 +534,58 @@ def test_gpu_device_map_discovers_selected_uuid_to_proc_minor_mapping(
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == "GPU-b=/dev/nvidia7\n"
+
+
+def test_gpu_device_map_uses_supported_minor_query_without_proc_fallback(
+    tmp_path: Path,
+) -> None:
+    expected = tmp_path / "expected"
+    expected.write_text("GPU-b\n", encoding="utf-8")
+    helper_args, proc_root, _ = fake_gpu_mapping_host(
+        tmp_path,
+        visible=("GPU-a", "GPU-b"),
+        proc_entries=(),
+        valid_minors=("2", "7"),
+        primary_entries=(("GPU-a", "2"), ("GPU-b", "7")),
+    )
+
+    result = run(
+        "bash",
+        str(ROOT / "libexec" / "gpu-device-map"),
+        *helper_args,
+        "discover",
+        str(expected),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "GPU-b=/dev/nvidia7\n"
+    assert not proc_root.exists()
+
+
+def test_gpu_device_map_fails_closed_on_primary_minor_query_error(
+    tmp_path: Path,
+) -> None:
+    expected = tmp_path / "expected"
+    expected.write_text("GPU-b\n", encoding="utf-8")
+    helper_args, _, _ = fake_gpu_mapping_host(
+        tmp_path,
+        visible=("GPU-b",),
+        proc_entries=(("GPU-b", "7"),),
+        valid_minors=("7",),
+        primary_failure=(9, "Failed to initialize NVML\n"),
+    )
+
+    result = run(
+        "bash",
+        str(ROOT / "libexec" / "gpu-device-map"),
+        *helper_args,
+        "discover",
+        str(expected),
+    )
+
+    assert result.returncode != 0
+    assert "UUID/minor query failed" in result.stderr
+    assert "NVML" not in result.stderr
 
 
 def test_gpu_device_map_fails_when_visible_uuid_has_invalid_device_node(
@@ -542,7 +613,9 @@ def test_gpu_device_map_fails_when_visible_uuid_has_invalid_device_node(
     )
 
     assert result.returncode != 0
-    assert "not a character device" in result.stderr
+    assert "visible GPU device node" in result.stderr
+    assert "GPU-invalid" not in result.stderr
+    assert "/dev/nvidia99" not in result.stderr
 
 
 def test_gpu_device_map_fails_when_visible_minors_are_duplicated(
@@ -566,7 +639,59 @@ def test_gpu_device_map_fails_when_visible_minors_are_duplicated(
     )
 
     assert result.returncode != 0
-    assert "one device node" in result.stderr
+    assert "reuse one device minor" in result.stderr
+
+
+def test_gpu_device_map_fails_when_visible_uuid_has_duplicate_proc_records(
+    tmp_path: Path,
+) -> None:
+    expected = tmp_path / "expected"
+    expected.write_text("GPU-a\n", encoding="utf-8")
+    helper_args, _, _ = fake_gpu_mapping_host(
+        tmp_path,
+        visible=("GPU-a", "GPU-b"),
+        proc_entries=(
+            ("GPU-a", "2"),
+            ("GPU-a", "7"),
+            ("GPU-b", "9"),
+        ),
+        valid_minors=("2", "7", "9"),
+    )
+
+    result = run(
+        "bash",
+        str(ROOT / "libexec" / "gpu-device-map"),
+        *helper_args,
+        "discover",
+        str(expected),
+    )
+
+    assert result.returncode != 0
+    assert "exactly one device mapping" in result.stderr
+
+
+def test_gpu_device_map_fails_when_visible_proc_minor_is_malformed(
+    tmp_path: Path,
+) -> None:
+    expected = tmp_path / "expected"
+    expected.write_text("GPU-a\n", encoding="utf-8")
+    helper_args, _, _ = fake_gpu_mapping_host(
+        tmp_path,
+        visible=("GPU-a", "GPU-b"),
+        proc_entries=(("GPU-a", "not-a-number"), ("GPU-b", "7")),
+        valid_minors=("7",),
+    )
+
+    result = run(
+        "bash",
+        str(ROOT / "libexec" / "gpu-device-map"),
+        *helper_args,
+        "discover",
+        str(expected),
+    )
+
+    assert result.returncode != 0
+    assert "invalid device minor" in result.stderr
 
 
 def test_gpu_device_map_fails_when_visible_uuid_lacks_proc_mapping(
@@ -590,7 +715,7 @@ def test_gpu_device_map_fails_when_visible_uuid_lacks_proc_mapping(
     )
 
     assert result.returncode != 0
-    assert "exactly one /proc entry" in result.stderr
+    assert "exactly one device mapping" in result.stderr
 
 
 def test_gpu_device_map_verify_reads_reviewed_map_argument(
@@ -617,7 +742,7 @@ def test_gpu_device_map_verify_reads_reviewed_map_argument(
     )
 
     assert result.returncode != 0
-    assert "GPU UUID to device-node mapping changed" in result.stderr
+    assert "reviewed GPU device map changed" in result.stderr
     assert "GPU device map file is missing" not in result.stderr
 
 
