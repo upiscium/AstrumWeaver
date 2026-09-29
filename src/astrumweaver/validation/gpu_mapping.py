@@ -100,6 +100,81 @@ def _parse_uuid_minor_rows(output: str) -> dict[str, int]:
     return rows
 
 
+def _stdout_contains_gpu_data(output: str) -> bool:
+    """Return whether failed-query stdout contains GPU-shaped result data."""
+
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        first_field = line.split(",", 1)[0].strip()
+        if _GPU_UUID_RE.fullmatch(first_field):
+            return True
+    return False
+
+
+def _minor_query_is_explicitly_unsupported(
+    completed: subprocess.CompletedProcess[str],
+) -> bool:
+    """Recognize only explicit query-field rejection diagnostics.
+
+    NVIDIA CLI versions differ on whether query validation errors are emitted
+    on stdout or stderr. A compatibility fallback is safe only when the
+    diagnostic itself proves that minor_number is not a supported query
+    field. Partial GPU data, empty diagnostics, and runtime/driver failures
+    remain fail-closed.
+    """
+
+    if completed.returncode == 0:
+        return False
+
+    stdout = completed.stdout or ""
+    stderr = completed.stderr or ""
+    if _stdout_contains_gpu_data(stdout):
+        return False
+
+    diagnostic = "\n".join(
+        part for part in (stdout, stderr) if part
+    ).casefold()
+    if not diagnostic.strip():
+        return False
+
+    runtime_failure_markers = (
+        "failed to initialize nvml",
+        "driver/library version mismatch",
+        "couldn\'t communicate with the nvidia driver",
+        "could not communicate with the nvidia driver",
+        "failed to communicate with the nvidia driver",
+        "permission denied",
+        "not permitted",
+        "insufficient permission",
+    )
+    if any(marker in diagnostic for marker in runtime_failure_markers):
+        return False
+
+    mentions_minor = (
+        "minor_number" in diagnostic or "minor number" in diagnostic
+    )
+    if not mentions_minor:
+        return False
+
+    if "not a valid field to query" in diagnostic:
+        return True
+
+    if "field" not in diagnostic:
+        return False
+    return any(
+        marker in diagnostic
+        for marker in (
+            "unknown",
+            "unsupported",
+            "not supported",
+            "unrecognized",
+            "not recognized",
+        )
+    )
+
+
 def _query_primary_mapping(
     command: str,
     *,
@@ -107,28 +182,14 @@ def _query_primary_mapping(
 ) -> dict[str, int] | None:
     completed = _run_nvidia_query(command, "uuid,minor_number", run=run)
     if completed.returncode != 0:
-        # Older NVIDIA utilities reject the minor_number field. Only that
-        # compatibility failure may fall back to the kernel information
-        # files; driver, permission, and transient failures remain
-        # fail-closed.
-        stderr = (completed.stderr or "").casefold()
-        mentions_minor = "minor_number" in stderr or "minor number" in stderr
-        describes_unsupported_field = any(
-            marker in stderr
-            for marker in (
-                "unknown",
-                "unsupported",
-                "not supported",
-                "invalid",
-                "unrecognized",
-                "not recognized",
-            )
-        )
-        if mentions_minor and describes_unsupported_field:
+        # Older NVIDIA utilities reject the minor_number field. Only an
+        # explicit field-query rejection may fall back to the kernel
+        # information files; driver, permission, partial-data, and transient
+        # failures remain fail-closed.
+        if _minor_query_is_explicitly_unsupported(completed):
             return None
         raise GpuMappingError("NVIDIA GPU UUID/minor query failed")
     return _parse_uuid_minor_rows(completed.stdout)
-
 
 def _proc_mapping_rows(proc_root: Path) -> dict[str, list[object]]:
     information_files = sorted(proc_root.glob("*/information"))
