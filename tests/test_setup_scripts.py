@@ -22,6 +22,17 @@ PREFLIGHT = ROOT / "libexec" / "gpu-preflight"
 LEGACY_GPU_DEVICE_MAP = ROOT / "tests/fixtures/gpu-device-map-v48"
 
 
+def nix_patched_bash_script(source: Path) -> bytes:
+    lines = source.read_bytes().splitlines(keepends=True)
+    assert lines
+    lines[0] = (
+        b"#!/nix/store/"
+        + b"a" * 32
+        + b"-bash-5.2p37/bin/bash\n"
+    )
+    return b"".join(lines)
+
+
 def assert_no_trailing_whitespace(text: str) -> None:
     for line_number, line in enumerate(text.splitlines(), start=1):
         assert line == line.rstrip(" \t"), (
@@ -248,6 +259,124 @@ def test_worker_setup_upgrades_reviewed_v48_gpu_mapper_to_canonical_helper(
         ("GPU-legacy", "/dev/nvidia0"),
     )
     assert os.access(helper, os.X_OK)
+
+
+@pytest.mark.parametrize(
+    ("helper_name", "reviewed_source"),
+    (
+        ("gpu-preflight", PREFLIGHT),
+        ("gpu-device-map", LEGACY_GPU_DEVICE_MAP),
+    ),
+)
+def test_worker_setup_upgrades_nix_patched_reviewed_gpu_helper(
+    tmp_path: Path,
+    helper_name: str,
+    reviewed_source: Path,
+) -> None:
+    config = tmp_path / "worker.toml"
+    config.write_text(
+        '[worker]\ngpu_uuids = ["GPU-legacy"]\n',
+        encoding="utf-8",
+    )
+    staged = tmp_path / "root"
+    helper = staged / "usr/local/libexec/astrumweaver" / helper_name
+    helper.parent.mkdir(parents=True)
+    helper.write_bytes(nix_patched_bash_script(reviewed_source))
+
+    result = run(
+        "bash",
+        str(SETUP / "setup-gpu-worker.sh"),
+        "--config",
+        str(config),
+        "--executable",
+        "/usr/local/bin/astrumweaver-worker",
+        "--root",
+        str(staged),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert helper.read_bytes() == (ROOT / "libexec" / helper_name).read_bytes()
+    assert b"/nix/store/" not in helper.read_bytes()
+
+
+@pytest.mark.parametrize(
+    "helper_name",
+    ("gpu-preflight", "gpu-device-map"),
+)
+def test_worker_setup_rejects_operator_modified_nix_patched_gpu_helper(
+    tmp_path: Path,
+    helper_name: str,
+) -> None:
+    config = tmp_path / "worker.toml"
+    config.write_text(
+        '[worker]\ngpu_uuids = ["GPU-legacy"]\n',
+        encoding="utf-8",
+    )
+    staged = tmp_path / "root"
+    helper = staged / "usr/local/libexec/astrumweaver" / helper_name
+    helper.parent.mkdir(parents=True)
+    reviewed_source = (
+        PREFLIGHT if helper_name == "gpu-preflight" else LEGACY_GPU_DEVICE_MAP
+    )
+    helper.write_bytes(
+        nix_patched_bash_script(reviewed_source) + b"# operator change\n"
+    )
+    before = helper.read_bytes()
+
+    result = run(
+        "bash",
+        str(SETUP / "setup-gpu-worker.sh"),
+        "--config",
+        str(config),
+        "--executable",
+        "/usr/local/bin/astrumweaver-worker",
+        "--root",
+        str(staged),
+    )
+
+    assert result.returncode != 0
+    assert "destination differs; refusing overwrite" in result.stderr
+    assert helper.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "shebang",
+    (
+        b"#!/usr/local/bin/bash\n",
+        b"#!/nix/store/" + b"a" * 32 + b"-zsh-5.9/bin/zsh\n",
+    ),
+)
+def test_worker_setup_rejects_unreviewed_gpu_helper_interpreter(
+    tmp_path: Path,
+    shebang: bytes,
+) -> None:
+    config = tmp_path / "worker.toml"
+    config.write_text(
+        '[worker]\ngpu_uuids = ["GPU-legacy"]\n',
+        encoding="utf-8",
+    )
+    staged = tmp_path / "root"
+    helper = staged / "usr/local/libexec/astrumweaver/gpu-preflight"
+    helper.parent.mkdir(parents=True)
+    lines = PREFLIGHT.read_bytes().splitlines(keepends=True)
+    lines[0] = shebang
+    helper.write_bytes(b"".join(lines))
+    before = helper.read_bytes()
+
+    result = run(
+        "bash",
+        str(SETUP / "setup-gpu-worker.sh"),
+        "--config",
+        str(config),
+        "--executable",
+        "/usr/local/bin/astrumweaver-worker",
+        "--root",
+        str(staged),
+    )
+
+    assert result.returncode != 0
+    assert "destination differs; refusing overwrite" in result.stderr
+    assert helper.read_bytes() == before
 
 
 def test_worker_setup_rejects_modified_legacy_gpu_mapper(tmp_path: Path) -> None:
