@@ -7,6 +7,7 @@ import json
 import grp
 import os
 import pwd
+import re
 import shutil
 import subprocess
 import tomllib
@@ -16,6 +17,11 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..worker.runtime import require_exact_gpu_set
+from ..validation.runtime_deployment import (
+    RuntimeDeploymentAcceptanceError,
+    parse_systemd_show_properties,
+    validate_effective_worker_gpu_isolation,
+)
 from .contracts import (
     ActionInspection,
     ActionReceipt,
@@ -32,6 +38,7 @@ _PROVIDER_EXECUTABLES: Mapping[str, str] = {
     "vllm": "vllm",
     "freetoken": "ft",
 }
+_GPU_DEVICE_PATH_RE = re.compile(r"^/dev/nvidia[0-9]+$")
 
 
 def _canonical_json(value: Any) -> str:
@@ -243,7 +250,7 @@ class SystemdSetupDriver:
             path = path.strip()
             if (
                 not uuid
-                or not path.startswith("/dev/nvidia")
+                or not _GPU_DEVICE_PATH_RE.fullmatch(path)
                 or uuid in mapping
             ):
                 return False
@@ -254,23 +261,41 @@ class SystemdSetupDriver:
         if len(set(mapping.values())) != len(mapping):
             return False
 
-        dropin_text = dropin.read_text(encoding="utf-8")
-        if "DevicePolicy=closed" not in dropin_text:
-            return False
-        for path in mapping.values():
-            if f"DeviceAllow={path} rw" not in dropin_text:
-                return False
-
-        visible = ",".join(expected)
-        if f"Environment=CUDA_VISIBLE_DEVICES={visible}" not in dropin_text:
-            return False
-
         if self.root != Path("/"):
+            return False
+
+        try:
+            properties_result = subprocess.run(
+                [
+                    self.systemctl,
+                    "show",
+                    "--no-pager",
+                    "--all",
+                    "--property=DevicePolicy,DeviceAllow,Environment,EnvironmentFiles,UnsetEnvironment,ExecStartPre,Requires,After",
+                    self.service_name,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if properties_result.returncode != 0:
+                return False
+            properties = parse_systemd_show_properties(
+                properties_result.stdout
+            )
+            validate_effective_worker_gpu_isolation(
+                properties,
+                expected_gpu_uuids=expected,
+                expected_device_paths=set(mapping.values()),
+            )
+        except (OSError, RuntimeDeploymentAcceptanceError):
             return False
 
         completed = subprocess.run(
             [
                 self.gpu_device_map_command,
+                "--nvidia-smi",
+                self.nvidia_smi,
                 "verify",
                 str(expected_file),
                 str(map_file),

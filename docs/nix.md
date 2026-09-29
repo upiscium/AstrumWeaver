@@ -68,6 +68,7 @@ Host-integration package containing immutable copies/wrappers for:
 - `astrumweaver-setup-control-plane`
 - `astrumweaver-setup-gpu-worker`
 - `astrumweaver-gpu-preflight`
+- `astrumweaver-gpu-device-map`
 - systemd templates
 
 This can be used on a system where Nix supplies package artifacts while the non-NixOS setup scripts own host integration.

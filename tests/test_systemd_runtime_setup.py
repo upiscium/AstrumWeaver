@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from astrumweaver.setup import (
     SetupAction,
     SetupActionKind,
@@ -38,6 +40,17 @@ def fake_nvidia_smi(tmp_path: Path, output: str) -> str:
         "exit 2\n",
         encoding="utf-8",
     )
+    executable.chmod(0o755)
+    return str(executable)
+
+
+def fake_systemctl_show(tmp_path: Path, properties: list[str]) -> str:
+    executable = tmp_path / "systemctl"
+    commands = "".join(
+        f"printf '%s\\n' {property_value!r}\n"
+        for property_value in properties
+    )
+    executable.write_text("#!/bin/sh\n" + commands, encoding="utf-8")
     executable.chmod(0o755)
     return str(executable)
 
@@ -224,8 +237,36 @@ def test_systemd_gpu_preflight_accepts_exact_set_and_rejects_unisolated_superset
     assert "no verified service device isolation" in superset_result.detail
 
 
-def test_systemd_gpu_preflight_accepts_host_superset_with_verified_device_isolation(
+@pytest.mark.parametrize(
+    ("effective_policy", "effective_exec_start_pre", "should_verify"),
+    (
+        (
+            "closed",
+            "{ path=/usr/local/libexec/astrumweaver/gpu-preflight ; "
+            "argv[]=/usr/local/libexec/astrumweaver/gpu-preflight "
+            "/etc/astrumweaver/gpu-uuids ; ignore_errors=no ; }",
+            True,
+        ),
+        (
+            "auto",
+            "{ path=/usr/local/libexec/astrumweaver/gpu-preflight ; "
+            "argv[]=/usr/local/libexec/astrumweaver/gpu-preflight "
+            "/etc/astrumweaver/gpu-uuids ; ignore_errors=no ; }",
+            False,
+        ),
+        (
+            "closed",
+            "{ path=/bin/false ; argv[]=/bin/false gpu-preflight ; "
+            "ignore_errors=no ; }",
+            False,
+        ),
+    ),
+)
+def test_systemd_gpu_preflight_uses_effective_device_isolation_properties(
     tmp_path: Path,
+    effective_policy: str,
+    effective_exec_start_pre: str,
+    should_verify: bool,
 ) -> None:
     worker_config = tmp_path / "worker.toml"
     worker_config.write_text(
@@ -248,11 +289,32 @@ def test_systemd_gpu_preflight_accepts_host_superset_with_verified_device_isolat
         encoding="utf-8",
     )
     verifier = tmp_path / "gpu-device-map-verify"
-    verifier.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    verifier_args = tmp_path / "gpu-device-map-verify.args"
+    verifier.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf '%s\\n' \"$@\" > {str(verifier_args)!r}\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
     verifier.chmod(0o755)
 
     superset_dir = tmp_path / "isolated-superset"
     superset_dir.mkdir()
+    nvidia_smi = fake_nvidia_smi(superset_dir, "GPU-a\nGPU-b")
+    systemctl = fake_systemctl_show(
+        tmp_path,
+        [
+            f"DevicePolicy={effective_policy}",
+            "DeviceAllow=/dev/nvidia0 rw",
+            "DeviceAllow=/dev/nvidiactl rw",
+            "Environment=CUDA_VISIBLE_DEVICES=GPU-a",
+            "EnvironmentFiles=",
+            "UnsetEnvironment=",
+            f"ExecStartPre={effective_exec_start_pre}",
+            "Requires=astrumweaver-worker-gpu-isolation-preflight.service",
+            "After=network-online.target astrumweaver-worker-gpu-isolation-preflight.service",
+        ],
+    )
     driver = SystemdSetupDriver(
         worker_config_path=worker_config,
         runtime_manifest_path=manifest,
@@ -260,10 +322,8 @@ def test_systemd_gpu_preflight_accepts_host_superset_with_verified_device_isolat
         gpu_device_map_path=device_map,
         gpu_isolation_dropin_path=dropin,
         gpu_device_map_command=str(verifier),
-        nvidia_smi=fake_nvidia_smi(
-            superset_dir,
-            "GPU-a\nGPU-b",
-        ),
+        nvidia_smi=nvidia_smi,
+        systemctl=systemctl,
     )
 
     result = driver.inspect(
@@ -273,6 +333,15 @@ def test_systemd_gpu_preflight_accepts_host_superset_with_verified_device_isolat
         )
     )
 
-    assert result.state is SetupActionState.SATISFIED
-    assert "device-cgroup isolation is verified" in result.detail
-    assert "ExecStartPre must still prove the exact set" in result.detail
+    if should_verify:
+        assert result.state is SetupActionState.SATISFIED
+        assert "device-cgroup isolation is verified" in result.detail
+        assert "ExecStartPre must still prove the exact set" in result.detail
+        assert verifier_args.read_text(encoding="utf-8").splitlines()[:2] == [
+            "--nvidia-smi",
+            nvidia_smi,
+        ]
+    else:
+        assert result.state is SetupActionState.BLOCKED
+        assert "no verified service device isolation" in result.detail
+        assert not verifier_args.exists()

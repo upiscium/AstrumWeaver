@@ -3,12 +3,23 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import subprocess
+import stat
+from types import SimpleNamespace
+from typing import Callable
 
 import pytest
+
+from astrumweaver.validation.gpu_mapping import (
+    GpuMappingError,
+    _load_reviewed_map,
+    _select_mapping,
+    discover_gpu_mapping,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 SETUP = ROOT / "setup"
 PREFLIGHT = ROOT / "libexec" / "gpu-preflight"
+LEGACY_GPU_DEVICE_MAP = ROOT / "tests/fixtures/gpu-device-map-v48"
 
 
 def assert_no_trailing_whitespace(text: str) -> None:
@@ -185,6 +196,7 @@ def test_worker_setup_stages_exact_gpu_identity_and_is_idempotent(tmp_path: Path
         encoding="utf-8"
     ) == "GPU-example-a\nGPU-example-b\n"
     assert (staged / "usr/local/libexec/astrumweaver/gpu-preflight").exists()
+    assert (staged / "usr/local/libexec/astrumweaver/gpu_mapping.py").exists()
     unit = (staged / "etc/systemd/system/astrumweaver-worker.service").read_text(
         encoding="utf-8"
     )
@@ -194,6 +206,76 @@ def test_worker_setup_stages_exact_gpu_identity_and_is_idempotent(tmp_path: Path
         "--config /etc/astrumweaver/worker.toml"
     )
     assert_no_trailing_whitespace(unit)
+
+
+def test_worker_setup_upgrades_reviewed_v48_gpu_mapper_to_canonical_helper(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "worker.toml"
+    config.write_text(
+        '[worker]\ngpu_uuids = ["GPU-legacy"]\n',
+        encoding="utf-8",
+    )
+    staged = tmp_path / "root"
+    helper = staged / "usr/local/libexec/astrumweaver/gpu-device-map"
+    helper.parent.mkdir(parents=True)
+    helper.write_bytes(LEGACY_GPU_DEVICE_MAP.read_bytes())
+
+    result = run(
+        "bash",
+        str(SETUP / "setup-gpu-worker.sh"),
+        "--config",
+        str(config),
+        "--executable",
+        "/usr/local/bin/astrumweaver-worker",
+        "--root",
+        str(staged),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert helper.read_bytes() == (ROOT / "libexec/gpu-device-map").read_bytes()
+    assert b"/nix/store/" not in helper.read_bytes()
+    assert (staged / "usr/local/libexec/astrumweaver/gpu-preflight").exists()
+
+    discover, _, _, _, _ = fake_gpu_mapping_host(
+        tmp_path,
+        visible=("GPU-legacy",),
+        proc_entries=(),
+        valid_minors=("0",),
+        primary_entries=(("GPU-legacy", "0"),),
+    )
+    assert _select_mapping(discover(), ("GPU-legacy",)) == (
+        ("GPU-legacy", "/dev/nvidia0"),
+    )
+    assert os.access(helper, os.X_OK)
+
+
+def test_worker_setup_rejects_modified_legacy_gpu_mapper(tmp_path: Path) -> None:
+    config = tmp_path / "worker.toml"
+    config.write_text(
+        '[worker]\ngpu_uuids = ["GPU-legacy"]\n',
+        encoding="utf-8",
+    )
+    staged = tmp_path / "root"
+    helper = staged / "usr/local/libexec/astrumweaver/gpu-device-map"
+    helper.parent.mkdir(parents=True)
+    helper.write_bytes(LEGACY_GPU_DEVICE_MAP.read_bytes() + b"# operator change\n")
+    before = helper.read_bytes()
+
+    result = run(
+        "bash",
+        str(SETUP / "setup-gpu-worker.sh"),
+        "--config",
+        str(config),
+        "--executable",
+        "/usr/local/bin/astrumweaver-worker",
+        "--root",
+        str(staged),
+    )
+
+    assert result.returncode != 0
+    assert "destination differs; refusing overwrite" in result.stderr
+    assert helper.read_bytes() == before
 
 
 def test_worker_setup_stages_runtime_manifest_and_wires_service(
@@ -379,6 +461,86 @@ def test_staged_gpu_isolation_requires_explicit_uuid_device_mapping(
     assert "staged GPU isolation requires --gpu-device" in result.stderr
 
 
+def test_gpu_isolation_off_rejects_explicit_mapping_for_staged_installs(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "worker.toml"
+    config.write_text(
+        '[worker]\ngpu_uuids = ["GPU-example-a"]\n',
+        encoding="utf-8",
+    )
+    staged = tmp_path / "root"
+
+    result = run(
+        "bash",
+        str(SETUP / "setup-gpu-worker.sh"),
+        "--config",
+        str(config),
+        "--executable",
+        "/usr/local/bin/astrumweaver-worker",
+        "--gpu-isolation",
+        "off",
+        "--gpu-device",
+        "GPU-example-a=/dev/nvidia0",
+        "--root",
+        str(staged),
+    )
+
+    assert result.returncode != 0
+    assert "--gpu-device cannot be used when --gpu-isolation off" in result.stderr
+    assert not staged.exists()
+
+
+def test_staged_gpu_isolation_off_rejects_existing_isolation_state(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "worker.toml"
+    config.write_text(
+        '[worker]\ngpu_uuids = ["GPU-example-a"]\n',
+        encoding="utf-8",
+    )
+    staged = tmp_path / "root"
+    command = [
+        "bash",
+        str(SETUP / "setup-gpu-worker.sh"),
+        "--config",
+        str(config),
+        "--executable",
+        "/usr/local/bin/astrumweaver-worker",
+        "--root",
+        str(staged),
+    ]
+    installed = run(
+        *command,
+        "--gpu-isolation",
+        "on",
+        "--gpu-device",
+        "GPU-example-a=/dev/nvidia0",
+    )
+    assert installed.returncode == 0, installed.stderr
+
+    map_file = staged / "etc/astrumweaver/gpu-device-map"
+    isolation_unit = (
+        staged
+        / "etc/systemd/system/astrumweaver-worker-gpu-isolation-preflight.service"
+    )
+    isolation_dropin = (
+        staged
+        / "etc/systemd/system/astrumweaver-worker.service.d/10-gpu-isolation.conf"
+    )
+    before = tuple(
+        path.read_bytes() for path in (map_file, isolation_unit, isolation_dropin)
+    )
+
+    disabled = run(*command, "--gpu-isolation", "off")
+
+    assert disabled.returncode != 0
+    assert "existing GPU isolation state requires reviewed removal" in disabled.stderr
+    assert before == tuple(
+        path.read_bytes() for path in (map_file, isolation_unit, isolation_dropin)
+    )
+
+
 def test_worker_setup_rejects_duplicate_gpu_identity(tmp_path: Path) -> None:
     config = tmp_path / "worker.toml"
     config.write_text(
@@ -439,76 +601,278 @@ def fake_nvidia_smi(tmp_path: Path, output: str) -> dict[str, str]:
     return env
 
 
-def test_gpu_device_map_discovers_selected_uuid_to_minor_mapping(
+def fake_gpu_mapping_host(
     tmp_path: Path,
-) -> None:
-    expected = tmp_path / "expected"
-    expected.write_text("GPU-b\n", encoding="utf-8")
+    *,
+    visible: tuple[str, ...],
+    proc_entries: tuple[tuple[str, str], ...],
+    valid_minors: tuple[str, ...],
+    primary_entries: tuple[tuple[str, str], ...] | None = None,
+    primary_failure: tuple[int, str] | None = None,
+) -> tuple[
+    Callable[[], tuple[tuple[str, str], ...]],
+    Path,
+    Path,
+    Path,
+    dict[str, object],
+]:
 
-    bin_dir = tmp_path / "map-bin"
-    bin_dir.mkdir()
-    executable = bin_dir / "nvidia-smi"
-    executable.write_text(
-        "#!/usr/bin/env bash\n"
-        "if [[ \"$1\" == \"--query-gpu=uuid,minor_number\" ]]; then\n"
-        "  printf 'GPU-a, 2\\nGPU-b, 7\\n'\n"
-        "  exit 0\n"
-        "fi\n"
-        "exit 2\n",
+    proc_root = tmp_path / "proc-gpus"
+    for index, (uuid, minor) in enumerate(proc_entries):
+        information_dir = proc_root / f"gpu{index}"
+        information_dir.mkdir(parents=True)
+        (information_dir / "information").write_text(
+            f"GPU UUID : {uuid}\nDevice Minor : {minor}\n",
+            encoding="utf-8",
+        )
+
+    device_root = tmp_path / "fake-dev"
+    proc_devices = tmp_path / "proc-devices"
+    proc_devices.write_text(
+        "Character devices:\n 5 nvidia-frontend\nBlock devices:\n",
         encoding="utf-8",
     )
-    executable.chmod(0o755)
-    env = dict(os.environ)
-    env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+    device_metadata: dict[str, object] = {
+        "major": 5,
+        "minor_overrides": {},
+    }
 
-    result = run(
-        "bash",
-        str(ROOT / "libexec" / "gpu-device-map"),
-        "discover",
-        str(expected),
-        env=env,
+    def run_query(args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        fields = args[1]
+        if fields == "--query-gpu=uuid":
+            return subprocess.CompletedProcess(
+                args,
+                0,
+                "".join(f"{uuid}\n" for uuid in visible),
+                "",
+            )
+        if fields == "--query-gpu=uuid,minor_number":
+            if primary_entries is not None:
+                return subprocess.CompletedProcess(
+                    args,
+                    0,
+                    "".join(f"{uuid}, {minor}\n" for uuid, minor in primary_entries),
+                    "",
+                )
+            code, stderr = primary_failure or (
+                2,
+                "Unknown field: minor_number\n",
+            )
+            return subprocess.CompletedProcess(args, code, "", stderr)
+        return subprocess.CompletedProcess(args, 2, "", "invalid query")
+
+    def device_stat(path: Path) -> os.stat_result:
+        minor_text = path.name.removeprefix("nvidia")
+        if minor_text not in valid_minors:
+            raise FileNotFoundError(path)
+        minor_overrides = device_metadata["minor_overrides"]
+        minor = minor_overrides.get(minor_text, int(minor_text))
+        return SimpleNamespace(
+            st_mode=stat.S_IFCHR | 0o660,
+            st_rdev=os.makedev(device_metadata["major"], minor),
+        )
+
+    def discover() -> tuple[tuple[str, str], ...]:
+        return discover_gpu_mapping(
+            nvidia_smi="fake-nvidia-smi",
+            proc_root=proc_root,
+            proc_devices=proc_devices,
+            device_root=device_root,
+            run=run_query,
+            device_stat=device_stat,
+        )
+
+    return discover, proc_root, device_root, proc_devices, device_metadata
+
+
+def test_gpu_device_map_discovers_selected_uuid_to_proc_minor_mapping(
+    tmp_path: Path,
+) -> None:
+    discover, _, _, _, _ = fake_gpu_mapping_host(
+        tmp_path,
+        visible=("GPU-a", "GPU-b"),
+        proc_entries=(
+            ("GPU-a", "0"),
+            ("GPU-b", "2"),
+            ("GPU-stale", "99"),
+        ),
+        valid_minors=("0", "2"),
+        primary_failure=(2, "Unknown field: minor_number\n"),
     )
 
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == "GPU-b=/dev/nvidia7\n"
+    assert _select_mapping(discover(), ("GPU-b",)) == (
+        ("GPU-b", "/dev/nvidia2"),
+    )
+
+
+def test_gpu_device_map_uses_supported_minor_query_without_proc_fallback(
+    tmp_path: Path,
+) -> None:
+    discover, proc_root, _, _, _ = fake_gpu_mapping_host(
+        tmp_path,
+        visible=("GPU-a", "GPU-b"),
+        proc_entries=(),
+        valid_minors=("0", "2"),
+        primary_entries=(("GPU-a", "0"), ("GPU-b", "2")),
+    )
+
+    assert _select_mapping(discover(), ("GPU-b",)) == (
+        ("GPU-b", "/dev/nvidia2"),
+    )
+    assert not proc_root.exists()
+
+
+def test_gpu_device_map_fails_closed_on_primary_minor_query_error(
+    tmp_path: Path,
+) -> None:
+    discover, _, _, _, _ = fake_gpu_mapping_host(
+        tmp_path,
+        visible=("GPU-b",),
+        proc_entries=(("GPU-b", "2"),),
+        valid_minors=("2",),
+        primary_failure=(9, "Failed to initialize NVML\n"),
+    )
+
+    with pytest.raises(GpuMappingError, match="UUID/minor query failed"):
+        discover()
+
+
+def test_gpu_device_map_does_not_treat_silent_invalid_query_as_unsupported(
+    tmp_path: Path,
+) -> None:
+    discover, _, _, _, _ = fake_gpu_mapping_host(
+        tmp_path,
+        visible=("GPU-b",),
+        proc_entries=(("GPU-b", "2"),),
+        valid_minors=("2",),
+        primary_failure=(2, ""),
+    )
+
+    with pytest.raises(GpuMappingError, match="UUID/minor query failed"):
+        discover()
+
+
+def test_gpu_device_map_fails_when_visible_uuid_has_invalid_device_node(
+    tmp_path: Path,
+) -> None:
+    discover, _, _, _, _ = fake_gpu_mapping_host(
+        tmp_path,
+        visible=("GPU-a", "GPU-b", "GPU-invalid"),
+        proc_entries=(
+            ("GPU-a", "0"),
+            ("GPU-b", "2"),
+            ("GPU-invalid", "99"),
+        ),
+        valid_minors=("0", "2"),
+    )
+
+    with pytest.raises(GpuMappingError, match="visible GPU device node is unavailable"):
+        discover()
+
+
+@pytest.mark.parametrize(
+    ("registered_major", "actual_minor"),
+    ((4, 0), (5, 2)),
+)
+def test_gpu_device_map_rejects_device_with_wrong_major_or_minor(
+    tmp_path: Path,
+    registered_major: int,
+    actual_minor: int,
+) -> None:
+    discover, _, _, proc_devices, device_metadata = fake_gpu_mapping_host(
+        tmp_path,
+        visible=("GPU-a",),
+        proc_entries=(("GPU-a", "0"),),
+        valid_minors=("0",),
+    )
+    device_metadata["minor_overrides"] = {"0": actual_minor}
+    proc_devices.write_text(
+        "Character devices:\n"
+        f" {registered_major} nvidia-frontend\n"
+        "Block devices:\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        GpuMappingError,
+        match="does not match the NVIDIA major/minor",
+    ):
+        discover()
+
+
+def test_gpu_device_map_fails_when_visible_minors_are_duplicated(
+    tmp_path: Path,
+) -> None:
+    discover, _, _, _, _ = fake_gpu_mapping_host(
+        tmp_path,
+        visible=("GPU-a", "GPU-b"),
+        proc_entries=(("GPU-a", "0"), ("GPU-b", "0")),
+        valid_minors=("0",),
+    )
+
+    with pytest.raises(GpuMappingError, match="reuse one device minor"):
+        discover()
+
+
+def test_gpu_device_map_fails_when_visible_uuid_has_duplicate_proc_records(
+    tmp_path: Path,
+) -> None:
+    discover, _, _, _, _ = fake_gpu_mapping_host(
+        tmp_path,
+        visible=("GPU-a", "GPU-b"),
+        proc_entries=(
+            ("GPU-a", "0"),
+            ("GPU-a", "2"),
+            ("GPU-b", "2"),
+        ),
+        valid_minors=("0", "2"),
+    )
+
+    with pytest.raises(GpuMappingError, match="exactly one device mapping"):
+        discover()
+
+
+def test_gpu_device_map_fails_when_visible_proc_minor_is_malformed(
+    tmp_path: Path,
+) -> None:
+    discover, _, _, _, _ = fake_gpu_mapping_host(
+        tmp_path,
+        visible=("GPU-a", "GPU-b"),
+        proc_entries=(("GPU-a", "not-a-number"), ("GPU-b", "2")),
+        valid_minors=("2",),
+    )
+
+    with pytest.raises(GpuMappingError, match="invalid device minor"):
+        discover()
+
+
+def test_gpu_device_map_fails_when_visible_uuid_lacks_proc_mapping(
+    tmp_path: Path,
+) -> None:
+    discover, _, _, _, _ = fake_gpu_mapping_host(
+        tmp_path,
+        visible=("GPU-a", "GPU-b"),
+        proc_entries=(("GPU-a", "0"),),
+        valid_minors=("0",),
+    )
+
+    with pytest.raises(GpuMappingError, match="exactly one device mapping"):
+        discover()
 
 
 def test_gpu_device_map_verify_reads_reviewed_map_argument(
     tmp_path: Path,
 ) -> None:
-    expected = tmp_path / "expected"
-    expected.write_text("GPU-b\n", encoding="utf-8")
+    discover, _, _, _, _ = fake_gpu_mapping_host(
+        tmp_path,
+        visible=("GPU-b",),
+        proc_entries=(("GPU-b", "2"),),
+        valid_minors=("2",),
+    )
     reviewed = tmp_path / "reviewed-map"
     reviewed.write_text("GPU-b=/dev/nvidia9\n", encoding="utf-8")
-
-    bin_dir = tmp_path / "verify-bin"
-    bin_dir.mkdir()
-    executable = bin_dir / "nvidia-smi"
-    executable.write_text(
-        "#!/usr/bin/env bash\n"
-        "if [[ \"$1\" == \"--query-gpu=uuid,minor_number\" ]]; then\n"
-        "  printf 'GPU-b, 7\\n'\n"
-        "  exit 0\n"
-        "fi\n"
-        "exit 2\n",
-        encoding="utf-8",
-    )
-    executable.chmod(0o755)
-    env = dict(os.environ)
-    env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
-
-    result = run(
-        "bash",
-        str(ROOT / "libexec" / "gpu-device-map"),
-        "verify",
-        str(expected),
-        str(reviewed),
-        env=env,
-    )
-
-    assert result.returncode != 0
-    assert "GPU UUID to device-node mapping changed" in result.stderr
-    assert "GPU device map file is missing" not in result.stderr
+    selected = _select_mapping(discover(), ("GPU-b",))
+    assert selected != _load_reviewed_map(reviewed)
 
 
 def test_gpu_preflight_requires_exact_set_equality(tmp_path: Path) -> None:

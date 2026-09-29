@@ -6,6 +6,7 @@ stdenvNoCC.mkDerivation {
 
   src = ../.;
   dontBuild = true;
+  dontPatchShebangs = true;
 
   installPhase = ''
     runHook preInstall
@@ -20,6 +21,7 @@ stdenvNoCC.mkDerivation {
     cp systemd/astrumweaver-worker.service.in "$assetRoot/systemd/"
     cp libexec/gpu-preflight "$assetRoot/libexec/"
     cp libexec/gpu-device-map "$assetRoot/libexec/"
+    cp src/astrumweaver/validation/gpu_mapping.py "$assetRoot/libexec/"
     cp libexec/worker-gpu-uuids "$assetRoot/libexec/"
 
     substituteInPlace "$assetRoot/libexec/worker-gpu-uuids" \
@@ -44,6 +46,8 @@ stdenvNoCC.mkDerivation {
 
     cat >"$out/bin/astrumweaver-gpu-device-map" <<EOF
     #!${bash}/bin/bash
+    export ASTRUMWEAVER_GPU_MAPPING_PYTHON="$assetRoot/libexec/gpu_mapping.py"
+    export ASTRUMWEAVER_GPU_MAPPING_PYTHON_BIN="${python312}/bin/python3"
     exec ${bash}/bin/bash "$assetRoot/libexec/gpu-device-map" "\$@"
     EOF
 

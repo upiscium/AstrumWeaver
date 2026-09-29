@@ -3,13 +3,19 @@
 let
   fakeNvidia = pkgs.writeShellScriptBin "nvidia-smi" ''
     case "$*" in
-      *"--query-gpu=uuid,minor_number"*) printf '%s, 0\n' GPU-permission-test ;;
+      *"--query-gpu=uuid,minor_number"*)
+        echo "Unknown field: minor_number" >&2
+        exit 2
+        ;;
       *"--query-gpu=uuid"*) printf '%s\n' GPU-permission-test ;;
     esac
     exit 0
   '';
+  fakePython = pkgs.writeShellScriptBin "python3" ''
+    exec ${pkgs.python312}/bin/python3 "$@"
+  '';
   fakeDaemon = pkgs.writeShellScript "astrumweaver-permission-test-daemon" ''
-    exit 0
+    exec ${pkgs.coreutils}/bin/sleep 60
   '';
   fakeDaemonPath = "/etc/astrumweaver-permission-test-daemon";
   baseNode = { ... }: {
@@ -17,7 +23,7 @@ let
     virtualisation.memorySize = 1024;
     users.mutableUsers = true;
     environment.systemPackages = [
-      integration fakeNvidia pkgs.bash pkgs.coreutils pkgs.diffutils pkgs.gawk
+      integration fakeNvidia fakePython pkgs.bash pkgs.coreutils pkgs.diffutils pkgs.gawk
       pkgs.gnugrep pkgs.gnused pkgs.shadow pkgs.systemd pkgs.util-linux
     ];
     environment.etc."astrumweaver-permission-test-daemon".source = fakeDaemon;
@@ -88,6 +94,8 @@ pkgs.testers.runNixOSTest {
         "/etc/astrumweaver/gpu-uuids", "/etc/astrumweaver/gpu-device-map",
         "/etc/astrumweaver/runtime-deployment.json",
     ]
+    fake_gpu_proc = "/run/astrumweaver-fake-nvidia-gpus"
+    fake_gpu_devices = "/run/astrumweaver-fake-proc-devices"
     all_files = control_files + worker_files
     control_unit = "/etc/systemd/system/astrumweaver-control.service"
     worker_unit = "/etc/systemd/system/astrumweaver-worker.service"
@@ -107,7 +115,9 @@ pkgs.testers.runNixOSTest {
                 f"--executable {fake_daemon_path} --root / --user {user}")
 
     def worker_cmd(user):
-        return (f"{worker_bin} --config /tmp/worker.toml --environment-file /tmp/worker.env "
+        return (f"ASTRUMWEAVER_GPU_PROC_ROOT={fake_gpu_proc} "
+                f"ASTRUMWEAVER_GPU_PROC_DEVICES={fake_gpu_devices} {worker_bin} "
+                "--config /tmp/worker.toml --environment-file /tmp/worker.env "
                 f"--runtime-manifest /tmp/runtime-deployment.json --executable {fake_daemon_path} "
                 f"--root / --user {user} --gpu-isolation on "
                 "--gpu-device GPU-permission-test=/dev/nvidia0")
@@ -134,6 +144,15 @@ pkgs.testers.runNixOSTest {
         machine.succeed(
             f"{rm} -f /dev/nvidia0 && "
             f"{mknod} -m 0660 /dev/nvidia0 c 195 0 && test -c /dev/nvidia0"
+        )
+        machine.succeed(
+            f"{mkdir} -p {fake_gpu_proc}/gpu0 && "
+            f"{cat} >{fake_gpu_proc}/gpu0/information <<'EOF'\n"
+            "GPU UUID : GPU-permission-test\nDevice Minor : 0\nEOF\n"
+        )
+        machine.succeed(
+            f"{cat} >{fake_gpu_devices} <<'EOF'\n"
+            "Character devices:\n 195 nvidia-frontend\nBlock devices:\nEOF\n"
         )
         machine.succeed(
             f"{cat} >/tmp/control.toml <<'EOF'\n[control]\nlisten = \"127.0.0.1:9000\"\nEOF\n"
@@ -175,6 +194,10 @@ pkgs.testers.runNixOSTest {
         role_layout(machine, "control", control_user)
         role_layout(machine, "worker", worker_user)
         machine.succeed(f"{grep} -Fx -- 'GPU-permission-test=/dev/nvidia0' /etc/astrumweaver/gpu-device-map")
+        machine.succeed("test -f /usr/local/libexec/astrumweaver/gpu_mapping.py")
+        machine.succeed(
+            f"! {grep} -F -- '/nix/store/' /usr/local/libexec/astrumweaver/gpu-device-map"
+        )
         machine.succeed(
             f"{grep} -F -- '{fake_daemon_path} --config /etc/astrumweaver/worker.toml "
             "--runtime-manifest /etc/astrumweaver/runtime-deployment.json' "
@@ -186,6 +209,81 @@ pkgs.testers.runNixOSTest {
             "systemctl daemon-reload && systemctl cat astrumweaver-control.service >/dev/null && "
             "systemctl cat astrumweaver-worker.service >/dev/null && "
             "systemctl cat astrumweaver-worker-gpu-isolation-preflight.service >/dev/null"
+        )
+        machine.succeed(
+            "systemctl show --no-pager --all "
+            "--property=DevicePolicy,DeviceAllow,Environment,EnvironmentFiles,UnsetEnvironment,ExecStartPre,Requires,After "
+            "astrumweaver-worker.service > /tmp/worker-effective-properties"
+        )
+        effective_properties = machine.succeed(
+            f"{cat} /tmp/worker-effective-properties"
+        )
+        for property in [
+            "DevicePolicy=closed",
+            "DeviceAllow=/dev/nvidia0 rw",
+            "Environment=CUDA_VISIBLE_DEVICES=GPU-permission-test",
+            "EnvironmentFiles=/etc/astrumweaver/worker.env",
+            "UnsetEnvironment=",
+            "gpu-preflight",
+            "/etc/astrumweaver/gpu-uuids",
+            "ignore_errors=no",
+        ]:
+            machine.succeed(
+                f"{grep} -F -- '{property}' /tmp/worker-effective-properties"
+            )
+        for property_name in ["Requires", "After"]:
+            effective_value = next(
+                line.split("=", 1)[1]
+                for line in effective_properties.splitlines()
+                if line.startswith(f"{property_name}=")
+            )
+            assert "astrumweaver-worker-gpu-isolation-preflight.service" in effective_value
+
+    def verify_isolation_lifecycle(machine):
+        worker_dropin = (
+            "/etc/systemd/system/astrumweaver-worker.service.d/"
+            "90-test-runtime-path.conf"
+        )
+        preflight_dropin_dir = (
+            "/etc/systemd/system/"
+            "astrumweaver-worker-gpu-isolation-preflight.service.d"
+        )
+        preflight_dropin = f"{preflight_dropin_dir}/90-test-runtime-path.conf"
+        path_value = ":".join([
+            "${pkgs.bash}/bin",
+            "${pkgs.coreutils}/bin",
+            "${pkgs.diffutils}/bin",
+            "${fakeNvidia}/bin",
+            "${fakePython}/bin",
+            "${pkgs.gawk}/bin",
+        ])
+        machine.succeed(
+            f"{mkdir} -p /etc/systemd/system/astrumweaver-worker.service.d "
+            f"{preflight_dropin_dir}; "
+            f"{cat} >{worker_dropin} <<'EOF'\n[Service]\n"
+            f"Environment=PATH={path_value}\nEOF\n"
+            f"{cat} >{preflight_dropin} <<'EOF'\n[Service]\n"
+            f"Environment=PATH={path_value}\n"
+            f"Environment=ASTRUMWEAVER_GPU_PROC_ROOT={fake_gpu_proc}\n"
+            f"Environment=ASTRUMWEAVER_GPU_PROC_DEVICES={fake_gpu_devices}\nEOF\n"
+            "systemctl daemon-reload"
+        )
+        machine.succeed("systemctl start astrumweaver-worker.service")
+        machine.succeed("systemctl is-active --quiet astrumweaver-worker.service")
+        machine.succeed(
+            "test \"$(systemctl is-active astrumweaver-worker-gpu-isolation-preflight.service || true)\" = inactive"
+        )
+        reject(
+            machine,
+            "active-worker-isolation-reinstall",
+            worker_cmd("astrumweaver"),
+            needle="Worker service is active; stop it before applying GPU isolation",
+        )
+        machine.succeed("systemctl is-active --quiet astrumweaver-worker.service")
+        machine.succeed("systemctl stop astrumweaver-worker.service")
+        machine.succeed(
+            f"{rm} -f {worker_dropin} {preflight_dropin}; "
+            f"{rm} -rf {preflight_dropin_dir}; systemctl daemon-reload"
         )
 
     def assert_only(machine, role, user):
@@ -258,6 +356,7 @@ pkgs.testers.runNixOSTest {
         second = "worker" if first == "control" else "control"
         install(machine, second, "astrumweaver" if second == "worker" else "astrumweaver-control")
         assert_all(machine, "astrumweaver-control", "astrumweaver")
+        verify_isolation_lifecycle(machine)
         repair_both_orders(machine)
         assert_access(machine, "astrumweaver-control", "astrumweaver")
         assert_systemd_access(machine, "astrumweaver-control", "astrumweaver")

@@ -6,7 +6,9 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
+import sys
 import time
 import tomllib
 from dataclasses import asdict, dataclass
@@ -23,12 +25,46 @@ class RuntimeDeploymentAcceptanceError(RuntimeError):
     pass
 
 
+def resolve_packaged_gpu_device_map(
+    *,
+    argv0: str | None = None,
+    installed_path: Path = Path(
+        "/usr/local/libexec/astrumweaver/gpu-device-map"
+    ),
+) -> str:
+    """Resolve the reviewed mapper without consulting ambient ``PATH``."""
+
+    candidates = [installed_path]
+    invocation = argv0 if argv0 is not None else sys.argv[0]
+    if os.sep in invocation:
+        candidates.append(
+            Path(invocation).absolute().parent
+            / "astrumweaver-gpu-device-map"
+        )
+        candidates.append(
+            Path(invocation).resolve().parent
+            / "astrumweaver-gpu-device-map"
+        )
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    raise RuntimeDeploymentAcceptanceError(
+        "reviewed packaged GPU mapper is unavailable; supply "
+        "--gpu-device-map explicitly"
+    )
+
+
 class RuntimeDeploymentHost(Protocol):
     def host_gpu_device_map(self) -> Mapping[str, str]: ...
 
     def worker_gpu_contract(self) -> tuple[tuple[str, ...], bool]: ...
 
-    def worker_unit_text(self) -> str: ...
+    def worker_unit_properties(self) -> Mapping[str, str]: ...
 
     def service_active(self) -> bool: ...
 
@@ -47,12 +83,26 @@ class SystemdRuntimeDeploymentHost:
         worker_config: Path,
         systemctl: str = "systemctl",
         nvidia_smi: str = "nvidia-smi",
+        gpu_device_map: str | None = None,
         health_url: str = "http://127.0.0.1:9100/health",
     ) -> None:
         self.service = service
         self.worker_config = worker_config
         self.systemctl = systemctl
         self.nvidia_smi = nvidia_smi
+        if gpu_device_map is not None:
+            mapper_path = Path(gpu_device_map)
+            if not mapper_path.is_absolute():
+                raise RuntimeDeploymentAcceptanceError(
+                    "--gpu-device-map must be an absolute executable path"
+                )
+            if not mapper_path.is_file() or not os.access(mapper_path, os.X_OK):
+                raise RuntimeDeploymentAcceptanceError(
+                    "--gpu-device-map must name an existing executable file"
+                )
+            self.gpu_device_map = gpu_device_map
+        else:
+            self.gpu_device_map = resolve_packaged_gpu_device_map()
         self.health_url = health_url.rstrip("/")
 
     def _run(self, args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -71,24 +121,33 @@ class SystemdRuntimeDeploymentHost:
     def host_gpu_device_map(self) -> Mapping[str, str]:
         completed = self._run(
             [
+                self.gpu_device_map,
+                "--nvidia-smi",
                 self.nvidia_smi,
-                "--query-gpu=uuid,minor_number",
-                "--format=csv,noheader,nounits",
+                "discover-visible",
             ]
         )
         result: dict[str, str] = {}
         for raw_line in completed.stdout.splitlines():
-            fields = [item.strip() for item in raw_line.split(",")]
-            if len(fields) != 2 or not fields[0] or not fields[1].isdigit():
+            fields = [item.strip() for item in raw_line.split("=", 1)]
+            if (
+                len(fields) != 2
+                or not fields[0]
+                or not _GPU_DEVICE_PATH_RE.fullmatch(fields[1])
+            ):
                 raise RuntimeDeploymentAcceptanceError(
-                    "host GPU UUID/minor mapping is unavailable"
+                    "host GPU UUID/device mapping is unavailable"
                 )
-            uuid, minor = fields
+            uuid, device_path = fields
             if uuid in result:
                 raise RuntimeDeploymentAcceptanceError(
                     "host reported duplicate GPU UUID"
                 )
-            result[uuid] = f"/dev/nvidia{minor}"
+            if device_path in result.values():
+                raise RuntimeDeploymentAcceptanceError(
+                    "host reported duplicate GPU device minor"
+                )
+            result[uuid] = device_path
         if not result:
             raise RuntimeDeploymentAcceptanceError(
                 "host reported no NVIDIA GPUs"
@@ -108,17 +167,31 @@ class SystemdRuntimeDeploymentHost:
         preflight = bool(worker.get("gpu_preflight", True))
         return uuids, preflight
 
-    def worker_unit_text(self) -> str:
-        return self._run(
-            [self.systemctl, "cat", self.service]
-        ).stdout
+    def worker_unit_properties(self) -> Mapping[str, str]:
+        completed = self._run(
+            [
+                self.systemctl,
+                "show",
+                "--no-pager",
+                "--all",
+                "--property=DevicePolicy,DeviceAllow,Environment,EnvironmentFiles,UnsetEnvironment,ExecStartPre,Requires,After",
+                self.service,
+            ]
+        )
+        return parse_systemd_show_properties(completed.stdout)
 
     def service_active(self) -> bool:
         completed = self._run(
             [self.systemctl, "is-active", "--quiet", self.service],
             check=False,
         )
-        return completed.returncode == 0
+        if completed.returncode == 0:
+            return True
+        if completed.returncode == 3:
+            return False
+        raise RuntimeDeploymentAcceptanceError(
+            "cannot determine Worker service state"
+        )
 
     def start_service(self) -> None:
         self._run([self.systemctl, "start", self.service])
@@ -163,10 +236,214 @@ class RuntimeDeploymentAcceptanceEvidence:
     overall: str
 
 
-_DEVICE_ALLOW_RE = re.compile(
-    r"^DeviceAllow=(/dev/nvidia[0-9]+)\s+[rwm]+\s*$",
-    re.MULTILINE,
+_GPU_DEVICE_PATH_RE = re.compile(r"^/dev/nvidia[0-9]+$")
+_GPU_ALLOWED_DEVICE_PATH_RE = re.compile(
+    r"^/dev/nvidia(?:[0-9]+|[-a-zA-Z0-9_/]+)$"
 )
+_NIX_STORE_HASH = r"[a-z0-9]{32}"
+_NIX_GPU_PREFLIGHT_RE = re.compile(
+    rf"^/nix/store/{_NIX_STORE_HASH}-astrumweaver-gpu-preflight/"
+    r"bin/astrumweaver-gpu-preflight$"
+)
+_NIX_GPU_UUIDS_RE = re.compile(
+    rf"^/nix/store/{_NIX_STORE_HASH}-astrumweaver-gpu-uuids$"
+)
+_SYSTEMD_ACCEPTANCE_PROPERTIES = frozenset(
+    {
+        "DevicePolicy",
+        "DeviceAllow",
+        "Environment",
+        "EnvironmentFiles",
+        "UnsetEnvironment",
+        "ExecStartPre",
+        "Requires",
+        "After",
+    }
+)
+
+
+def parse_systemd_show_properties(output: str) -> Mapping[str, str]:
+    """Parse selected effective properties emitted by ``systemctl show``."""
+
+    properties: dict[str, str] = {}
+    for line in output.splitlines():
+        name, separator, value = line.partition("=")
+        if not separator or name not in _SYSTEMD_ACCEPTANCE_PROPERTIES:
+            continue
+        if name in properties:
+            if name == "DevicePolicy":
+                raise RuntimeDeploymentAcceptanceError(
+                    "systemd returned duplicate DevicePolicy properties"
+                )
+            properties[name] = f"{properties[name]} {value}"
+        else:
+            properties[name] = value
+
+    missing = _SYSTEMD_ACCEPTANCE_PROPERTIES - properties.keys()
+    if missing:
+        raise RuntimeDeploymentAcceptanceError(
+            "systemd effective Worker properties are unavailable"
+        )
+    return properties
+
+
+def _split_systemd_list(value: str, property_name: str) -> list[str]:
+    try:
+        return shlex.split(value)
+    except ValueError as exc:
+        raise RuntimeDeploymentAcceptanceError(
+            f"systemd returned malformed {property_name} property"
+        ) from exc
+
+
+def _parse_device_allow(value: str) -> list[tuple[str, str]]:
+    fields = _split_systemd_list(value, "DeviceAllow")
+    if len(fields) % 2:
+        raise RuntimeDeploymentAcceptanceError(
+            "systemd returned malformed DeviceAllow property"
+        )
+    return list(zip(fields[::2], fields[1::2], strict=True))
+
+
+def _has_exact_set_preflight(value: str) -> bool:
+    for record in re.findall(r"\{([^{}]*)\}", value):
+        properties = {
+            name.strip(): field_value.strip()
+            for field in record.split(";")
+            for name, separator, field_value in [field.partition("=")]
+            if separator
+        }
+        executable = properties.get("path", "")
+        argv_text = properties.get("argv[]", "")
+        if properties.get("ignore_errors") != "no":
+            continue
+        try:
+            argv = shlex.split(argv_text)
+        except ValueError:
+            continue
+        if len(argv) != 2 or argv[0] != executable:
+            continue
+
+        if (
+            executable == "/usr/local/libexec/astrumweaver/gpu-preflight"
+            and argv[1] == "/etc/astrumweaver/gpu-uuids"
+        ):
+            return True
+        if (
+            _NIX_GPU_PREFLIGHT_RE.fullmatch(executable)
+            and _NIX_GPU_UUIDS_RE.fullmatch(argv[1])
+        ):
+            return True
+    return False
+
+
+def _reject_effective_cuda_environment_override(
+    properties: Mapping[str, str],
+) -> None:
+    unset_environment = _split_systemd_list(
+        properties.get("UnsetEnvironment", ""), "UnsetEnvironment"
+    )
+    if any(
+        item.partition("=")[0] == "CUDA_VISIBLE_DEVICES"
+        for item in unset_environment
+    ):
+        raise RuntimeDeploymentAcceptanceError(
+            "Worker CUDA_VISIBLE_DEVICES is unset by effective systemd policy"
+        )
+
+    environment_files = _split_systemd_list(
+        properties.get("EnvironmentFiles", ""), "EnvironmentFiles"
+    )
+    for item in environment_files:
+        if item.startswith("(") and item.endswith(")"):
+            continue
+        if item.startswith("-/"):
+            path = Path(item[1:])
+        elif item.startswith("/"):
+            path = Path(item)
+        else:
+            raise RuntimeDeploymentAcceptanceError(
+                "systemd returned malformed EnvironmentFiles property"
+            )
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
+            continue
+        except (OSError, UnicodeError) as exc:
+            raise RuntimeDeploymentAcceptanceError(
+                "Worker EnvironmentFile could not be checked for GPU overrides"
+            ) from exc
+        if any(
+            re.match(r"^\s*CUDA_VISIBLE_DEVICES\s*=", line)
+            for line in lines
+            if not line.lstrip().startswith(("#", ";"))
+        ):
+            raise RuntimeDeploymentAcceptanceError(
+                "Worker CUDA_VISIBLE_DEVICES may be overridden by an EnvironmentFile"
+            )
+
+
+def validate_effective_worker_gpu_isolation(
+    properties: Mapping[str, str],
+    *,
+    expected_gpu_uuids: tuple[str, ...],
+    expected_device_paths: set[str],
+) -> None:
+    """Require effective systemd properties to retain the GPU isolation gate."""
+
+    if properties.get("DevicePolicy") != "closed":
+        raise RuntimeDeploymentAcceptanceError(
+            "Worker service does not use DevicePolicy=closed"
+        )
+
+    device_allow = _parse_device_allow(properties.get("DeviceAllow", ""))
+    if any(
+        not _GPU_ALLOWED_DEVICE_PATH_RE.fullmatch(path)
+        or permissions != "rw"
+        for path, permissions in device_allow
+    ):
+        raise RuntimeDeploymentAcceptanceError(
+            "Worker DeviceAllow includes a broad or unsupported device grant"
+        )
+    allowed_physical = [
+        (path, permissions)
+        for path, permissions in device_allow
+        if _GPU_DEVICE_PATH_RE.fullmatch(path)
+    ]
+    expected_physical = [(path, "rw") for path in sorted(expected_device_paths)]
+    if sorted(allowed_physical) != expected_physical:
+        raise RuntimeDeploymentAcceptanceError(
+            "Worker DeviceAllow physical GPU set is not exact"
+        )
+
+    environment = _split_systemd_list(
+        properties.get("Environment", ""), "Environment"
+    )
+    visible_matches = [
+        assignment.partition("=")[2]
+        for assignment in environment
+        if assignment.startswith("CUDA_VISIBLE_DEVICES=")
+    ]
+    if visible_matches != [",".join(expected_gpu_uuids)]:
+        raise RuntimeDeploymentAcceptanceError(
+            "Worker CUDA_VISIBLE_DEVICES does not preserve selected GPU order"
+        )
+    _reject_effective_cuda_environment_override(properties)
+
+    if not _has_exact_set_preflight(properties.get("ExecStartPre", "")):
+        raise RuntimeDeploymentAcceptanceError(
+            "Worker service lacks in-cgroup exact-set preflight"
+        )
+
+    isolation_preflight = "astrumweaver-worker-gpu-isolation-preflight.service"
+    for property_name in ("Requires", "After"):
+        dependencies = _split_systemd_list(
+            properties.get(property_name, ""), property_name
+        )
+        if isolation_preflight not in dependencies:
+            raise RuntimeDeploymentAcceptanceError(
+                f"Worker service lacks effective {property_name} isolation preflight"
+            )
 
 
 class RuntimeDeploymentAcceptanceRunner:
@@ -217,6 +494,26 @@ class RuntimeDeploymentAcceptanceRunner:
                 )
             self._sleep(self.poll_interval_seconds)
 
+    def _ensure_service_stopped(self) -> None:
+        last_stop_error: Exception | None = None
+        for _ in range(2):
+            try:
+                self.host.stop_service()
+                last_stop_error = None
+            except Exception as exc:
+                last_stop_error = exc
+            try:
+                if not self.host.service_active():
+                    return
+            except Exception as exc:
+                raise RuntimeDeploymentAcceptanceError(
+                    "could not verify Worker service stopped after acceptance"
+                ) from exc
+
+        raise RuntimeDeploymentAcceptanceError(
+            "Worker service remained active after acceptance cleanup"
+        ) from last_stop_error
+
     def run(self) -> RuntimeDeploymentAcceptanceEvidence:
         host_map = dict(self.host.host_gpu_device_map())
         expected = self.expected_gpu_uuids
@@ -239,42 +536,22 @@ class RuntimeDeploymentAcceptanceRunner:
                 "Worker exact GPU preflight is disabled"
             )
 
-        unit_text = self.host.worker_unit_text()
-        if "DevicePolicy=closed" not in unit_text:
-            raise RuntimeDeploymentAcceptanceError(
-                "Worker service does not use DevicePolicy=closed"
-            )
-
         expected_paths = {host_map[uuid] for uuid in expected}
-        allowed_physical = set(_DEVICE_ALLOW_RE.findall(unit_text))
-        if allowed_physical != expected_paths:
-            raise RuntimeDeploymentAcceptanceError(
-                "Worker DeviceAllow physical GPU set is not exact"
-            )
-
-        expected_visible = ",".join(expected)
-        visible_matches = re.findall(
-            r"CUDA_VISIBLE_DEVICES=([^\"'\s]+)",
-            unit_text,
+        validate_effective_worker_gpu_isolation(
+            self.host.worker_unit_properties(),
+            expected_gpu_uuids=expected,
+            expected_device_paths=expected_paths,
         )
-        if visible_matches != [expected_visible]:
-            raise RuntimeDeploymentAcceptanceError(
-                "Worker CUDA_VISIBLE_DEVICES does not preserve selected GPU order"
-            )
-        if "gpu-preflight" not in unit_text:
-            raise RuntimeDeploymentAcceptanceError(
-                "Worker service lacks in-cgroup exact-set preflight"
-            )
 
         if self.host.service_active():
             raise RuntimeDeploymentAcceptanceError(
                 "acceptance requires the Worker service to start from inactive state"
             )
 
-        started = False
+        start_attempted = False
         try:
+            start_attempted = True
             self.host.start_service()
-            started = True
             ready = self._wait_ready()
             if ready.get("ready") is not True:
                 raise RuntimeDeploymentAcceptanceError(
@@ -285,8 +562,8 @@ class RuntimeDeploymentAcceptanceRunner:
                     "Worker did not register after isolated startup"
                 )
         finally:
-            if started:
-                self.host.stop_service()
+            if start_attempted:
+                self._ensure_service_stopped()
 
         if self.host.service_active():
             raise RuntimeDeploymentAcceptanceError(
@@ -400,6 +677,10 @@ def main() -> None:
     parser.add_argument("--systemctl", default="systemctl")
     parser.add_argument("--nvidia-smi", default="nvidia-smi")
     parser.add_argument(
+        "--gpu-device-map",
+        default=None,
+    )
+    parser.add_argument(
         "--health-url",
         default="http://127.0.0.1:9100/health",
     )
@@ -425,22 +706,22 @@ def main() -> None:
             "at least one --gpu-uuid is required\n",
         )
 
-    host = SystemdRuntimeDeploymentHost(
-        service=args.service,
-        worker_config=args.worker_config,
-        systemctl=args.systemctl,
-        nvidia_smi=args.nvidia_smi,
-        health_url=args.health_url,
-    )
-    runner = RuntimeDeploymentAcceptanceRunner(
-        host=host,
-        expected_gpu_uuids=gpu_uuids,
-        revision=args.revision,
-        deployment_path=args.deployment_path,
-        start_timeout_seconds=args.start_timeout_seconds,
-    )
-
     try:
+        host = SystemdRuntimeDeploymentHost(
+            service=args.service,
+            worker_config=args.worker_config,
+            systemctl=args.systemctl,
+            nvidia_smi=args.nvidia_smi,
+            gpu_device_map=args.gpu_device_map,
+            health_url=args.health_url,
+        )
+        runner = RuntimeDeploymentAcceptanceRunner(
+            host=host,
+            expected_gpu_uuids=gpu_uuids,
+            revision=args.revision,
+            deployment_path=args.deployment_path,
+            start_timeout_seconds=args.start_timeout_seconds,
+        )
         evidence = runner.run()
         write_runtime_deployment_evidence(args.evidence, evidence)
     except (

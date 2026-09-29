@@ -55,6 +55,7 @@ On a live host:
 - when the host-visible set already equals the Worker set, ordinary exact-set preflight remains sufficient
 - when the host has extra GPUs, setup discovers the selected UUID/minor mapping and enables the systemd device-cgroup isolation drop-in
 - if the mapping cannot be proven, setup fails closed
+- if the Worker is already active, stop it before applying GPU isolation; setup refuses to claim an isolation change on a running process
 
 For staged `--root` installs there is no live GPU discovery. To stage an
 isolated subset, pass one reviewed `--gpu-device` mapping per selected UUID.
@@ -105,6 +106,9 @@ requires the service to be inactive first, starts it, waits for local
 ready/registered state, and stops it again.
 
 The host must expose more GPUs than the selected Worker set.
+The checker reads the effective Worker properties from `systemctl show`, so
+later drop-ins that override the isolation settings are included in the
+acceptance decision.
 
 ```sh
 sudo astrumweaver-runtime-deployment-accept \
@@ -114,6 +118,17 @@ sudo astrumweaver-runtime-deployment-accept \
 ```
 
 For a NixOS deployment use `--deployment-path nixos`.
+
+The acceptance command invokes the packaged `astrumweaver-gpu-device-map`
+helper, which uses `nvidia-smi` for current visibility and the
+`uuid,minor_number` query for the primary UUID-to-minor mapping. It falls back
+to `/proc` only when `nvidia-smi` explicitly reports that the field is
+unsupported. Before using a mapping, it verifies that each `/dev/nvidiaN`
+character device's major/minor matches the NVIDIA character-device registry
+and reported minor. If the helper is not on
+`/usr/local/libexec/astrumweaver/gpu-device-map` or beside the invoked
+packaged acceptance command, pass its absolute executable path with
+`--gpu-device-map`.
 
 The default evidence path is:
 
