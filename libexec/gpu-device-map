@@ -18,6 +18,22 @@ else
   die "canonical GPU mapper is unavailable"
 fi
 
-PYTHON_BIN="${ASTRUMWEAVER_GPU_MAPPING_PYTHON_BIN:-python3}"
-command -v "$PYTHON_BIN" >/dev/null 2>&1 || die "canonical GPU mapper runtime is unavailable"
+PYTHON_BIN="${ASTRUMWEAVER_GPU_MAPPING_PYTHON_BIN:-}"
+if [[ -z "$PYTHON_BIN" ]]; then
+  for candidate in \
+    /run/current-system/sw/bin/python3 \
+    /nix/var/nix/profiles/astrumweaver-installer/bin/python3 \
+    /nix/var/nix/profiles/astrumweaver-worker/bin/python3 \
+    /usr/bin/python3 \
+    /usr/local/bin/python3; do
+    if [[ -x "$candidate" ]]; then
+      PYTHON_BIN="$candidate"
+      break
+    fi
+  done
+fi
+if [[ -z "$PYTHON_BIN" ]]; then
+  PYTHON_BIN="$(command -v python3 || true)"
+fi
+[[ -n "$PYTHON_BIN" ]] || die "canonical GPU mapper runtime is unavailable"
 exec "$PYTHON_BIN" "$MAPPING_PYTHON" "$@"

@@ -6,6 +6,7 @@ stdenvNoCC.mkDerivation {
 
   src = ../.;
   dontBuild = true;
+  dontPatchShebangs = true;
 
   installPhase = ''
     runHook preInstall
@@ -22,11 +23,6 @@ stdenvNoCC.mkDerivation {
     cp libexec/gpu-device-map "$assetRoot/libexec/"
     cp src/astrumweaver/validation/gpu_mapping.py "$assetRoot/libexec/"
     cp libexec/worker-gpu-uuids "$assetRoot/libexec/"
-
-    substituteInPlace "$assetRoot/libexec/gpu-device-map" \
-      --replace-fail \
-        'PYTHON_BIN="''${ASTRUMWEAVER_GPU_MAPPING_PYTHON_BIN:-python3}"' \
-        'PYTHON_BIN="''${ASTRUMWEAVER_GPU_MAPPING_PYTHON_BIN:-${python312}/bin/python3}"'
 
     substituteInPlace "$assetRoot/libexec/worker-gpu-uuids" \
       --replace-fail "#!/usr/bin/env python3" "#!${python312}/bin/python3"

@@ -121,6 +121,25 @@
           })
         ];
       };
+      gpuIsolationNoGpuSmoke = nixpkgs.lib.nixosSystem {
+        inherit system;
+        modules = [
+          self.nixosModules.default
+          ({ ... }: {
+            system.stateVersion = "26.05";
+            boot.isContainer = true;
+            services.astrumweaver.worker = {
+              enable = true;
+              gpuIsolation.enable = true;
+            };
+          })
+        ];
+      };
+      gpuIsolationNoGpuRejected = builtins.any
+        (assertion:
+          !assertion.assertion
+          && assertion.message == "gpuIsolation.enable requires at least one selected GPU UUID.")
+        gpuIsolationNoGpuSmoke.config.assertions;
       borrowableModePackages = builtins.filter (
         package:
           nixpkgs.lib.getName package == "astrumweaver-gpu-mode"
@@ -136,6 +155,8 @@
         runtimeModuleSmoke.config.systemd.services.astrumweaver-worker.serviceConfig.DeviceAllow;
       runtimeEnvironment =
         runtimeModuleSmoke.config.systemd.services.astrumweaver-worker.serviceConfig.Environment;
+      runtimeWorkerPreflight =
+        runtimeModuleSmoke.config.systemd.services.astrumweaver-worker.serviceConfig.ExecStartPre;
       runtimeIsolationPreflight =
         runtimeModuleSmoke.config.systemd.services.astrumweaver-worker-gpu-isolation-preflight.serviceConfig.ExecStart;
     in
@@ -220,10 +241,12 @@ EOF
             --root "$TEST_ROOT/root"
           cp "$TEST_ROOT/root/etc/systemd/system/astrumweaver-control.service" "$TEST_ROOT/control-a"
           cp "$TEST_ROOT/root/etc/systemd/system/astrumweaver-worker.service" "$TEST_ROOT/worker-a"
+          cp "$TEST_ROOT/root/usr/local/libexec/astrumweaver/gpu-device-map" "$TEST_ROOT/gpu-map-a"
           grep -Fq "ExecStart=$PROFILE/bin/astrumweaver-control " "$TEST_ROOT/control-a"
           grep -Fq "ExecStart=$PROFILE/bin/astrumweaver-worker " "$TEST_ROOT/worker-a"
           ! grep -Fq "/nix/store/" "$TEST_ROOT/control-a"
           ! grep -Fq "/nix/store/" "$TEST_ROOT/worker-a"
+          ! grep -Fq "/nix/store/" "$TEST_ROOT/gpu-map-a"
 
           rm -f "$PROFILE"
           ln -s "$TEST_ROOT/installer-generation-b" "$PROFILE"
@@ -241,6 +264,19 @@ EOF
             --root "$TEST_ROOT/root"
           cmp "$TEST_ROOT/control-a" "$TEST_ROOT/root/etc/systemd/system/astrumweaver-control.service"
           cmp "$TEST_ROOT/worker-a" "$TEST_ROOT/root/etc/systemd/system/astrumweaver-worker.service"
+          cmp "$TEST_ROOT/gpu-map-a" "$TEST_ROOT/root/usr/local/libexec/astrumweaver/gpu-device-map"
+
+          if PATH="$MINIMAL_PATH" "$PROFILE/bin/astrumweaver-runtime-deployment-accept" \
+            --gpu-uuid GPU-profile-convergence \
+            --revision deadbeef12345678 \
+            --deployment-path systemd \
+            --worker-config "$TEST_ROOT/missing-worker.toml" \
+            --systemctl ${pkgs.coreutils}/bin/false \
+            --nvidia-smi ${pkgs.coreutils}/bin/false \
+            > "$TEST_ROOT/runtime-acceptance-resolution" 2>&1; then
+            exit 1
+          fi
+          ! grep -Fq "reviewed packaged GPU mapper is unavailable" "$TEST_ROOT/runtime-acceptance-resolution"
           test "$(readlink "$PROFILE")" = "$TEST_ROOT/installer-generation-b"
           touch "$out"
         '';
@@ -259,6 +295,7 @@ EOF
             runtimeWorkerExec
             runtimeWorkerPath
             runtimeDevicePolicy
+            runtimeWorkerPreflight
             runtimeIsolationPreflight
             ;
           runtimeDeviceAllowText = nixpkgs.lib.concatStringsSep "\n" runtimeDeviceAllow;
@@ -276,11 +313,18 @@ EOF
           printf "%s" "$runtimeDeviceAllowText" | grep -q '/dev/nvidia7 rw'
           printf "%s" "$runtimeDeviceAllowText" | grep -q '/dev/nvidiactl rw'
           printf "%s" "$runtimeEnvironmentText" | grep -q 'CUDA_VISIBLE_DEVICES=GPU-example-smoke'
+          printf "%s" "$runtimeWorkerPreflight" | grep -Eq '^\+/nix/store/[a-z0-9]{32}-astrumweaver-gpu-preflight/bin/astrumweaver-gpu-preflight /nix/store/[a-z0-9]{32}-astrumweaver-gpu-uuids$'
           printf "%s" "$runtimeIsolationPreflight" | grep -q 'gpu-device-map verify'
           printf "%s\n%s\n%s\n%s\n%s\n" \
             "$runtimeWorkerExec" "$runtimeWorkerPath" "$workerConfig" \
-            "$runtimeDevicePolicy" "$runtimeIsolationPreflight" > "$out"
+            "$runtimeDevicePolicy" "$runtimeWorkerPreflight" \
+            "$runtimeIsolationPreflight" > "$out"
         '';
+        gpu-isolation-requires-gpu =
+          assert gpuIsolationNoGpuRejected;
+          pkgs.runCommand "astrumweaver-gpu-isolation-requires-gpu" { } ''
+            touch "$out"
+          '';
         module-eval = pkgs.runCommand "astrumweaver-module-eval" {
           controlExec = moduleSmoke.config.systemd.services.astrumweaver-control.serviceConfig.ExecStart;
           workerExec = moduleSmoke.config.systemd.services.astrumweaver-worker.serviceConfig.ExecStart;

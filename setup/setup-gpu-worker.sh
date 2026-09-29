@@ -89,6 +89,9 @@ if [[ -n "$RUNTIME_MANIFEST_SOURCE" ]]; then
   [[ -f "$RUNTIME_MANIFEST_SOURCE" ]] || die "runtime manifest does not exist: $RUNTIME_MANIFEST_SOURCE"
 fi
 [[ "$GPU_ISOLATION" =~ ^(auto|on|off)$ ]] || die "--gpu-isolation must be auto, on, or off"
+if [[ "$GPU_ISOLATION" == "off" && ${#GPU_DEVICE_ENTRIES[@]} -gt 0 ]]; then
+  die "--gpu-device cannot be used when --gpu-isolation off"
+fi
 [[ "$SERVICE_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "invalid service user"
 validate_role_user_name "$SERVICE_USER"
 
@@ -109,6 +112,7 @@ GPU_MAPPING_PYTHON_DEST="$LIBEXEC_DIR/gpu_mapping.py"
 UNIT_DEST="$UNIT_DIR/astrumweaver-worker.service"
 ISOLATION_UNIT_DEST="$UNIT_DIR/astrumweaver-worker-gpu-isolation-preflight.service"
 ISOLATION_DROPIN_DEST="$DROPIN_DIR/10-gpu-isolation.conf"
+LEGACY_GPU_DEVICE_MAP_SHA256='faa3836dbf190616d0c4ad32deaad1d3dda66ff1d903468095ab33edc6ea735a'
 runtime_arg=''
 if [[ -n "$RUNTIME_MANIFEST_SOURCE" ]]; then
   runtime_arg=' --runtime-manifest /etc/astrumweaver/runtime-deployment.json'
@@ -148,6 +152,30 @@ if [[ ! -f "$GPU_MAPPING_PYTHON_SOURCE" ]]; then
   GPU_MAPPING_PYTHON_SOURCE="$REPO_ROOT/src/astrumweaver/validation/gpu_mapping.py"
 fi
 [[ -f "$GPU_MAPPING_PYTHON_SOURCE" ]] || die "canonical GPU mapper is unavailable"
+
+install_gpu_device_map_helper() {
+  local source="$1" destination="$2" mode="$3" digest
+  [[ -f "$source" ]] || die "source file does not exist: $source"
+  reject_symlink_path "$destination"
+  if [[ -e "$destination" ]]; then
+    [[ -f "$destination" ]] || die "destination exists but is not a file: $destination"
+    if cmp -s "$source" "$destination"; then
+      chmod "$mode" "$destination"
+      return 0
+    fi
+    require_cmd sha256sum
+    digest="$(sha256sum "$destination")"
+    digest="${digest%% *}"
+    if [[ "$digest" != "$LEGACY_GPU_DEVICE_MAP_SHA256" ]]; then
+      die "destination differs; refusing overwrite: $destination"
+    fi
+    log "upgrading reviewed legacy GPU device mapper: $destination"
+    install -D -m "$mode" "$source" "$destination"
+    return 0
+  fi
+  install -D -m "$mode" "$source" "$destination"
+}
+
 if [[ -x "$GPU_UUID_READER" ]]; then
   GPU_UUID_READER_CMD=("$GPU_UUID_READER")
 else
@@ -202,7 +230,7 @@ if [[ -n "$RUNTIME_MANIFEST_SOURCE" ]]; then
 fi
 install_same_or_fail "$expected_tmp" "$GPU_UUID_DEST" 0640
 install_same_or_fail "$REPO_ROOT/libexec/gpu-preflight" "$PREFLIGHT_DEST" 0755
-install_same_or_fail "$REPO_ROOT/libexec/gpu-device-map" "$DEVICE_MAP_HELPER_DEST" 0755
+install_gpu_device_map_helper "$REPO_ROOT/libexec/gpu-device-map" "$DEVICE_MAP_HELPER_DEST" 0755
 install_same_or_fail "$GPU_MAPPING_PYTHON_SOURCE" "$GPU_MAPPING_PYTHON_DEST" 0640
 
 render_unit \
@@ -237,8 +265,14 @@ if [[ "$ROOT" == "/" ]]; then
     if [[ ! -s "$device_map_tmp" ]]; then
       "$DEVICE_MAP_HELPER_DEST" discover "$GPU_UUID_DEST" >"$device_map_tmp"
     fi
+    "$DEVICE_MAP_HELPER_DEST" verify "$GPU_UUID_DEST" "$device_map_tmp"
+    if systemctl is-active --quiet astrumweaver-worker.service; then
+      die "Worker service is active; stop it before applying GPU isolation"
+    else
+      service_status=$?
+      [[ "$service_status" == 3 ]] || die "cannot determine Worker service state"
+    fi
     install_same_or_fail "$device_map_tmp" "$GPU_DEVICE_MAP_DEST" 0640
-    "$DEVICE_MAP_HELPER_DEST" verify "$GPU_UUID_DEST" "$GPU_DEVICE_MAP_DEST"
   else
     "$PREFLIGHT_DEST" "$GPU_UUID_DEST"
     if [[ -e "$ISOLATION_DROPIN_DEST" || -e "$ISOLATION_UNIT_DEST" || -e "$GPU_DEVICE_MAP_DEST" ]]; then
@@ -263,6 +297,11 @@ if [[ "$ROOT" == "/" ]]; then
   fi
 else
   isolation_enabled=0
+  if [[ "$GPU_ISOLATION" == "off" ]] && {
+    [[ -e "$ISOLATION_DROPIN_DEST" || -e "$ISOLATION_UNIT_DEST" || -e "$GPU_DEVICE_MAP_DEST" ]]
+  }; then
+    die "existing GPU isolation state requires reviewed removal before --gpu-isolation off"
+  fi
   if [[ "$GPU_ISOLATION" == "on" || -s "$device_map_tmp" ]]; then
     [[ -s "$device_map_tmp" ]] || die "staged GPU isolation requires --gpu-device UUID=/dev/nvidiaN entries"
     isolation_enabled=1

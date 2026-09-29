@@ -519,6 +519,10 @@ in
         message = "services.astrumweaver.worker.gpuUuids must not contain duplicates.";
       }
       {
+        assertion = !cfg.gpuIsolation.enable || cfg.gpuUuids != [ ];
+        message = "gpuIsolation.enable requires at least one selected GPU UUID.";
+      }
+      {
         assertion =
           !cfg.gpuIsolation.enable
           || lib.sort builtins.lessThan (builtins.attrNames cfg.gpuIsolation.deviceMap)

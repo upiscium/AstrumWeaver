@@ -19,6 +19,7 @@ class GpuMappingError(RuntimeError):
 _GPU_UUID_RE = re.compile(r"^GPU-[^\s,=]+$")
 _MINOR_RE = re.compile(r"^[0-9]+$")
 _DEVICE_PATH_RE = re.compile(r"^/dev/nvidia[0-9]+$")
+_NVIDIA_DEVICE_NAMES = frozenset({"nvidia-frontend", "nvidia"})
 _Runner = Callable[..., subprocess.CompletedProcess[str]]
 _MappingRows = Mapping[str, Sequence[object]]
 
@@ -123,9 +124,7 @@ def _query_primary_mapping(
                 "not recognized",
             )
         )
-        if (completed.returncode == 2 and not stderr.strip()) or (
-            mentions_minor and describes_unsupported_field
-        ):
+        if mentions_minor and describes_unsupported_field:
             return None
         raise GpuMappingError("NVIDIA GPU UUID/minor query failed")
     return _parse_uuid_minor_rows(completed.stdout)
@@ -174,6 +173,8 @@ def _validate_mapping(
     rows: _MappingRows,
     *,
     device_root: Path,
+    nvidia_major: int,
+    device_stat: Callable[[Path], os.stat_result],
 ) -> tuple[tuple[str, str], ...]:
     mapping: dict[str, str] = {}
     for uuid in visible_uuids:
@@ -197,14 +198,21 @@ def _validate_mapping(
         if not _DEVICE_PATH_RE.fullmatch(device_path):
             raise GpuMappingError("a visible GPU resolved to an invalid device path")
         try:
-            mode = (device_root / f"nvidia{minor}").stat().st_mode
+            node_stat = device_stat(device_root / f"nvidia{minor}")
         except OSError as exc:
             raise GpuMappingError(
                 "a visible GPU device node is unavailable"
             ) from exc
-        if not stat.S_ISCHR(mode):
+        if not stat.S_ISCHR(node_stat.st_mode):
             raise GpuMappingError(
                 "a visible GPU device node is not a character device"
+            )
+        if (
+            os.major(node_stat.st_rdev) != nvidia_major
+            or os.minor(node_stat.st_rdev) != minor
+        ):
+            raise GpuMappingError(
+                "a visible GPU device node does not match the NVIDIA major/minor"
             )
         if device_path in mapping.values():
             raise GpuMappingError("visible GPUs reuse one device minor")
@@ -213,14 +221,50 @@ def _validate_mapping(
     return tuple(sorted(mapping.items()))
 
 
+def _nvidia_character_device_major(proc_devices: Path) -> int:
+    try:
+        lines = proc_devices.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise GpuMappingError("NVIDIA character device registry is unavailable") from exc
+
+    in_character_devices = False
+    majors: set[int] = set()
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "Character devices:":
+            in_character_devices = True
+            continue
+        if stripped == "Block devices:":
+            break
+        if not in_character_devices:
+            continue
+        fields = stripped.split(None, 1)
+        if len(fields) != 2 or fields[1] not in _NVIDIA_DEVICE_NAMES:
+            continue
+        try:
+            majors.add(int(fields[0], 10))
+        except ValueError as exc:
+            raise GpuMappingError(
+                "NVIDIA character device registry is malformed"
+            ) from exc
+
+    if len(majors) != 1:
+        raise GpuMappingError(
+            "NVIDIA character device major is unavailable or ambiguous"
+        )
+    return next(iter(majors))
+
+
 def discover_gpu_mapping(
     *,
     nvidia_smi: str = "nvidia-smi",
     proc_root: Path = Path("/proc/driver/nvidia/gpus"),
+    proc_devices: Path = Path("/proc/devices"),
     device_root: Path = Path("/dev"),
     run: _Runner = subprocess.run,
+    device_stat: Callable[[Path], os.stat_result] | None = None,
 ) -> tuple[tuple[str, str], ...]:
-    """Return a validated mapping for every currently visible physical GPU."""
+    """Return validated mappings; ``device_stat`` is only a test seam."""
 
     visible_uuids = _query_visible_uuids(nvidia_smi, run=run)
     primary = _query_primary_mapping(nvidia_smi, run=run)
@@ -228,7 +272,14 @@ def discover_gpu_mapping(
         rows: _MappingRows = _proc_mapping_rows(proc_root)
     else:
         rows = {uuid: [minor] for uuid, minor in primary.items()}
-    return _validate_mapping(visible_uuids, rows, device_root=device_root)
+    nvidia_major = _nvidia_character_device_major(proc_devices)
+    return _validate_mapping(
+        visible_uuids,
+        rows,
+        device_root=device_root,
+        nvidia_major=nvidia_major,
+        device_stat=Path.stat if device_stat is None else device_stat,
+    )
 
 
 def _load_expected(path: Path) -> tuple[str, ...]:
@@ -297,6 +348,11 @@ def _parser() -> argparse.ArgumentParser:
         default=Path(os.environ.get("ASTRUMWEAVER_GPU_DEVICE_ROOT", "/dev")),
     )
     parser.add_argument(
+        "--proc-devices",
+        type=Path,
+        default=Path(os.environ.get("ASTRUMWEAVER_GPU_PROC_DEVICES", "/proc/devices")),
+    )
+    parser.add_argument(
         "mode",
         choices=("discover", "discover-visible", "verify"),
     )
@@ -310,6 +366,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         mapping = discover_gpu_mapping(
             nvidia_smi=args.nvidia_smi,
             proc_root=args.proc_root,
+            proc_devices=args.proc_devices,
             device_root=args.device_root,
         )
         if args.mode == "discover-visible":
