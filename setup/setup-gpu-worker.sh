@@ -153,27 +153,71 @@ if [[ ! -f "$GPU_MAPPING_PYTHON_SOURCE" ]]; then
 fi
 [[ -f "$GPU_MAPPING_PYTHON_SOURCE" ]] || die "canonical GPU mapper is unavailable"
 
-install_gpu_device_map_helper() {
-  local source="$1" destination="$2" mode="$3" digest
+normalize_reviewed_legacy_bash_script() {
+  local source="$1" normalized="$2" first_line
+  [[ -f "$source" && ! -L "$source" ]] || return 1
+  IFS= read -r first_line <"$source" || return 1
+
+  if [[ "$first_line" == '#!/usr/bin/env bash' ]]; then
+    cp -- "$source" "$normalized"
+    return 0
+  fi
+
+  if [[ "$first_line" =~ ^#!/nix/store/[0-9a-z]{32}-bash-[A-Za-z0-9._+~-]+/bin/bash$ ]]; then
+    {
+      printf '%s\n' '#!/usr/bin/env bash'
+      tail -n +2 -- "$source"
+    } >"$normalized"
+    return 0
+  fi
+
+  return 1
+}
+
+install_reviewed_script_upgrade() {
+  local source="$1" destination="$2" mode="$3" legacy_sha256="${4:-}"
+  local normalized digest
   [[ -f "$source" ]] || die "source file does not exist: $source"
   reject_symlink_path "$destination"
-  if [[ -e "$destination" ]]; then
-    [[ -f "$destination" ]] || die "destination exists but is not a file: $destination"
-    if cmp -s "$source" "$destination"; then
-      chmod "$mode" "$destination"
-      return 0
-    fi
-    require_cmd sha256sum
-    digest="$(sha256sum "$destination")"
-    digest="${digest%% *}"
-    if [[ "$digest" != "$LEGACY_GPU_DEVICE_MAP_SHA256" ]]; then
-      die "destination differs; refusing overwrite: $destination"
-    fi
-    log "upgrading reviewed legacy GPU device mapper: $destination"
+
+  if [[ ! -e "$destination" ]]; then
     install -D -m "$mode" "$source" "$destination"
     return 0
   fi
-  install -D -m "$mode" "$source" "$destination"
+
+  [[ -f "$destination" ]] || die "destination exists but is not a file: $destination"
+  if cmp -s "$source" "$destination"; then
+    chmod "$mode" "$destination"
+    return 0
+  fi
+
+  normalized="$(mktemp)"
+  if ! normalize_reviewed_legacy_bash_script "$destination" "$normalized"; then
+    rm -f "$normalized"
+    die "destination differs; refusing overwrite: $destination"
+  fi
+
+  if cmp -s "$source" "$normalized"; then
+    rm -f "$normalized"
+    log "upgrading reviewed Nix-patched helper: $destination"
+    install -D -m "$mode" "$source" "$destination"
+    return 0
+  fi
+
+  if [[ -n "$legacy_sha256" ]]; then
+    require_cmd sha256sum
+    digest="$(sha256sum "$normalized")"
+    digest="${digest%% *}"
+    if [[ "$digest" == "$legacy_sha256" ]]; then
+      rm -f "$normalized"
+      log "upgrading reviewed legacy helper: $destination"
+      install -D -m "$mode" "$source" "$destination"
+      return 0
+    fi
+  fi
+
+  rm -f "$normalized"
+  die "destination differs; refusing overwrite: $destination"
 }
 
 if [[ -x "$GPU_UUID_READER" ]]; then
@@ -229,8 +273,8 @@ if [[ -n "$RUNTIME_MANIFEST_SOURCE" ]]; then
   install_same_or_fail "$RUNTIME_MANIFEST_SOURCE" "$RUNTIME_MANIFEST_DEST" 0640
 fi
 install_same_or_fail "$expected_tmp" "$GPU_UUID_DEST" 0640
-install_same_or_fail "$REPO_ROOT/libexec/gpu-preflight" "$PREFLIGHT_DEST" 0755
-install_gpu_device_map_helper "$REPO_ROOT/libexec/gpu-device-map" "$DEVICE_MAP_HELPER_DEST" 0755
+install_reviewed_script_upgrade "$REPO_ROOT/libexec/gpu-preflight" "$PREFLIGHT_DEST" 0755
+install_reviewed_script_upgrade "$REPO_ROOT/libexec/gpu-device-map" "$DEVICE_MAP_HELPER_DEST" 0755 "$LEGACY_GPU_DEVICE_MAP_SHA256"
 install_same_or_fail "$GPU_MAPPING_PYTHON_SOURCE" "$GPU_MAPPING_PYTHON_DEST" 0640
 
 render_unit \
