@@ -248,11 +248,18 @@ def test_systemd_gpu_preflight_accepts_host_superset_with_verified_device_isolat
         encoding="utf-8",
     )
     verifier = tmp_path / "gpu-device-map-verify"
-    verifier.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    verifier_args = tmp_path / "gpu-device-map-verify.args"
+    verifier.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf '%s\\n' \"$@\" > {str(verifier_args)!r}\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
     verifier.chmod(0o755)
 
     superset_dir = tmp_path / "isolated-superset"
     superset_dir.mkdir()
+    nvidia_smi = fake_nvidia_smi(superset_dir, "GPU-a\nGPU-b")
     driver = SystemdSetupDriver(
         worker_config_path=worker_config,
         runtime_manifest_path=manifest,
@@ -260,10 +267,7 @@ def test_systemd_gpu_preflight_accepts_host_superset_with_verified_device_isolat
         gpu_device_map_path=device_map,
         gpu_isolation_dropin_path=dropin,
         gpu_device_map_command=str(verifier),
-        nvidia_smi=fake_nvidia_smi(
-            superset_dir,
-            "GPU-a\nGPU-b",
-        ),
+        nvidia_smi=nvidia_smi,
     )
 
     result = driver.inspect(
@@ -276,3 +280,7 @@ def test_systemd_gpu_preflight_accepts_host_superset_with_verified_device_isolat
     assert result.state is SetupActionState.SATISFIED
     assert "device-cgroup isolation is verified" in result.detail
     assert "ExecStartPre must still prove the exact set" in result.detail
+    assert verifier_args.read_text(encoding="utf-8").splitlines()[:2] == [
+        "--nvidia-smi",
+        nvidia_smi,
+    ]

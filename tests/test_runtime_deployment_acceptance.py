@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
 from astrumweaver.validation.runtime_deployment import (
     RuntimeDeploymentAcceptanceError,
     RuntimeDeploymentAcceptanceRunner,
+    SystemdRuntimeDeploymentHost,
     render_runtime_deployment_markdown,
 )
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class FakeHost:
@@ -70,6 +75,61 @@ class FakeHost:
             "ready": self.ready,
             "registered": self.registered,
         }
+
+
+def test_systemd_host_uses_canonical_gpu_device_mapper(tmp_path: Path) -> None:
+    nvidia_smi = tmp_path / "nvidia-smi"
+    nvidia_smi.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [[ \"$1\" == \"--query-gpu=uuid\" ]]; then\n"
+        "  printf 'GPU-selected\\nGPU-other\\n'\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 2\n",
+        encoding="utf-8",
+    )
+    nvidia_smi.chmod(0o755)
+
+    proc_root = tmp_path / "proc-gpus"
+    for index, (uuid, minor) in enumerate(
+        (
+            ("GPU-selected", "0"),
+            ("GPU-other", "1"),
+            ("GPU-stale", "99"),
+        )
+    ):
+        information_dir = proc_root / f"gpu{index}"
+        information_dir.mkdir(parents=True)
+        (information_dir / "information").write_text(
+            f"GPU UUID : {uuid}\nDevice Minor : {minor}\n",
+            encoding="utf-8",
+        )
+
+    device_root = tmp_path / "dev"
+    device_root.mkdir()
+    for minor in ("0", "1"):
+        (device_root / f"nvidia{minor}").symlink_to("/dev/null")
+
+    mapper = tmp_path / "gpu-device-map"
+    mapper.write_text(
+        "#!/usr/bin/env bash\n"
+        f"exec bash {ROOT / 'libexec' / 'gpu-device-map'} "
+        f"--proc-root {proc_root} --device-root {device_root} \"$@\"\n",
+        encoding="utf-8",
+    )
+    mapper.chmod(0o755)
+
+    host = SystemdRuntimeDeploymentHost(
+        service="astrumweaver-worker.service",
+        worker_config=tmp_path / "worker.toml",
+        nvidia_smi=str(nvidia_smi),
+        gpu_device_map=str(mapper),
+    )
+
+    assert host.host_gpu_device_map() == {
+        "GPU-selected": "/dev/nvidia0",
+        "GPU-other": "/dev/nvidia1",
+    }
 
 
 @dataclass

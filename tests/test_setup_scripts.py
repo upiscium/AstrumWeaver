@@ -439,38 +439,158 @@ def fake_nvidia_smi(tmp_path: Path, output: str) -> dict[str, str]:
     return env
 
 
-def test_gpu_device_map_discovers_selected_uuid_to_minor_mapping(
+def fake_gpu_mapping_host(
     tmp_path: Path,
-) -> None:
-    expected = tmp_path / "expected"
-    expected.write_text("GPU-b\n", encoding="utf-8")
-
+    *,
+    visible: tuple[str, ...],
+    proc_entries: tuple[tuple[str, str], ...],
+    valid_minors: tuple[str, ...],
+) -> tuple[list[str], Path, Path]:
     bin_dir = tmp_path / "map-bin"
     bin_dir.mkdir()
     executable = bin_dir / "nvidia-smi"
+    visible_lines = "".join(f"  printf '%s\\n' {uuid!r}\n" for uuid in visible)
     executable.write_text(
         "#!/usr/bin/env bash\n"
-        "if [[ \"$1\" == \"--query-gpu=uuid,minor_number\" ]]; then\n"
-        "  printf 'GPU-a, 2\\nGPU-b, 7\\n'\n"
+        "if [[ \"$1\" == \"--query-gpu=uuid\" ]]; then\n"
+        f"{visible_lines}"
         "  exit 0\n"
         "fi\n"
         "exit 2\n",
         encoding="utf-8",
     )
     executable.chmod(0o755)
-    env = dict(os.environ)
-    env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+
+    proc_root = tmp_path / "proc-gpus"
+    for index, (uuid, minor) in enumerate(proc_entries):
+        information_dir = proc_root / f"gpu{index}"
+        information_dir.mkdir(parents=True)
+        (information_dir / "information").write_text(
+            f"GPU UUID : {uuid}\nDevice Minor : {minor}\n",
+            encoding="utf-8",
+        )
+
+    device_root = tmp_path / "dev"
+    device_root.mkdir()
+    for minor in valid_minors:
+        (device_root / f"nvidia{minor}").symlink_to("/dev/null")
+
+    return (
+        [
+            "--nvidia-smi",
+            str(executable),
+            "--proc-root",
+            str(proc_root),
+            "--device-root",
+            str(device_root),
+        ],
+        proc_root,
+        device_root,
+    )
+
+
+def test_gpu_device_map_discovers_selected_uuid_to_proc_minor_mapping(
+    tmp_path: Path,
+) -> None:
+    expected = tmp_path / "expected"
+    expected.write_text("GPU-b\n", encoding="utf-8")
+    helper_args, _, _ = fake_gpu_mapping_host(
+        tmp_path,
+        visible=("GPU-a", "GPU-b"),
+        proc_entries=(
+            ("GPU-a", "2"),
+            ("GPU-b", "7"),
+            ("GPU-stale", "99"),
+        ),
+        valid_minors=("2", "7"),
+    )
 
     result = run(
         "bash",
         str(ROOT / "libexec" / "gpu-device-map"),
+        *helper_args,
         "discover",
         str(expected),
-        env=env,
     )
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == "GPU-b=/dev/nvidia7\n"
+
+
+def test_gpu_device_map_fails_when_visible_uuid_has_invalid_device_node(
+    tmp_path: Path,
+) -> None:
+    expected = tmp_path / "expected"
+    expected.write_text("GPU-a\n", encoding="utf-8")
+    helper_args, _, _ = fake_gpu_mapping_host(
+        tmp_path,
+        visible=("GPU-a", "GPU-b", "GPU-invalid"),
+        proc_entries=(
+            ("GPU-a", "2"),
+            ("GPU-b", "7"),
+            ("GPU-invalid", "99"),
+        ),
+        valid_minors=("2", "7"),
+    )
+
+    result = run(
+        "bash",
+        str(ROOT / "libexec" / "gpu-device-map"),
+        *helper_args,
+        "discover",
+        str(expected),
+    )
+
+    assert result.returncode != 0
+    assert "not a character device" in result.stderr
+
+
+def test_gpu_device_map_fails_when_visible_minors_are_duplicated(
+    tmp_path: Path,
+) -> None:
+    expected = tmp_path / "expected"
+    expected.write_text("GPU-a\n", encoding="utf-8")
+    helper_args, _, _ = fake_gpu_mapping_host(
+        tmp_path,
+        visible=("GPU-a", "GPU-b"),
+        proc_entries=(("GPU-a", "2"), ("GPU-b", "2")),
+        valid_minors=("2",),
+    )
+
+    result = run(
+        "bash",
+        str(ROOT / "libexec" / "gpu-device-map"),
+        *helper_args,
+        "discover",
+        str(expected),
+    )
+
+    assert result.returncode != 0
+    assert "one device node" in result.stderr
+
+
+def test_gpu_device_map_fails_when_visible_uuid_lacks_proc_mapping(
+    tmp_path: Path,
+) -> None:
+    expected = tmp_path / "expected"
+    expected.write_text("GPU-a\n", encoding="utf-8")
+    helper_args, _, _ = fake_gpu_mapping_host(
+        tmp_path,
+        visible=("GPU-a", "GPU-b"),
+        proc_entries=(("GPU-a", "2"),),
+        valid_minors=("2",),
+    )
+
+    result = run(
+        "bash",
+        str(ROOT / "libexec" / "gpu-device-map"),
+        *helper_args,
+        "discover",
+        str(expected),
+    )
+
+    assert result.returncode != 0
+    assert "exactly one /proc entry" in result.stderr
 
 
 def test_gpu_device_map_verify_reads_reviewed_map_argument(
@@ -480,30 +600,20 @@ def test_gpu_device_map_verify_reads_reviewed_map_argument(
     expected.write_text("GPU-b\n", encoding="utf-8")
     reviewed = tmp_path / "reviewed-map"
     reviewed.write_text("GPU-b=/dev/nvidia9\n", encoding="utf-8")
-
-    bin_dir = tmp_path / "verify-bin"
-    bin_dir.mkdir()
-    executable = bin_dir / "nvidia-smi"
-    executable.write_text(
-        "#!/usr/bin/env bash\n"
-        "if [[ \"$1\" == \"--query-gpu=uuid,minor_number\" ]]; then\n"
-        "  printf 'GPU-b, 7\\n'\n"
-        "  exit 0\n"
-        "fi\n"
-        "exit 2\n",
-        encoding="utf-8",
+    helper_args, _, _ = fake_gpu_mapping_host(
+        tmp_path,
+        visible=("GPU-b",),
+        proc_entries=(("GPU-b", "7"),),
+        valid_minors=("7",),
     )
-    executable.chmod(0o755)
-    env = dict(os.environ)
-    env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
 
     result = run(
         "bash",
         str(ROOT / "libexec" / "gpu-device-map"),
+        *helper_args,
         "verify",
         str(expected),
         str(reviewed),
-        env=env,
     )
 
     assert result.returncode != 0

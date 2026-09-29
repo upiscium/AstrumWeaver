@@ -47,12 +47,14 @@ class SystemdRuntimeDeploymentHost:
         worker_config: Path,
         systemctl: str = "systemctl",
         nvidia_smi: str = "nvidia-smi",
+        gpu_device_map: str = "astrumweaver-gpu-device-map",
         health_url: str = "http://127.0.0.1:9100/health",
     ) -> None:
         self.service = service
         self.worker_config = worker_config
         self.systemctl = systemctl
         self.nvidia_smi = nvidia_smi
+        self.gpu_device_map = gpu_device_map
         self.health_url = health_url.rstrip("/")
 
     def _run(self, args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -71,24 +73,33 @@ class SystemdRuntimeDeploymentHost:
     def host_gpu_device_map(self) -> Mapping[str, str]:
         completed = self._run(
             [
+                self.gpu_device_map,
+                "--nvidia-smi",
                 self.nvidia_smi,
-                "--query-gpu=uuid,minor_number",
-                "--format=csv,noheader,nounits",
+                "discover-visible",
             ]
         )
         result: dict[str, str] = {}
         for raw_line in completed.stdout.splitlines():
-            fields = [item.strip() for item in raw_line.split(",")]
-            if len(fields) != 2 or not fields[0] or not fields[1].isdigit():
+            fields = [item.strip() for item in raw_line.split("=", 1)]
+            if (
+                len(fields) != 2
+                or not fields[0]
+                or not _GPU_DEVICE_PATH_RE.fullmatch(fields[1])
+            ):
                 raise RuntimeDeploymentAcceptanceError(
-                    "host GPU UUID/minor mapping is unavailable"
+                    "host GPU UUID/device mapping is unavailable"
                 )
-            uuid, minor = fields
+            uuid, device_path = fields
             if uuid in result:
                 raise RuntimeDeploymentAcceptanceError(
                     "host reported duplicate GPU UUID"
                 )
-            result[uuid] = f"/dev/nvidia{minor}"
+            if device_path in result.values():
+                raise RuntimeDeploymentAcceptanceError(
+                    "host reported duplicate GPU device minor"
+                )
+            result[uuid] = device_path
         if not result:
             raise RuntimeDeploymentAcceptanceError(
                 "host reported no NVIDIA GPUs"
@@ -167,6 +178,7 @@ _DEVICE_ALLOW_RE = re.compile(
     r"^DeviceAllow=(/dev/nvidia[0-9]+)\s+[rwm]+\s*$",
     re.MULTILINE,
 )
+_GPU_DEVICE_PATH_RE = re.compile(r"^/dev/nvidia[0-9]+$")
 
 
 class RuntimeDeploymentAcceptanceRunner:
@@ -400,6 +412,10 @@ def main() -> None:
     parser.add_argument("--systemctl", default="systemctl")
     parser.add_argument("--nvidia-smi", default="nvidia-smi")
     parser.add_argument(
+        "--gpu-device-map",
+        default="astrumweaver-gpu-device-map",
+    )
+    parser.add_argument(
         "--health-url",
         default="http://127.0.0.1:9100/health",
     )
@@ -430,6 +446,7 @@ def main() -> None:
         worker_config=args.worker_config,
         systemctl=args.systemctl,
         nvidia_smi=args.nvidia_smi,
+        gpu_device_map=args.gpu_device_map,
         health_url=args.health_url,
     )
     runner = RuntimeDeploymentAcceptanceRunner(

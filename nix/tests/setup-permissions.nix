@@ -3,7 +3,7 @@
 let
   fakeNvidia = pkgs.writeShellScriptBin "nvidia-smi" ''
     case "$*" in
-      *"--query-gpu=uuid,minor_number"*) printf '%s, 0\n' GPU-permission-test ;;
+      *"--query-gpu=uuid,minor_number"*) exit 2 ;;
       *"--query-gpu=uuid"*) printf '%s\n' GPU-permission-test ;;
     esac
     exit 0
@@ -88,6 +88,7 @@ pkgs.testers.runNixOSTest {
         "/etc/astrumweaver/gpu-uuids", "/etc/astrumweaver/gpu-device-map",
         "/etc/astrumweaver/runtime-deployment.json",
     ]
+    fake_gpu_proc = "/run/astrumweaver-fake-nvidia-gpus"
     all_files = control_files + worker_files
     control_unit = "/etc/systemd/system/astrumweaver-control.service"
     worker_unit = "/etc/systemd/system/astrumweaver-worker.service"
@@ -107,7 +108,8 @@ pkgs.testers.runNixOSTest {
                 f"--executable {fake_daemon_path} --root / --user {user}")
 
     def worker_cmd(user):
-        return (f"{worker_bin} --config /tmp/worker.toml --environment-file /tmp/worker.env "
+        return (f"ASTRUMWEAVER_GPU_PROC_ROOT={fake_gpu_proc} {worker_bin} "
+                "--config /tmp/worker.toml --environment-file /tmp/worker.env "
                 f"--runtime-manifest /tmp/runtime-deployment.json --executable {fake_daemon_path} "
                 f"--root / --user {user} --gpu-isolation on "
                 "--gpu-device GPU-permission-test=/dev/nvidia0")
@@ -134,6 +136,11 @@ pkgs.testers.runNixOSTest {
         machine.succeed(
             f"{rm} -f /dev/nvidia0 && "
             f"{mknod} -m 0660 /dev/nvidia0 c 195 0 && test -c /dev/nvidia0"
+        )
+        machine.succeed(
+            f"{mkdir} -p {fake_gpu_proc}/gpu0 && "
+            f"{cat} >{fake_gpu_proc}/gpu0/information <<'EOF'\n"
+            "GPU UUID : GPU-permission-test\nDevice Minor : 0\nEOF\n"
         )
         machine.succeed(
             f"{cat} >/tmp/control.toml <<'EOF'\n[control]\nlisten = \"127.0.0.1:9000\"\nEOF\n"

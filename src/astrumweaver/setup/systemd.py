@@ -271,6 +271,8 @@ class SystemdSetupDriver:
         completed = subprocess.run(
             [
                 self.gpu_device_map_command,
+                "--nvidia-smi",
+                self.nvidia_smi,
                 "verify",
                 str(expected_file),
                 str(map_file),
