@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import os
 import re
 import stat
@@ -14,6 +15,10 @@ from typing import Callable, Mapping, Sequence
 
 class GpuMappingError(RuntimeError):
     """A physical GPU mapping could not be proven safely."""
+
+
+class GpuIsolationUnavailable(GpuMappingError):
+    """Requested physical GPU subset isolation is not enforceable."""
 
 
 _GPU_UUID_RE = re.compile(r"^GPU-[^\s,=]+$")
@@ -395,6 +400,59 @@ def _load_reviewed_map(path: Path) -> tuple[tuple[str, str], ...]:
     return tuple(sorted(mapping.items()))
 
 
+
+def probe_gpu_access_isolation(
+    expected_uuids: Sequence[str],
+    reviewed_mapping: Sequence[tuple[str, str]],
+    *,
+    opener: Callable[[str, int], int] = os.open,
+    closer: Callable[[int], None] = os.close,
+) -> None:
+    """Prove selected GPU nodes are accessible and unselected nodes are denied."""
+
+    expected = tuple(sorted(_validate_uuid(value) for value in expected_uuids))
+    if not expected:
+        raise GpuMappingError("expected GPU UUID set is empty")
+    if len(set(expected)) != len(expected):
+        raise GpuMappingError("expected GPU UUID set is not unique")
+
+    mapping = tuple(sorted(reviewed_mapping))
+    selected = _select_mapping(mapping, expected)
+    if len(mapping) <= len(selected):
+        raise GpuMappingError("GPU access isolation probe requires a visible superset")
+
+    selected_paths = {path for _, path in selected}
+    denied_unselected = 0
+    for _, device_path in mapping:
+        try:
+            fd = opener(device_path, os.O_RDWR | os.O_CLOEXEC)
+        except OSError as exc:
+            if device_path in selected_paths:
+                raise GpuMappingError("a selected GPU device is not accessible") from exc
+            if exc.errno in {errno.EACCES, errno.EPERM}:
+                denied_unselected += 1
+                continue
+            raise GpuMappingError(
+                "an unselected GPU access denial could not be proven"
+            ) from exc
+        else:
+            closer(fd)
+            if device_path not in selected_paths:
+                raise GpuIsolationUnavailable("GPU subset isolation is not enforced")
+
+    if denied_unselected != len(mapping) - len(selected):
+        raise GpuMappingError("unselected GPU access denial is incomplete")
+
+
+def probe_gpu_access_isolation_file(
+    expected_uuids: Sequence[str],
+    reviewed_map_path: Path,
+) -> None:
+    probe_gpu_access_isolation(
+        expected_uuids,
+        _load_reviewed_map(reviewed_map_path),
+    )
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="astrumweaver-gpu-device-map")
     parser.add_argument("--nvidia-smi", default="nvidia-smi")
@@ -415,7 +473,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "mode",
-        choices=("discover", "discover-visible", "verify"),
+        choices=("discover", "discover-visible", "verify", "verify-visible", "probe-access"),
     )
     parser.add_argument("paths", nargs="*")
     return parser
@@ -424,6 +482,19 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        if args.mode == "probe-access":
+            if len(args.paths) != 2:
+                raise GpuMappingError("probe-access arguments are invalid")
+            expected = _load_expected(Path(args.paths[0]))
+            reviewed = _load_reviewed_map(Path(args.paths[1]))
+            probe_gpu_access_isolation(expected, reviewed)
+            print(
+                "[astrumweaver-gpu-device-map] access-ok "
+                f"selected_count={len(expected)} "
+                f"unselected_denied={len(reviewed) - len(expected)}"
+            )
+            return 0
+
         mapping = discover_gpu_mapping(
             nvidia_smi=args.nvidia_smi,
             proc_root=args.proc_root,
@@ -434,6 +505,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.paths:
                 raise GpuMappingError("discover-visible arguments are invalid")
             selected = mapping
+        elif args.mode == "verify-visible":
+            if len(args.paths) != 1:
+                raise GpuMappingError("verify-visible arguments are invalid")
+            if mapping != _load_reviewed_map(Path(args.paths[0])):
+                raise GpuMappingError("reviewed visible GPU device map changed")
+            print(f"[astrumweaver-gpu-device-map] visible-ok count={len(mapping)}")
+            return 0
         else:
             if args.mode == "discover" and len(args.paths) != 1:
                 raise GpuMappingError("discover arguments are invalid")
@@ -450,6 +528,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         for uuid, device_path in selected:
             print(f"{uuid}={device_path}")
         return 0
+    except GpuIsolationUnavailable as exc:
+        print(f"[astrumweaver-gpu-device-map] UNAVAILABLE: {exc}", file=sys.stderr)
+        return 3
     except GpuMappingError as exc:
         print(f"[astrumweaver-gpu-device-map] ERROR: {exc}", file=sys.stderr)
         return 1
