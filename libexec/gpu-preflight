@@ -12,8 +12,6 @@ EXPECTED_FILE="$1"
 [[ -f "$EXPECTED_FILE" ]] || die "expected GPU UUID file is missing"
 
 MODE="${ASTRUMWEAVER_GPU_PREFLIGHT_MODE:-exact-visible}"
-NVIDIA_SMI="${ASTRUMWEAVER_NVIDIA_SMI:-$(command -v nvidia-smi || true)}"
-[[ -n "$NVIDIA_SMI" ]] || die "nvidia-smi is not available"
 
 if [[ "$MODE" == "isolated-access" ]]; then
   REVIEWED_MAP="${ASTRUMWEAVER_GPU_DEVICE_MAP:-}"
@@ -26,6 +24,9 @@ if [[ "$MODE" == "isolated-access" ]]; then
     || die "isolated-access Worker config is unavailable"
   [[ "$GPU_DEVICE_MAP" == /* && -x "$GPU_DEVICE_MAP" ]] \
     || die "isolated-access canonical GPU mapper is unavailable"
+
+  NVIDIA_SMI="${ASTRUMWEAVER_NVIDIA_SMI:-$(command -v nvidia-smi || true)}"
+  [[ -n "$NVIDIA_SMI" ]] || die "nvidia-smi is not available"
 
   "$GPU_DEVICE_MAP" \
     --nvidia-smi "$NVIDIA_SMI" \
@@ -41,6 +42,9 @@ fi
 
 [[ "$MODE" == "exact-visible" ]] \
   || die "GPU preflight mode must be exact-visible or isolated-access"
+
+NVIDIA_SMI="${ASTRUMWEAVER_NVIDIA_SMI:-$(command -v nvidia-smi || true)}"
+[[ -n "$NVIDIA_SMI" ]] || die "nvidia-smi is not available"
 
 expected_tmp="$(mktemp)"
 observed_tmp="$(mktemp)"
