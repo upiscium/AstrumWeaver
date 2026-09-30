@@ -35,7 +35,7 @@ def resolve_packaged_gpu_device_map(
 ) -> str:
     """Resolve the reviewed mapper without consulting ambient ``PATH``."""
 
-    candidates = [installed_path]
+    candidates: list[Path] = []
     invocation = argv0 if argv0 is not None else sys.argv[0]
     if os.sep in invocation:
         candidates.append(
@@ -46,6 +46,7 @@ def resolve_packaged_gpu_device_map(
             Path(invocation).resolve().parent
             / "astrumweaver-gpu-device-map"
         )
+    candidates.append(installed_path)
 
     seen: set[Path] = set()
     for candidate in candidates:
@@ -77,7 +78,7 @@ def resolve_packaged_gpu_isolation_probe(
 ) -> str:
     """Resolve the reviewed isolation probe without consulting ambient PATH."""
 
-    candidates = [installed_path]
+    candidates: list[Path] = []
     invocation = argv0 if argv0 is not None else sys.argv[0]
     if os.sep in invocation:
         candidates.append(
@@ -88,6 +89,7 @@ def resolve_packaged_gpu_isolation_probe(
             Path(invocation).resolve().parent
             / "astrumweaver-gpu-isolation-probe"
         )
+    candidates.append(installed_path)
 
     seen: set[Path] = set()
     for candidate in candidates:
