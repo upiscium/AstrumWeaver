@@ -158,7 +158,7 @@
       runtimeWorkerPreflight =
         runtimeModuleSmoke.config.systemd.services.astrumweaver-worker.serviceConfig.ExecStartPre;
       runtimeIsolationPreflight =
-        runtimeModuleSmoke.config.systemd.services.astrumweaver-worker-gpu-isolation-preflight.serviceConfig.ExecStart;
+        runtimeModuleSmoke.config.systemd.services.astrumweaver-worker-gpu-isolation-preflight.script;
     in
     {
       packages.${system} = {
@@ -309,12 +309,43 @@ EOF
           test -f "$workerConfig"
           grep -q '\[runtime\]' "$workerConfig"
           grep -q 'manifest' "$workerConfig"
+          grep -q 'gpu_isolation_visible_map' "$workerConfig"
           test "$runtimeDevicePolicy" = closed
           printf "%s" "$runtimeDeviceAllowText" | grep -q '/dev/nvidia7 rw'
           printf "%s" "$runtimeDeviceAllowText" | grep -q '/dev/nvidiactl rw'
           printf "%s" "$runtimeEnvironmentText" | grep -q 'CUDA_VISIBLE_DEVICES=GPU-example-smoke'
-          printf "%s" "$runtimeWorkerPreflight" | grep -Eq '^\+/nix/store/[a-z0-9]{32}-astrumweaver-gpu-preflight/bin/astrumweaver-gpu-preflight /nix/store/[a-z0-9]{32}-astrumweaver-gpu-uuids$'
-          printf "%s" "$runtimeIsolationPreflight" | grep -q 'gpu-device-map verify'
+          printf "%s" "$runtimeEnvironmentText" | grep -q 'ASTRUMWEAVER_GPU_ISOLATION_VISIBLE_MAP=/run/astrumweaver-worker-gpu-isolation/gpu-visible-map'
+          printf "%s" "$runtimeWorkerPreflight" | grep -Eq '^\+/nix/store/[a-z0-9]{32}-astrumweaver-gpu-device-map/bin/astrumweaver-gpu-device-map probe-access /nix/store/[a-z0-9]{32}-astrumweaver-gpu-uuids /run/astrumweaver-worker-gpu-isolation/gpu-visible-map
+          printf "%s\n%s\n%s\n%s\n%s\n" \
+            "$runtimeWorkerExec" "$runtimeWorkerPath" "$workerConfig" \
+            "$runtimeDevicePolicy" "$runtimeWorkerPreflight" \
+            "$runtimeIsolationPreflight" > "$out"
+        '';
+        gpu-isolation-requires-gpu =
+          assert gpuIsolationNoGpuRejected;
+          pkgs.runCommand "astrumweaver-gpu-isolation-requires-gpu" { } ''
+            touch "$out"
+          '';
+        module-eval = pkgs.runCommand "astrumweaver-module-eval" {
+          controlExec = moduleSmoke.config.systemd.services.astrumweaver-control.serviceConfig.ExecStart;
+          workerExec = moduleSmoke.config.systemd.services.astrumweaver-worker.serviceConfig.ExecStart;
+          workerPreflight = moduleSmoke.config.systemd.services.astrumweaver-worker.serviceConfig.ExecStartPre;
+          modeTool = borrowableMode;
+        } ''
+          test -n "$controlExec"
+          test -n "$workerExec"
+          test -n "$workerPreflight"
+          test -x "$modeTool/bin/astrumweaver-gpu-mode"
+          printf "%s" "$controlExec" | grep -q astrumweaver-control
+          printf "%s" "$workerExec" | grep -q astrumweaver-worker
+          printf "%s\n%s\n%s\n%s\n" "$controlExec" "$workerExec" "$workerPreflight" "$modeTool" > "$out"
+        '';
+      };
+    };
+}
+
+          printf "%s" "$runtimeIsolationPreflight" | grep -q 'snapshot-visible'
+          printf "%s" "$runtimeIsolationPreflight" | grep -q 'gpu-device-map.*verify'
           printf "%s\n%s\n%s\n%s\n%s\n" \
             "$runtimeWorkerExec" "$runtimeWorkerPath" "$workerConfig" \
             "$runtimeDevicePolicy" "$runtimeWorkerPreflight" \
