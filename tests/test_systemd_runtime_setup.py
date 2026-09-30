@@ -285,7 +285,12 @@ def test_systemd_gpu_preflight_uses_effective_device_isolation_properties(
         "DevicePolicy=closed\n"
         "DeviceAllow=/dev/nvidia0 rw\n"
         "DeviceAllow=/dev/nvidiactl rw\n"
-        "Environment=CUDA_VISIBLE_DEVICES=GPU-a\n",
+        "Environment=CUDA_VISIBLE_DEVICES=GPU-a\n"
+        "Environment=ASTRUMWEAVER_GPU_PREFLIGHT_MODE=isolated-access\n"
+        "Environment=ASTRUMWEAVER_GPU_DEVICE_MAP=/etc/astrumweaver/gpu-device-map\n"
+        "Environment=ASTRUMWEAVER_GPU_WORKER_CONFIG=/etc/astrumweaver/worker.toml\n"
+        "Environment=ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND=/usr/local/libexec/astrumweaver/gpu-device-map\n"
+        "Environment=ASTRUMWEAVER_NVIDIA_SMI=/usr/bin/nvidia-smi\n",
         encoding="utf-8",
     )
     verifier = tmp_path / "gpu-device-map-verify"
@@ -308,6 +313,11 @@ def test_systemd_gpu_preflight_uses_effective_device_isolation_properties(
             "DeviceAllow=/dev/nvidia0 rw",
             "DeviceAllow=/dev/nvidiactl rw",
             "Environment=CUDA_VISIBLE_DEVICES=GPU-a",
+            "Environment=ASTRUMWEAVER_GPU_PREFLIGHT_MODE=isolated-access",
+            "Environment=ASTRUMWEAVER_GPU_DEVICE_MAP=/etc/astrumweaver/gpu-device-map",
+            "Environment=ASTRUMWEAVER_GPU_WORKER_CONFIG=/etc/astrumweaver/worker.toml",
+            "Environment=ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND=/usr/local/libexec/astrumweaver/gpu-device-map",
+            "Environment=ASTRUMWEAVER_NVIDIA_SMI=/usr/bin/nvidia-smi",
             "EnvironmentFiles=",
             "UnsetEnvironment=",
             f"ExecStartPre={effective_exec_start_pre}",
@@ -335,8 +345,8 @@ def test_systemd_gpu_preflight_uses_effective_device_isolation_properties(
 
     if should_verify:
         assert result.state is SetupActionState.SATISFIED
-        assert "device-cgroup isolation is verified" in result.detail
-        assert "ExecStartPre must still prove the exact set" in result.detail
+        assert "reviewed systemd isolation contract is configured" in result.detail
+        assert "ExecStartPre must still prove isolated-access" in result.detail
         assert verifier_args.read_text(encoding="utf-8").splitlines()[:2] == [
             "--nvidia-smi",
             nvidia_smi,
