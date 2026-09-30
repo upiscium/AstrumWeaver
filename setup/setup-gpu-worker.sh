@@ -367,6 +367,9 @@ if [[ "$ROOT" == "/" ]]; then
     fi
 
     require_cmd systemd-run
+    require_cmd bash
+    bash_bin="$(command -v bash)"
+    [[ "$bash_bin" == /* ]] || die "cannot resolve absolute bash path for GPU isolation probe"
     probe_command=(
       systemd-run
       --quiet
@@ -389,7 +392,7 @@ if [[ "$ROOT" == "/" ]]; then
         probe_command+=(--property="DeviceAllow=$path rw")
       fi
     done
-    if ! "${probe_command[@]}" "$DEVICE_MAP_HELPER_DEST" \
+    if ! "${probe_command[@]}" "$bash_bin" "$DEVICE_MAP_HELPER_DEST" \
       probe-access "$GPU_UUID_DEST" "$visible_map_tmp"; then
       die "GPU subset isolation is not enforceable in this environment; narrow guest-visible GPU exposure externally"
     fi
