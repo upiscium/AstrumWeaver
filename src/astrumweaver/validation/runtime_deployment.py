@@ -9,6 +9,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 from dataclasses import asdict, dataclass
@@ -59,6 +60,40 @@ def resolve_packaged_gpu_device_map(
     )
 
 
+def resolve_packaged_gpu_isolation_probe(
+    *,
+    argv0: str | None = None,
+    installed_path: Path = Path(
+        "/usr/local/libexec/astrumweaver/gpu-isolation-probe"
+    ),
+) -> str:
+    """Resolve the reviewed isolation probe without ambient PATH."""
+
+    candidates = [installed_path]
+    invocation = argv0 if argv0 is not None else sys.argv[0]
+    if os.sep in invocation:
+        candidates.append(
+            Path(invocation).absolute().parent
+            / "astrumweaver-gpu-isolation-probe"
+        )
+        candidates.append(
+            Path(invocation).resolve().parent
+            / "astrumweaver-gpu-isolation-probe"
+        )
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    raise RuntimeDeploymentAcceptanceError(
+        "reviewed packaged GPU isolation probe is unavailable; supply "
+        "--gpu-isolation-probe explicitly"
+    )
+
+
 class RuntimeDeploymentHost(Protocol):
     def host_gpu_device_map(self) -> Mapping[str, str]: ...
 
@@ -74,6 +109,11 @@ class RuntimeDeploymentHost(Protocol):
 
     def readiness(self) -> Mapping[str, object] | None: ...
 
+    def probe_isolation_enforcement(
+        self,
+        expected_gpu_uuids: tuple[str, ...],
+    ) -> str: ...
+
 
 class SystemdRuntimeDeploymentHost:
     def __init__(
@@ -84,6 +124,7 @@ class SystemdRuntimeDeploymentHost:
         systemctl: str = "systemctl",
         nvidia_smi: str = "nvidia-smi",
         gpu_device_map: str | None = None,
+        gpu_isolation_probe: str | None = None,
         health_url: str = "http://127.0.0.1:9100/health",
     ) -> None:
         self.service = service
@@ -103,6 +144,21 @@ class SystemdRuntimeDeploymentHost:
             self.gpu_device_map = gpu_device_map
         else:
             self.gpu_device_map = resolve_packaged_gpu_device_map()
+
+        if gpu_isolation_probe is not None:
+            probe_path = Path(gpu_isolation_probe)
+            if not probe_path.is_absolute():
+                raise RuntimeDeploymentAcceptanceError(
+                    "--gpu-isolation-probe must be an absolute executable path"
+                )
+            if not probe_path.is_file() or not os.access(probe_path, os.X_OK):
+                raise RuntimeDeploymentAcceptanceError(
+                    "--gpu-isolation-probe must name an existing executable file"
+                )
+            self.gpu_isolation_probe = gpu_isolation_probe
+        else:
+            self.gpu_isolation_probe = resolve_packaged_gpu_isolation_probe()
+
         self.health_url = health_url.rstrip("/")
 
     def _run(self, args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -211,6 +267,56 @@ class SystemdRuntimeDeploymentHost:
         except ValueError:
             return None
         return body if isinstance(body, dict) else None
+
+    def probe_isolation_enforcement(
+        self,
+        expected_gpu_uuids: tuple[str, ...],
+    ) -> str:
+        host_map = dict(self.host_gpu_device_map())
+        if len(host_map) <= len(expected_gpu_uuids):
+            raise RuntimeDeploymentAcceptanceError(
+                "isolation-unavailable acceptance requires a host GPU superset"
+            )
+        if any(uuid not in host_map for uuid in expected_gpu_uuids):
+            raise RuntimeDeploymentAcceptanceError(
+                "selected GPU UUID is not visible on the host"
+            )
+
+        with tempfile.TemporaryDirectory(
+            prefix="astrumweaver-runtime-accept-"
+        ) as raw_directory:
+            directory = Path(raw_directory)
+            expected_path = directory / "gpu-uuids"
+            map_path = directory / "gpu-device-map"
+            expected_path.write_text(
+                "".join(f"{uuid}\n" for uuid in expected_gpu_uuids),
+                encoding="utf-8",
+            )
+            map_path.write_text(
+                "".join(
+                    f"{uuid}={host_map[uuid]}\n"
+                    for uuid in sorted(expected_gpu_uuids)
+                ),
+                encoding="utf-8",
+            )
+            completed = self._run(
+                [
+                    self.gpu_isolation_probe,
+                    str(expected_path),
+                    str(map_path),
+                    str(self.worker_config),
+                    ",".join(expected_gpu_uuids),
+                ],
+                check=False,
+            )
+
+        if completed.returncode == 0:
+            return "ENFORCEABLE"
+        if completed.returncode == 3:
+            return "UNAVAILABLE"
+        raise RuntimeDeploymentAcceptanceError(
+            "GPU isolation enforcement probe failed"
+        )
 
 
 @dataclass(frozen=True, slots=True)
