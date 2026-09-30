@@ -522,10 +522,10 @@ class SystemdSetupDriver:
                             ),
                         )
                     visibility_detail = (
-                        "host GPU superset accepted only because reviewed "
-                        "systemd device-cgroup isolation is verified; "
-                        "service ExecStartPre must still prove the exact set "
-                        "inside that cgroup"
+                        "host GPU superset accepted only because actual "
+                        "systemd device-access isolation is verified; "
+                        "service ExecStartPre must re-prove selected access "
+                        "and unselected denial inside that cgroup"
                     )
                 else:
                     visibility_detail = "host-visible GPU set is already exact"
