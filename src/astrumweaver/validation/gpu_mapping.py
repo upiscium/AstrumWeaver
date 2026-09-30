@@ -7,6 +7,7 @@ import os
 import re
 import stat
 import subprocess
+import tomllib
 import sys
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
@@ -14,6 +15,10 @@ from typing import Callable, Mapping, Sequence
 
 class GpuMappingError(RuntimeError):
     """A physical GPU mapping could not be proven safely."""
+
+
+class GpuIsolationUnavailableError(GpuMappingError):
+    """The requested GPU subset cannot be enforced in this service context."""
 
 
 _GPU_UUID_RE = re.compile(r"^GPU-[^\s,=]+$")
@@ -360,6 +365,90 @@ def _load_expected(path: Path) -> tuple[str, ...]:
     return tuple(sorted(values))
 
 
+def _load_worker_gpu_order(path: Path) -> tuple[str, ...]:
+    try:
+        with path.open("rb") as handle:
+            config = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise GpuMappingError("Worker GPU configuration is unavailable") from exc
+
+    worker = dict(config.get("worker") or {})
+    raw_values = worker.get("gpu_uuids", ())
+    values = tuple(_validate_uuid(str(value)) for value in raw_values)
+    if not values:
+        raise GpuMappingError("Worker GPU UUID order is empty")
+    if len(set(values)) != len(values):
+        raise GpuMappingError("Worker GPU UUID order is not unique")
+    return values
+
+
+def verify_isolated_gpu_access(
+    mapping: Sequence[tuple[str, str]],
+    expected: Sequence[str],
+    reviewed_mapping: Sequence[tuple[str, str]],
+    *,
+    worker_gpu_order: Sequence[str],
+    cuda_visible_devices: str | None,
+    device_root: Path = Path("/dev"),
+    open_device: Callable[[Path, int], int] = os.open,
+    close_device: Callable[[int], None] = os.close,
+) -> None:
+    """Prove that only the selected physical GPUs are openable.
+
+    This is intentionally stronger than checking systemd configuration text.
+    A host/container may report DevicePolicy=closed while the delegated
+    cgroup does not actually deny device opens. Such environments must fail
+    closed instead of claiming subset isolation.
+    """
+
+    selected = _select_mapping(mapping, expected)
+    reviewed = tuple(sorted(reviewed_mapping))
+    if selected != reviewed:
+        raise GpuMappingError("reviewed GPU device map changed")
+    if len(mapping) <= len(selected):
+        raise GpuMappingError("isolated-access requires a host GPU superset")
+
+    ordered = tuple(_validate_uuid(str(value)) for value in worker_gpu_order)
+    if len(set(ordered)) != len(ordered):
+        raise GpuMappingError("Worker GPU UUID order is not unique")
+    if tuple(sorted(ordered)) != tuple(sorted(expected)):
+        raise GpuMappingError("Worker GPU UUID order does not match selected set")
+
+    expected_cuda = ",".join(ordered)
+    if cuda_visible_devices != expected_cuda:
+        raise GpuMappingError("CUDA visible-device order does not match Worker GPU order")
+
+    selected_paths = {path for _, path in selected}
+    all_paths = {path for _, path in mapping}
+
+    def actual_path(logical_path: str) -> Path:
+        return device_root / Path(logical_path).name
+
+    flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0)
+    for logical_path in sorted(selected_paths):
+        try:
+            fd = open_device(actual_path(logical_path), flags)
+        except OSError as exc:
+            raise GpuMappingError("selected GPU device access is unavailable") from exc
+        close_device(fd)
+
+    denied_errnos = {getattr(os, "EACCES", 13), getattr(os, "EPERM", 1)}
+    for logical_path in sorted(all_paths - selected_paths):
+        try:
+            fd = open_device(actual_path(logical_path), flags)
+        except OSError as exc:
+            if exc.errno in denied_errnos:
+                continue
+            raise GpuMappingError(
+                "unselected GPU device access probe failed ambiguously"
+            ) from exc
+        else:
+            close_device(fd)
+            raise GpuIsolationUnavailableError(
+                "GPU subset isolation is not enforceable in this environment"
+            )
+
+
 def _select_mapping(
     mapping: Sequence[tuple[str, str]],
     expected: Sequence[str],
@@ -415,7 +504,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "mode",
-        choices=("discover", "discover-visible", "verify"),
+        choices=("discover", "discover-visible", "verify", "verify-isolated-access"),
     )
     parser.add_argument("paths", nargs="*")
     return parser
@@ -439,6 +528,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise GpuMappingError("discover arguments are invalid")
             if args.mode == "verify" and len(args.paths) != 2:
                 raise GpuMappingError("mapping arguments are invalid")
+            if args.mode == "verify-isolated-access" and len(args.paths) != 3:
+                raise GpuMappingError(
+                    "isolated-access arguments are invalid"
+                )
             expected = _load_expected(Path(args.paths[0]))
             selected = _select_mapping(mapping, expected)
             if args.mode == "verify":
@@ -446,10 +539,33 @@ def main(argv: Sequence[str] | None = None) -> int:
                     raise GpuMappingError("reviewed GPU device map changed")
                 print(f"[astrumweaver-gpu-device-map] ok count={len(selected)}")
                 return 0
+            if args.mode == "verify-isolated-access":
+                worker_order = _load_worker_gpu_order(Path(args.paths[2]))
+                verify_isolated_gpu_access(
+                    mapping,
+                    expected,
+                    _load_reviewed_map(Path(args.paths[1])),
+                    worker_gpu_order=worker_order,
+                    cuda_visible_devices=os.environ.get(
+                        "CUDA_VISIBLE_DEVICES"
+                    ),
+                    device_root=args.device_root,
+                )
+                print(
+                    "[astrumweaver-gpu-device-map] isolated-access ok "
+                    f"selected_count={len(selected)} host_count={len(mapping)}"
+                )
+                return 0
 
         for uuid, device_path in selected:
             print(f"{uuid}={device_path}")
         return 0
+    except GpuIsolationUnavailableError as exc:
+        print(
+            f"[astrumweaver-gpu-device-map] ISOLATION_UNAVAILABLE: {exc}",
+            file=sys.stderr,
+        )
+        return 3
     except GpuMappingError as exc:
         print(f"[astrumweaver-gpu-device-map] ERROR: {exc}", file=sys.stderr)
         return 1
