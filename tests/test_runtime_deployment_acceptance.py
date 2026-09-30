@@ -124,7 +124,11 @@ def test_systemctl_show_properties_parse_effective_values() -> None:
     assert properties == {
         "DevicePolicy": "closed",
         "DeviceAllow": "/dev/nvidia0 rw /dev/nvidiactl rw",
-        "Environment": "CUDA_VISIBLE_DEVICES=GPU-selected OTHER=value",
+        "Environment": (
+            "CUDA_VISIBLE_DEVICES=GPU-selected "
+            "ASTRUMWEAVER_GPU_ISOLATION_VISIBLE_MAP="
+            "/run/astrumweaver-worker-gpu-isolation/gpu-visible-map OTHER=value"
+        ),
         "EnvironmentFiles": (
             "/etc/astrumweaver/worker.env (ignore_errors=yes)"
         ),
@@ -154,7 +158,7 @@ def test_systemd_host_reads_effective_properties_with_systemctl_show(
         "  'DevicePolicy=closed' \\\n"
         "  'DeviceAllow=/dev/nvidia0 rw' \\\n"
         "  'DeviceAllow=/dev/nvidiactl rw' \\\n"
-        "  'Environment=CUDA_VISIBLE_DEVICES=GPU-selected' \\\n"
+        "  'Environment=CUDA_VISIBLE_DEVICES=GPU-selected ASTRUMWEAVER_GPU_ISOLATION_VISIBLE_MAP=/run/astrumweaver-worker-gpu-isolation/gpu-visible-map' \\\n"
         "  'EnvironmentFiles=/etc/astrumweaver/worker.env (ignore_errors=yes)' \\\n"
         "  'UnsetEnvironment=' \\\n"
         "  'ExecStartPre={ path=/usr/local/libexec/astrumweaver/gpu-preflight ; "
@@ -260,7 +264,11 @@ class FakeHost:
         self._unit_properties = unit_properties if unit_properties is not None else {
             "DevicePolicy": "closed",
             "DeviceAllow": "/dev/nvidia0 rw /dev/nvidiactl rw",
-            "Environment": "CUDA_VISIBLE_DEVICES=GPU-selected",
+            "Environment": (
+                "CUDA_VISIBLE_DEVICES=GPU-selected "
+                "ASTRUMWEAVER_GPU_ISOLATION_VISIBLE_MAP="
+                "/run/astrumweaver-worker-gpu-isolation/gpu-visible-map"
+            ),
             "EnvironmentFiles": "",
             "UnsetEnvironment": "",
             "ExecStartPre": (
@@ -409,7 +417,11 @@ def test_runtime_deployment_acceptance_rejects_extra_physical_device_allow() -> 
         unit_properties={
             "DevicePolicy": "closed",
             "DeviceAllow": "/dev/nvidia0 rw /dev/nvidia1 rw",
-            "Environment": "CUDA_VISIBLE_DEVICES=GPU-selected",
+            "Environment": (
+                "CUDA_VISIBLE_DEVICES=GPU-selected "
+                "ASTRUMWEAVER_GPU_ISOLATION_VISIBLE_MAP="
+                "/run/astrumweaver-worker-gpu-isolation/gpu-visible-map"
+            ),
             "EnvironmentFiles": "",
             "UnsetEnvironment": "",
             "ExecStartPre": "/usr/local/libexec/astrumweaver/gpu-preflight x",
@@ -440,7 +452,11 @@ def test_runtime_deployment_rejects_broad_or_incomplete_device_grants(
         unit_properties={
             "DevicePolicy": "closed",
             "DeviceAllow": device_allow,
-            "Environment": "CUDA_VISIBLE_DEVICES=GPU-selected",
+            "Environment": (
+                "CUDA_VISIBLE_DEVICES=GPU-selected "
+                "ASTRUMWEAVER_GPU_ISOLATION_VISIBLE_MAP="
+                "/run/astrumweaver-worker-gpu-isolation/gpu-visible-map"
+            ),
             "ExecStartPre": "path=/usr/local/libexec/astrumweaver/gpu-preflight ;",
         }
     )
@@ -457,7 +473,11 @@ def test_runtime_deployment_rejects_effective_policy_override() -> None:
         unit_properties={
             "DevicePolicy": "auto",
             "DeviceAllow": "/dev/nvidia0 rw /dev/nvidiactl rw",
-            "Environment": "CUDA_VISIBLE_DEVICES=GPU-selected",
+            "Environment": (
+                "CUDA_VISIBLE_DEVICES=GPU-selected "
+                "ASTRUMWEAVER_GPU_ISOLATION_VISIBLE_MAP="
+                "/run/astrumweaver-worker-gpu-isolation/gpu-visible-map"
+            ),
             "ExecStartPre": "/usr/local/libexec/astrumweaver/gpu-preflight x",
         }
     )
@@ -474,7 +494,11 @@ def test_runtime_deployment_requires_effective_gpu_preflight_executable() -> Non
         unit_properties={
             "DevicePolicy": "closed",
             "DeviceAllow": "/dev/nvidia0 rw /dev/nvidiactl rw",
-            "Environment": "CUDA_VISIBLE_DEVICES=GPU-selected",
+            "Environment": (
+                "CUDA_VISIBLE_DEVICES=GPU-selected "
+                "ASTRUMWEAVER_GPU_ISOLATION_VISIBLE_MAP="
+                "/run/astrumweaver-worker-gpu-isolation/gpu-visible-map"
+            ),
             "ExecStartPre": (
                 "{ path=/bin/false ; argv[]=/bin/false gpu-preflight ; }"
             ),
@@ -483,7 +507,7 @@ def test_runtime_deployment_requires_effective_gpu_preflight_executable() -> Non
 
     with pytest.raises(
         RuntimeDeploymentAcceptanceError,
-        match="lacks in-cgroup exact-set preflight",
+        match="lacks in-cgroup GPU access preflight",
     ):
         make_runner(host).run()
 
@@ -534,7 +558,11 @@ def test_runtime_deployment_accepts_reviewed_nixos_preflight_command() -> None:
         unit_properties={
             "DevicePolicy": "closed",
             "DeviceAllow": "/dev/nvidia0 rw /dev/nvidiactl rw",
-            "Environment": "CUDA_VISIBLE_DEVICES=GPU-selected",
+            "Environment": (
+                "CUDA_VISIBLE_DEVICES=GPU-selected "
+                "ASTRUMWEAVER_GPU_ISOLATION_VISIBLE_MAP="
+                "/run/astrumweaver-worker-gpu-isolation/gpu-visible-map"
+            ),
             "ExecStartPre": (
                 f"{{ path={preflight} ; argv[]={preflight} {expected_uuids} ; "
                 "ignore_errors=no ; }"
