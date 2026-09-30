@@ -552,6 +552,17 @@ def test_worker_setup_stages_gpu_device_cgroup_isolation(
     assert "DeviceAllow=/dev/nvidia3 rw" in dropin
     assert "Environment=CUDA_VISIBLE_DEVICES=GPU-example-a" in dropin
     assert (
+        "Environment=ASTRUMWEAVER_GPU_ISOLATION_VISIBLE_MAP="
+        "/run/astrumweaver-worker-gpu-isolation/gpu-visible-map"
+        in dropin
+    )
+    assert "ExecStartPre=" in dropin
+    assert "gpu-device-map probe-access" in dropin
+    assert (
+        "/run/astrumweaver-worker-gpu-isolation/gpu-visible-map"
+        in dropin
+    )
+    assert (
         "Requires=astrumweaver-worker-gpu-isolation-preflight.service"
         in dropin
     )
@@ -560,6 +571,9 @@ def test_worker_setup_stages_gpu_device_cgroup_isolation(
         staged
         / "etc/systemd/system/astrumweaver-worker-gpu-isolation-preflight.service"
     ).read_text(encoding="utf-8")
+    assert "RuntimeDirectory=astrumweaver-worker-gpu-isolation" in verifier_unit
+    assert "RuntimeDirectoryPreserve=yes" in verifier_unit
+    assert "snapshot-visible" in verifier_unit
     assert "gpu-device-map verify" in verifier_unit
     assert_no_trailing_whitespace(verifier_unit)
 
