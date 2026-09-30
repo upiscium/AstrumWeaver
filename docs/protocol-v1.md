@@ -279,7 +279,20 @@ total_vram_mb = 24576
 max_single_gpu_vram_mb = 24576
 ```
 
-The daemon repeats exact guest-visible GPU UUID preflight before registration unless `gpu_preflight = false` is explicitly configured. Normal deployment should leave it enabled.
+The daemon repeats GPU ownership preflight before registration unless
+`gpu_preflight = false` is explicitly configured. Normal deployment should
+leave it enabled.
+
+Deployment selects one explicit preflight mode:
+
+- `exact-visible` (default): raw NVIDIA-visible UUIDs must exactly equal the
+  Worker GPU contract.
+- `isolated-access`: only a reviewed deployment may select this mode. The
+  Worker verifies the reviewed UUID/device map, configured CUDA UUID order, and
+  actual physical device access; selected nodes must open and any unselected
+  visible physical node must be denied.
+
+`CUDA_VISIBLE_DEVICES` alone does not select or prove isolated mode.
 
 Worker authority is provided only through:
 

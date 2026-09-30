@@ -121,19 +121,20 @@ def test_isolated_access_rejects_reviewed_map_drift() -> None:
         )
 
 
-def test_isolated_access_requires_host_superset() -> None:
-    _, open_device = _opener()
+def test_isolated_access_allows_already_exact_visible_set() -> None:
+    opened, open_device = _opener()
 
-    with pytest.raises(GpuMappingError, match="host GPU superset"):
-        verify_isolated_gpu_access(
-            REVIEWED,
-            ("GPU-selected",),
-            REVIEWED,
-            worker_gpu_order=("GPU-selected",),
-            cuda_visible_devices="GPU-selected",
-            open_device=open_device,
-            close_device=lambda _fd: None,
-        )
+    verify_isolated_gpu_access(
+        REVIEWED,
+        ("GPU-selected",),
+        REVIEWED,
+        worker_gpu_order=("GPU-selected",),
+        cuda_visible_devices="GPU-selected",
+        open_device=open_device,
+        close_device=lambda _fd: None,
+    )
+
+    assert opened == ["nvidia0"]
 
 
 def test_isolated_access_rejects_ambiguous_unselected_open_failure() -> None:

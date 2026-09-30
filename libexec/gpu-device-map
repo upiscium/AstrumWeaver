@@ -12,8 +12,8 @@ if [[ -n "${ASTRUMWEAVER_GPU_MAPPING_PYTHON:-}" ]]; then
   MAPPING_PYTHON="$ASTRUMWEAVER_GPU_MAPPING_PYTHON"
 elif [[ -f "$SCRIPT_DIR/gpu_mapping.py" ]]; then
   MAPPING_PYTHON="$SCRIPT_DIR/gpu_mapping.py"
-elif [[ -f "$SCRIPT_DIR/../src/astrumweaver/validation/gpu_mapping.py" ]]; then
-  MAPPING_PYTHON="$SCRIPT_DIR/../src/astrumweaver/validation/gpu_mapping.py"
+elif [[ -f "$SCRIPT_DIR/../src/astrumweaver/gpu_mapping.py" ]]; then
+  MAPPING_PYTHON="$SCRIPT_DIR/../src/astrumweaver/gpu_mapping.py"
 else
   die "canonical GPU mapper is unavailable"
 fi

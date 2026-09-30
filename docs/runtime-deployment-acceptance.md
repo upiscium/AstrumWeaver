@@ -2,9 +2,13 @@
 
 Issue #31 requires more than recording a selected GPU UUID set.
 
-A valid subset deployment must prove that a Worker started on a host with
-additional GPUs can access exactly its configured physical GPUs, while the
-existing exact-set startup gate remains meaningful.
+A valid subset deployment must prove one of two outcomes:
+
+- the Worker can access exactly its configured physical GPUs and may start, or
+- the environment cannot enforce that subset and AstrumWeaver fails closed
+  before starting the Worker.
+
+A host-visible GPU superset is never accepted from configuration text alone.
 
 ## Isolation contract
 
@@ -21,7 +25,11 @@ systemd DevicePolicy=closed
         ↓
 Worker service cgroup
         ↓
-existing gpu-preflight / require_exact_gpu_set()
+explicit isolated-access gpu-preflight
+(shell ExecStartPre + Python daemon)
+        ↓
+selected physical nodes open
+unselected physical nodes denied
         ↓
 ManagedRuntime start/readiness
         ↓
@@ -29,11 +37,14 @@ Worker registration
 ```
 
 The host-level mapping verifier runs outside the restricted Worker cgroup.
-The existing exact-set preflight then runs inside the restricted Worker
-service cgroup.
+For an isolated subset, both the service `ExecStartPre` helper and the Python
+Worker daemon run the same isolated-access semantics inside the final Worker
+service context.
 
-This separation is intentional. AstrumWeaver does not weaken
-`require_exact_gpu_set()` into accepting a host superset.
+For a non-isolated Worker, the original exact-visible rule remains unchanged:
+raw NVIDIA-visible UUIDs must exactly equal the Worker contract. AstrumWeaver
+does not reinterpret a raw superset as safe unless the explicit isolated-access
+contract is present and actual device access proves the boundary.
 
 `CUDA_VISIBLE_DEVICES` is also set to the selected UUID sequence so CUDA
 enumeration preserves Worker GPU order, but it is not treated as the security
@@ -101,20 +112,24 @@ services.astrumweaver.worker = {
 ```
 
 The NixOS module creates a separate host-level mapping preflight service before
-the Worker service and applies `DevicePolicy=closed` to the Worker cgroup.
+the Worker service, applies `DevicePolicy=closed`, and explicitly selects
+`isolated-access` for the Worker startup preflight. The immutable Nix-store
+Worker config, reviewed map, and canonical mapper paths are passed into both
+the shell preflight and Python daemon.
 
-The `deviceMap` keys must exactly match `gpuUuids`.
+The `deviceMap` keys must exactly match `gpuUuids`. Runtime startup still
+fails if the effective cgroup does not deny access to an unselected physical
+GPU.
 
 ## Real-host acceptance
 
-Run the acceptance only on an idle Worker service. The command intentionally
-requires the service to be inactive first, starts it, waits for local
-ready/registered state, and stops it again.
+The acceptance schema is `runtime-deployment-v2` and supports two successful
+outcomes.
 
-The host must expose more GPUs than the selected Worker set.
-The checker reads the effective Worker properties from `systemctl show`, so
-later drop-ins that override the isolation settings are included in the
-acceptance decision.
+### Enforced subset
+
+Run this only after a subset deployment has been materialized and while the
+Worker is inactive:
 
 ```sh
 sudo astrumweaver-runtime-deployment-accept \
@@ -123,18 +138,59 @@ sudo astrumweaver-runtime-deployment-accept \
   --deployment-path systemd
 ```
 
+The checker validates the effective systemd policy, requires the explicit
+`isolated-access` environment contract, starts the Worker, waits for local
+ready+registered state, and stops it again.
+
+A successful evidence record contains:
+
+```text
+Outcome = ENFORCED_SUBSET
+Isolation enforcement = PASS
+Worker start attempted = YES
+Overall = PASS
+```
+
+### Expected fail closed
+
+On an environment where the subset cannot be enforced, use a temporary Worker
+config describing only the proposed subset and keep the authoritative Worker
+service inactive:
+
+```sh
+sudo astrumweaver-runtime-deployment-accept \
+  --gpu-uuid GPU-REDACTED-A \
+  --revision <reviewed-git-sha> \
+  --deployment-path systemd \
+  --worker-config /root/private-worker-subset.toml \
+  --expect-isolation-unavailable
+```
+
+This mode runs the reviewed transient isolation probe only. It does not start
+the Worker. It succeeds only when the probe classifies the environment as
+unable to deny an unselected physical GPU.
+
+A successful evidence record contains:
+
+```text
+Outcome = FAIL_CLOSED
+Isolation enforcement = UNAVAILABLE
+Fail closed = PASS
+Worker start attempted = NO
+Overall = PASS
+```
+
+This is the expected result for an LXC/container where the parent boundary does
+not delegate effective device-cgroup enforcement. The operator must narrow
+guest-visible GPU exposure at the VM/LXC/hypervisor layer before using a smaller
+Worker GPU contract.
+
 For a NixOS deployment use `--deployment-path nixos`.
 
-The acceptance command invokes the packaged `astrumweaver-gpu-device-map`
-helper, which uses `nvidia-smi` for current visibility and the
-`uuid,minor_number` query for the primary UUID-to-minor mapping. It falls back
-to `/proc` only when `nvidia-smi` explicitly reports that the field is
-unsupported. Before using a mapping, it verifies that each `/dev/nvidiaN`
-character device's major/minor matches the NVIDIA character-device registry
-and reported minor. If the helper is not on
-`/usr/local/libexec/astrumweaver/gpu-device-map` or beside the invoked
-packaged acceptance command, pass its absolute executable path with
-`--gpu-device-map`.
+The acceptance command resolves reviewed packaged
+`astrumweaver-gpu-device-map` and `astrumweaver-gpu-isolation-probe`
+helpers without trusting ambient PATH. Explicit helper overrides must be
+absolute executable paths.
 
 The default evidence path is:
 
@@ -149,9 +205,10 @@ The generated evidence contains only:
 - date
 - public AstrumWeaver revision
 - deployment path
+- outcome (`ENFORCED_SUBSET` or `FAIL_CLOSED`)
 - host-visible GPU count
 - selected GPU count
-- PASS/FAIL contract gates
+- public-safe PASS / UNAVAILABLE / NOT_APPLICABLE contract gates
 
 It intentionally cannot contain:
 
@@ -164,18 +221,13 @@ It intentionally cannot contain:
 - Control URL
 - credentials
 
-A PASS proves:
+An `overall=PASS` proves that the requested acceptance outcome was
+satisfied:
 
-- the host really had a GPU superset
-- the Worker configuration matched the selected set
-- exact-set preflight was enabled
-- UUID/device mapping was valid
-- `DevicePolicy=closed` was active
-- the only physical `DeviceAllow` entries were the selected GPUs
-- CUDA visible-device order matched Worker order
-- the in-service exact-set gate remained present
-- the isolated Worker reached local ready + registered
-- the service stopped cleanly after acceptance
+- `ENFORCED_SUBSET`: actual in-service device access was enforced and the
+  Worker reached ready+registered state.
+- `FAIL_CLOSED`: enforcement was unavailable, the Worker was never started,
+  and AstrumWeaver correctly required an external visibility boundary.
 
 ## Current v0.x boundary
 

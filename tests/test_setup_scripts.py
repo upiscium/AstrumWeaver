@@ -19,6 +19,7 @@ from astrumweaver.validation.gpu_mapping import (
 ROOT = Path(__file__).resolve().parents[1]
 SETUP = ROOT / "setup"
 PREFLIGHT = ROOT / "libexec" / "gpu-preflight"
+LEGACY_GPU_PREFLIGHT = ROOT / "tests/fixtures/gpu-preflight-v59"
 LEGACY_GPU_DEVICE_MAP = ROOT / "tests/fixtures/gpu-device-map-v48"
 
 
@@ -262,10 +263,39 @@ def test_worker_setup_upgrades_reviewed_v48_gpu_mapper_to_canonical_helper(
     assert os.access(helper, os.X_OK)
 
 
+def test_worker_setup_upgrades_reviewed_v59_gpu_preflight_to_current(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "worker.toml"
+    config.write_text(
+        '[worker]\ngpu_uuids = ["GPU-legacy"]\n',
+        encoding="utf-8",
+    )
+    staged = tmp_path / "root"
+    helper = staged / "usr/local/libexec/astrumweaver/gpu-preflight"
+    helper.parent.mkdir(parents=True)
+    helper.write_bytes(LEGACY_GPU_PREFLIGHT.read_bytes())
+
+    result = run(
+        "bash",
+        str(SETUP / "setup-gpu-worker.sh"),
+        "--config",
+        str(config),
+        "--executable",
+        "/usr/local/bin/astrumweaver-worker",
+        "--root",
+        str(staged),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert helper.read_bytes() == PREFLIGHT.read_bytes()
+    assert b"/nix/store/" not in helper.read_bytes()
+
+
 @pytest.mark.parametrize(
     ("helper_name", "reviewed_source"),
     (
-        ("gpu-preflight", PREFLIGHT),
+        ("gpu-preflight", LEGACY_GPU_PREFLIGHT),
         ("gpu-device-map", LEGACY_GPU_DEVICE_MAP),
     ),
 )
@@ -317,7 +347,9 @@ def test_worker_setup_rejects_operator_modified_nix_patched_gpu_helper(
     helper = staged / "usr/local/libexec/astrumweaver" / helper_name
     helper.parent.mkdir(parents=True)
     reviewed_source = (
-        PREFLIGHT if helper_name == "gpu-preflight" else LEGACY_GPU_DEVICE_MAP
+        LEGACY_GPU_PREFLIGHT
+        if helper_name == "gpu-preflight"
+        else LEGACY_GPU_DEVICE_MAP
     )
     helper.write_bytes(
         nix_patched_bash_script(reviewed_source) + b"# operator change\n"
@@ -552,6 +584,19 @@ def test_worker_setup_stages_gpu_device_cgroup_isolation(
     assert "DevicePolicy=closed" in dropin
     assert "DeviceAllow=/dev/nvidia3 rw" in dropin
     assert "Environment=CUDA_VISIBLE_DEVICES=GPU-example-a" in dropin
+    assert "Environment=ASTRUMWEAVER_GPU_PREFLIGHT_MODE=isolated-access" in dropin
+    assert (
+        "Environment=ASTRUMWEAVER_GPU_DEVICE_MAP="
+        "/etc/astrumweaver/gpu-device-map"
+    ) in dropin
+    assert (
+        "Environment=ASTRUMWEAVER_GPU_WORKER_CONFIG="
+        "/etc/astrumweaver/worker.toml"
+    ) in dropin
+    assert (
+        "Environment=ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND="
+        "/usr/local/libexec/astrumweaver/gpu-device-map"
+    ) in dropin
     assert (
         "Requires=astrumweaver-worker-gpu-isolation-preflight.service"
         in dropin

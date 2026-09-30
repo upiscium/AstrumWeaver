@@ -73,7 +73,9 @@ An NVIDIA GPU Worker MUST provide, before registration:
 - a functional `nvidia-smi`
 - stable GPU UUID discovery from the guest-visible NVIDIA stack
 - explicit configured expected GPU UUID(s)
-- exact set equality between expected and observed UUIDs for an exclusively pinned worker
+- either exact raw UUID-set equality or a reviewed isolated-access deployment
+  that proves selected physical nodes accessible and every unselected visible
+  physical node inaccessible
 - a driver/runtime combination compatible with the configured executor
 - sufficient device access for the service account/runtime
 
@@ -87,15 +89,13 @@ Those values may be recorded as diagnostics, but GPU UUID is the canonical NVIDI
 
 ### Fail-closed behavior
 
-If:
+If raw visible UUIDs differ from the Worker contract, the Worker MUST refuse
+ONLINE/readiness unless the deployment explicitly selected `isolated-access`
+and independently proves the physical device boundary.
 
-```text
-expected UUID set != observed UUID set
-```
-
-the worker MUST refuse ONLINE/readiness and MUST NOT claim jobs.
-
-An unexpected additional GPU is also a mismatch for an exclusive pinned worker.
+If an unselected physical GPU remains openable from the Worker service context,
+the deployment MUST fail closed. A systemd `DevicePolicy=closed` setting or
+`CUDA_VISIBLE_DEVICES` value is not, by itself, proof of enforcement.
 
 ## 6. Proxmox deployment notes
 
@@ -120,7 +120,11 @@ Before AstrumWeaver setup:
 - the container already exists
 - the operator has already configured the required device passthrough/mounts
 - host/container driver/userspace compatibility is already resolved
-- `nvidia-smi` inside the container reports exactly the intended device set
+- preferably, `nvidia-smi` inside the container reports exactly the intended
+  device set
+- if the container exposes a broader GPU inventory, the parent/container
+  boundary must actually deny unselected physical device access; if it does
+  not, AstrumWeaver requires the operator to narrow GPU exposure externally
 - the AstrumWeaver service account can access the required GPU device nodes
 
 AstrumWeaver does not change LXC privilege mode, device cgroup rules, mount entries, or the Proxmox host driver.
