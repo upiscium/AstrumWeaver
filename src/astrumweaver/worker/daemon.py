@@ -112,7 +112,9 @@ async def run_worker(
     spec = _build_spec(worker_section)
 
     if spec.gpu_uuids and bool(worker_section.get("gpu_preflight", True)):
-        isolation_map = os.environ.get(
+        isolation_map = str(
+            worker_section.get("gpu_isolation_visible_map", "")
+        ).strip() or os.environ.get(
             "ASTRUMWEAVER_GPU_ISOLATION_VISIBLE_MAP",
             "",
         ).strip()
