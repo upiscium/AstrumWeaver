@@ -509,9 +509,12 @@ The setup wrapper reads the selected GPU UUID sequence only from
 that canonical Worker configuration for systemd preflight/isolation.
 
 `--gpu-isolation auto` is the default. If the host exposes additional GPUs,
-the setup path attempts to isolate the selected physical GPU set through the
-Worker systemd cgroup. If it cannot prove the mapping/isolation, setup fails
-closed.
+the setup path first proves the UUID/device mapping and then launches a
+transient systemd cgroup probe. Selected physical GPU nodes must open and every
+unselected physical GPU node must be access-denied before persistent subset
+isolation is installed. If the environment cannot enforce that boundary,
+setup fails closed and instructs the operator to narrow guest-visible GPU
+exposure externally (VM/LXC/hypervisor configuration).
 
 For a RuntimeProvider-backed Worker, first establish the base Worker service,
 then use the reviewed RuntimeProvider setup path described in
