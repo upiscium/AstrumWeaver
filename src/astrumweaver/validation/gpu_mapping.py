@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import os
 import re
 import stat
 import subprocess
-import tomllib
 import sys
+import tomllib
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
@@ -374,6 +375,11 @@ def _load_worker_gpu_order(path: Path) -> tuple[str, ...]:
 
     worker = dict(config.get("worker") or {})
     raw_values = worker.get("gpu_uuids", ())
+    if (
+        isinstance(raw_values, (str, bytes))
+        or not isinstance(raw_values, list)
+    ):
+        raise GpuMappingError("Worker GPU UUID order is invalid")
     values = tuple(_validate_uuid(str(value)) for value in raw_values)
     if not values:
         raise GpuMappingError("Worker GPU UUID order is empty")
@@ -432,7 +438,7 @@ def verify_isolated_gpu_access(
             raise GpuMappingError("selected GPU device access is unavailable") from exc
         close_device(fd)
 
-    denied_errnos = {getattr(os, "EACCES", 13), getattr(os, "EPERM", 1)}
+    denied_errnos = {errno.EACCES, errno.EPERM}
     for logical_path in sorted(all_paths - selected_paths):
         try:
             fd = open_device(actual_path(logical_path), flags)
