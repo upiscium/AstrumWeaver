@@ -554,6 +554,7 @@ def validate_effective_worker_gpu_isolation(
             "ASTRUMWEAVER_GPU_DEVICE_MAP",
             "ASTRUMWEAVER_GPU_WORKER_CONFIG",
             "ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND",
+            "ASTRUMWEAVER_NVIDIA_SMI",
         }
     )
     if _environment_values(
@@ -572,6 +573,7 @@ def validate_effective_worker_gpu_isolation(
         "ASTRUMWEAVER_GPU_DEVICE_MAP",
         "ASTRUMWEAVER_GPU_WORKER_CONFIG",
         "ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND",
+        "ASTRUMWEAVER_NVIDIA_SMI",
     ):
         values = _environment_values(environment, name)
         if len(values) != 1 or not values[0].startswith("/"):
