@@ -10,6 +10,7 @@ import shlex
 import subprocess
 import sys
 import time
+import tempfile
 import tomllib
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -67,6 +68,65 @@ class WorkerGpuContract:
     gpu_device_map: str
 
 
+def resolve_packaged_gpu_isolation_probe(
+    *,
+    argv0: str | None = None,
+    installed_path: Path = Path(
+        "/usr/local/libexec/astrumweaver/gpu-isolation-probe"
+    ),
+) -> str:
+    """Resolve the reviewed isolation probe without consulting ambient PATH."""
+
+    candidates = [installed_path]
+    invocation = argv0 if argv0 is not None else sys.argv[0]
+    if os.sep in invocation:
+        candidates.append(
+            Path(invocation).absolute().parent
+            / "astrumweaver-gpu-isolation-probe"
+        )
+        candidates.append(
+            Path(invocation).resolve().parent
+            / "astrumweaver-gpu-isolation-probe"
+        )
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    raise RuntimeDeploymentAcceptanceError(
+        "reviewed packaged GPU isolation probe is unavailable; supply "
+        "--gpu-isolation-probe explicitly"
+    )
+
+
+def read_worker_gpu_contract(path: Path) -> WorkerGpuContract:
+    try:
+        with path.open("rb") as handle:
+            config = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise RuntimeDeploymentAcceptanceError(
+            "Worker configuration is unavailable"
+        ) from exc
+    worker = dict(config.get("worker") or {})
+    raw_uuids = worker.get("gpu_uuids", ())
+    if not isinstance(raw_uuids, list):
+        raise RuntimeDeploymentAcceptanceError(
+            "Worker GPU UUID contract is invalid"
+        )
+    uuids = tuple(str(item) for item in raw_uuids)
+    return WorkerGpuContract(
+        gpu_uuids=uuids,
+        preflight_enabled=bool(worker.get("gpu_preflight", True)),
+        preflight_mode=str(
+            worker.get("gpu_preflight_mode", "exact-visible")
+        ).strip(),
+        gpu_device_map=str(worker.get("gpu_device_map", "")).strip(),
+    )
+
+
 class RuntimeDeploymentHost(Protocol):
     def host_gpu_device_map(self) -> Mapping[str, str]: ...
 
@@ -82,6 +142,14 @@ class RuntimeDeploymentHost(Protocol):
 
     def readiness(self) -> Mapping[str, object] | None: ...
 
+    def probe_gpu_isolation(
+        self,
+        *,
+        candidate_worker_config: Path,
+        expected_gpu_uuids: tuple[str, ...],
+        host_map: Mapping[str, str],
+    ) -> bool: ...
+
 
 class SystemdRuntimeDeploymentHost:
     def __init__(
@@ -92,6 +160,7 @@ class SystemdRuntimeDeploymentHost:
         systemctl: str = "systemctl",
         nvidia_smi: str = "nvidia-smi",
         gpu_device_map: str | None = None,
+        gpu_isolation_probe: str | None = None,
         health_url: str = "http://127.0.0.1:9100/health",
     ) -> None:
         self.service = service
@@ -111,6 +180,21 @@ class SystemdRuntimeDeploymentHost:
             self.gpu_device_map = gpu_device_map
         else:
             self.gpu_device_map = resolve_packaged_gpu_device_map()
+
+        if gpu_isolation_probe is not None:
+            probe_path = Path(gpu_isolation_probe)
+            if not probe_path.is_absolute():
+                raise RuntimeDeploymentAcceptanceError(
+                    "--gpu-isolation-probe must be an absolute executable path"
+                )
+            if not probe_path.is_file() or not os.access(probe_path, os.X_OK):
+                raise RuntimeDeploymentAcceptanceError(
+                    "--gpu-isolation-probe must name an existing executable file"
+                )
+            self.gpu_isolation_probe = gpu_isolation_probe
+        else:
+            self.gpu_isolation_probe = resolve_packaged_gpu_isolation_probe()
+
         self.health_url = health_url.rstrip("/")
 
     def _run(self, args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -163,23 +247,7 @@ class SystemdRuntimeDeploymentHost:
         return result
 
     def worker_gpu_contract(self) -> WorkerGpuContract:
-        try:
-            with self.worker_config.open("rb") as handle:
-                config = tomllib.load(handle)
-        except (OSError, tomllib.TOMLDecodeError) as exc:
-            raise RuntimeDeploymentAcceptanceError(
-                "Worker configuration is unavailable"
-            ) from exc
-        worker = dict(config.get("worker") or {})
-        uuids = tuple(str(item) for item in worker.get("gpu_uuids", ()))
-        return WorkerGpuContract(
-            gpu_uuids=uuids,
-            preflight_enabled=bool(worker.get("gpu_preflight", True)),
-            preflight_mode=str(
-                worker.get("gpu_preflight_mode", "exact-visible")
-            ).strip(),
-            gpu_device_map=str(worker.get("gpu_device_map", "")).strip(),
-        )
+        return read_worker_gpu_contract(self.worker_config)
 
     def worker_unit_properties(self) -> Mapping[str, str]:
         completed = self._run(
@@ -227,6 +295,69 @@ class SystemdRuntimeDeploymentHost:
         return body if isinstance(body, dict) else None
 
 
+    def probe_gpu_isolation(
+        self,
+        *,
+        candidate_worker_config: Path,
+        expected_gpu_uuids: tuple[str, ...],
+        host_map: Mapping[str, str],
+    ) -> bool:
+        if not candidate_worker_config.is_file():
+            raise RuntimeDeploymentAcceptanceError(
+                "candidate Worker configuration is unavailable"
+            )
+        if any(uuid not in host_map for uuid in expected_gpu_uuids):
+            raise RuntimeDeploymentAcceptanceError(
+                "candidate GPU UUID is not visible on the host"
+            )
+
+        with tempfile.TemporaryDirectory(
+            prefix="astrumweaver-runtime-accept-"
+        ) as raw_tmp:
+            tmp = Path(raw_tmp)
+            expected_file = tmp / "gpu-uuids"
+            map_file = tmp / "gpu-device-map"
+            expected_file.write_text(
+                "".join(f"{uuid}\n" for uuid in expected_gpu_uuids),
+                encoding="utf-8",
+            )
+            map_file.write_text(
+                "".join(
+                    f"{uuid}={host_map[uuid]}\n"
+                    for uuid in sorted(expected_gpu_uuids)
+                ),
+                encoding="utf-8",
+            )
+            os.chmod(expected_file, 0o600)
+            os.chmod(map_file, 0o600)
+
+            completed = subprocess.run(
+                [
+                    self.gpu_isolation_probe,
+                    str(expected_file),
+                    str(map_file),
+                    str(candidate_worker_config),
+                    ",".join(expected_gpu_uuids),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND": self.gpu_device_map,
+                    "ASTRUMWEAVER_NVIDIA_SMI": self.nvidia_smi,
+                },
+            )
+
+        if completed.returncode == 0:
+            return True
+        if completed.returncode == 3:
+            return False
+        raise RuntimeDeploymentAcceptanceError(
+            "GPU isolation capability probe failed"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeDeploymentAcceptanceEvidence:
     evidence_version: str
@@ -249,6 +380,26 @@ class RuntimeDeploymentAcceptanceEvidence:
     worker_started_ready: str
     worker_registered: str
     service_stopped_after_acceptance: str
+    overall: str
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeDeploymentFailClosedEvidence:
+    evidence_version: str
+    date_utc: str
+    astrumweaver_revision: str
+    deployment_path: str
+    host_gpu_count: int
+    selected_gpu_count: int
+    private_values_omitted: bool
+    acceptance_outcome: str
+    host_gpu_superset: str
+    worker_contract_exact: str
+    worker_gpu_preflight_enabled: str
+    preflight_mode: str
+    isolation_enforcement: str
+    worker_started: str
+    fail_closed: str
     overall: str
 
 
@@ -672,40 +823,150 @@ class RuntimeDeploymentAcceptanceRunner:
         )
 
 
+
+class RuntimeDeploymentFailClosedRunner:
+    def __init__(
+        self,
+        *,
+        host: RuntimeDeploymentHost,
+        candidate_worker_config: Path,
+        revision: str,
+        deployment_path: str,
+    ) -> None:
+        if not REVISION_PATTERN.fullmatch(revision.strip()):
+            raise ValueError("revision must be a public git commit SHA")
+        if deployment_path not in {"nixos", "systemd"}:
+            raise ValueError("deployment_path must be nixos or systemd")
+        self.host = host
+        self.candidate_worker_config = candidate_worker_config
+        self.revision = revision.strip()
+        self.deployment_path = deployment_path
+
+    def run(self) -> RuntimeDeploymentFailClosedEvidence:
+        contract = read_worker_gpu_contract(self.candidate_worker_config)
+        expected = contract.gpu_uuids
+        if not expected or len(set(expected)) != len(expected):
+            raise RuntimeDeploymentAcceptanceError(
+                "candidate Worker GPU UUID contract is invalid"
+            )
+        if not contract.preflight_enabled:
+            raise RuntimeDeploymentAcceptanceError(
+                "candidate Worker GPU ownership preflight is disabled"
+            )
+        if contract.preflight_mode != "isolated-access":
+            raise RuntimeDeploymentAcceptanceError(
+                "candidate Worker GPU preflight mode is not isolated-access"
+            )
+        if not contract.gpu_device_map:
+            raise RuntimeDeploymentAcceptanceError(
+                "candidate Worker isolated-access device map is unavailable"
+            )
+
+        host_map = dict(self.host.host_gpu_device_map())
+        if len(host_map) <= len(expected):
+            raise RuntimeDeploymentAcceptanceError(
+                "fail-closed acceptance requires a host-visible GPU superset"
+            )
+        if any(uuid not in host_map for uuid in expected):
+            raise RuntimeDeploymentAcceptanceError(
+                "candidate GPU UUID is not visible on the host"
+            )
+        if self.host.service_active():
+            raise RuntimeDeploymentAcceptanceError(
+                "fail-closed acceptance requires the Worker service inactive"
+            )
+
+        enforceable = self.host.probe_gpu_isolation(
+            candidate_worker_config=self.candidate_worker_config,
+            expected_gpu_uuids=expected,
+            host_map=host_map,
+        )
+        if enforceable:
+            raise RuntimeDeploymentAcceptanceError(
+                "GPU subset isolation is enforceable; unavailable expectation failed"
+            )
+        if self.host.service_active():
+            raise RuntimeDeploymentAcceptanceError(
+                "Worker service became active during fail-closed acceptance"
+            )
+
+        return RuntimeDeploymentFailClosedEvidence(
+            evidence_version="runtime-deployment-fail-closed-v1",
+            date_utc=datetime.now(UTC).date().isoformat(),
+            astrumweaver_revision=self.revision,
+            deployment_path=self.deployment_path,
+            host_gpu_count=len(host_map),
+            selected_gpu_count=len(expected),
+            private_values_omitted=True,
+            acceptance_outcome="FAIL_CLOSED",
+            host_gpu_superset="PASS",
+            worker_contract_exact="PASS",
+            worker_gpu_preflight_enabled="PASS",
+            preflight_mode="isolated-access",
+            isolation_enforcement="UNAVAILABLE",
+            worker_started="NO",
+            fail_closed="PASS",
+            overall="PASS",
+        )
+
 def render_runtime_deployment_markdown(
-    evidence: RuntimeDeploymentAcceptanceEvidence,
+    evidence: RuntimeDeploymentAcceptanceEvidence
+    | RuntimeDeploymentFailClosedEvidence,
 ) -> str:
-    fields = [
-        ("Evidence version", evidence.evidence_version),
-        ("Date (UTC)", evidence.date_utc),
-        ("AstrumWeaver revision", evidence.astrumweaver_revision),
-        ("Deployment path", evidence.deployment_path),
-        ("Host-visible GPU count", str(evidence.host_gpu_count)),
-        ("Selected GPU count", str(evidence.selected_gpu_count)),
-        ("Private values omitted", str(evidence.private_values_omitted).lower()),
-        ("Host-visible GPU superset", evidence.host_gpu_superset),
-        ("Worker GPU contract exact", evidence.worker_contract_exact),
-        (
-            "Worker GPU preflight enabled",
-            evidence.worker_gpu_preflight_enabled,
-        ),
-        ("GPU preflight mode", evidence.preflight_mode),
-        ("UUID/device mapping verified", evidence.uuid_device_mapping_verified),
-        ("DevicePolicy closed", evidence.device_policy_closed),
-        ("Selected DeviceAllow exact", evidence.selected_device_allow_exact),
-        ("CUDA visible-device order exact", evidence.cuda_visible_devices_exact),
-        (
-            "In-service GPU ownership gate present",
-            evidence.in_service_gpu_ownership_gate_present,
-        ),
-        ("Isolation enforcement", evidence.isolation_enforcement),
-        ("Worker started ready", evidence.worker_started_ready),
-        ("Worker registered", evidence.worker_registered),
-        (
-            "Service stopped after acceptance",
-            evidence.service_stopped_after_acceptance,
-        ),
-        ("Overall", evidence.overall),
+    if isinstance(evidence, RuntimeDeploymentFailClosedEvidence):
+        fields = [
+            ("Evidence version", evidence.evidence_version),
+            ("Date (UTC)", evidence.date_utc),
+            ("AstrumWeaver revision", evidence.astrumweaver_revision),
+            ("Deployment path", evidence.deployment_path),
+            ("Host-visible GPU count", str(evidence.host_gpu_count)),
+            ("Selected GPU count", str(evidence.selected_gpu_count)),
+            ("Private values omitted", str(evidence.private_values_omitted).lower()),
+            ("Acceptance outcome", evidence.acceptance_outcome),
+            ("Host-visible GPU superset", evidence.host_gpu_superset),
+            ("Worker GPU contract exact", evidence.worker_contract_exact),
+            (
+                "Worker GPU preflight enabled",
+                evidence.worker_gpu_preflight_enabled,
+            ),
+            ("GPU preflight mode", evidence.preflight_mode),
+            ("Isolation enforcement", evidence.isolation_enforcement),
+            ("Worker started", evidence.worker_started),
+            ("Fail closed", evidence.fail_closed),
+            ("Overall", evidence.overall),
+        ]
+    else:
+        fields = [
+            ("Evidence version", evidence.evidence_version),
+            ("Date (UTC)", evidence.date_utc),
+            ("AstrumWeaver revision", evidence.astrumweaver_revision),
+            ("Deployment path", evidence.deployment_path),
+            ("Host-visible GPU count", str(evidence.host_gpu_count)),
+            ("Selected GPU count", str(evidence.selected_gpu_count)),
+            ("Private values omitted", str(evidence.private_values_omitted).lower()),
+            ("Host-visible GPU superset", evidence.host_gpu_superset),
+            ("Worker GPU contract exact", evidence.worker_contract_exact),
+            (
+                "Worker GPU preflight enabled",
+                evidence.worker_gpu_preflight_enabled,
+            ),
+            ("GPU preflight mode", evidence.preflight_mode),
+            ("UUID/device mapping verified", evidence.uuid_device_mapping_verified),
+            ("DevicePolicy closed", evidence.device_policy_closed),
+            ("Selected DeviceAllow exact", evidence.selected_device_allow_exact),
+            ("CUDA visible-device order exact", evidence.cuda_visible_devices_exact),
+            (
+                "In-service GPU ownership gate present",
+                evidence.in_service_gpu_ownership_gate_present,
+            ),
+            ("Isolation enforcement", evidence.isolation_enforcement),
+            ("Worker started ready", evidence.worker_started_ready),
+            ("Worker registered", evidence.worker_registered),
+            (
+                "Service stopped after acceptance",
+                evidence.service_stopped_after_acceptance,
+            ),
+            ("Overall", evidence.overall),
     ]
     rows = "\n".join(f"| {key} | {value} |" for key, value in fields)
     return (
@@ -721,7 +982,8 @@ def render_runtime_deployment_markdown(
 
 def write_runtime_deployment_evidence(
     path: Path,
-    evidence: RuntimeDeploymentAcceptanceEvidence,
+    evidence: RuntimeDeploymentAcceptanceEvidence
+    | RuntimeDeploymentFailClosedEvidence,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -762,6 +1024,19 @@ def main() -> None:
         default=None,
     )
     parser.add_argument(
+        "--gpu-isolation-probe",
+        default=None,
+    )
+    parser.add_argument(
+        "--candidate-worker-config",
+        type=Path,
+        default=None,
+    )
+    parser.add_argument(
+        "--expect-isolation-unavailable",
+        action="store_true",
+    )
+    parser.add_argument(
         "--health-url",
         default="http://127.0.0.1:9100/health",
     )
@@ -780,7 +1055,15 @@ def main() -> None:
     args = parser.parse_args()
 
     gpu_uuids = tuple(str(value).strip() for value in args.gpu_uuids)
-    if not gpu_uuids or any(not value for value in gpu_uuids):
+    if args.expect_isolation_unavailable:
+        if args.candidate_worker_config is None:
+            parser.exit(
+                2,
+                "astrumweaver-runtime-deployment-accept: "
+                "--candidate-worker-config is required with "
+                "--expect-isolation-unavailable\n",
+            )
+    elif not gpu_uuids or any(not value for value in gpu_uuids):
         parser.exit(
             2,
             "astrumweaver-runtime-deployment-accept: "
@@ -794,15 +1077,25 @@ def main() -> None:
             systemctl=args.systemctl,
             nvidia_smi=args.nvidia_smi,
             gpu_device_map=args.gpu_device_map,
+            gpu_isolation_probe=args.gpu_isolation_probe,
             health_url=args.health_url,
         )
-        runner = RuntimeDeploymentAcceptanceRunner(
-            host=host,
-            expected_gpu_uuids=gpu_uuids,
-            revision=args.revision,
-            deployment_path=args.deployment_path,
-            start_timeout_seconds=args.start_timeout_seconds,
-        )
+        if args.expect_isolation_unavailable:
+            assert args.candidate_worker_config is not None
+            runner = RuntimeDeploymentFailClosedRunner(
+                host=host,
+                candidate_worker_config=args.candidate_worker_config,
+                revision=args.revision,
+                deployment_path=args.deployment_path,
+            )
+        else:
+            runner = RuntimeDeploymentAcceptanceRunner(
+                host=host,
+                expected_gpu_uuids=gpu_uuids,
+                revision=args.revision,
+                deployment_path=args.deployment_path,
+                start_timeout_seconds=args.start_timeout_seconds,
+            )
         evidence = runner.run()
         write_runtime_deployment_evidence(args.evidence, evidence)
     except (
