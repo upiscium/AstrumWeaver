@@ -315,6 +315,11 @@ EOF
           printf "%s" "$runtimeDeviceAllowText" | grep -q '/dev/nvidia7 rw'
           printf "%s" "$runtimeDeviceAllowText" | grep -q '/dev/nvidiactl rw'
           printf "%s" "$runtimeEnvironmentText" | grep -q 'CUDA_VISIBLE_DEVICES=GPU-example-smoke'
+          printf "%s" "$runtimeEnvironmentText" | grep -q 'ASTRUMWEAVER_GPU_PREFLIGHT_MODE=isolated-access'
+          printf "%s" "$runtimeEnvironmentText" | grep -q 'ASTRUMWEAVER_GPU_DEVICE_MAP='
+          printf "%s" "$runtimeEnvironmentText" | grep -q 'ASTRUMWEAVER_GPU_WORKER_CONFIG='
+          printf "%s" "$runtimeEnvironmentText" | grep -q 'ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND='
+          printf "%s" "$runtimeEnvironmentText" | grep -q 'ASTRUMWEAVER_NVIDIA_SMI='
           printf "%s" "$runtimeWorkerPreflight" | grep -Eq '^\+/nix/store/[a-z0-9]{32}-astrumweaver-gpu-preflight/bin/astrumweaver-gpu-preflight /nix/store/[a-z0-9]{32}-astrumweaver-gpu-uuids$'
           printf "%s" "$runtimeIsolationPreflight" | grep -q 'gpu-device-map verify'
           printf "%s\n%s\n%s\n%s\n%s\n" \
