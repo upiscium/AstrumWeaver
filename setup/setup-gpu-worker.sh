@@ -141,8 +141,9 @@ expected_tmp="$(mktemp)"
 device_map_tmp="$(mktemp)"
 isolation_unit_tmp="$(mktemp)"
 isolation_dropin_tmp="$(mktemp)"
+device_map_exec_tmp="$(mktemp)"
 cleanup() {
-  rm -f "$declared_tmp" "$expected_tmp" "$device_map_tmp" "$isolation_unit_tmp" "$isolation_dropin_tmp"
+  rm -f "$declared_tmp" "$expected_tmp" "$device_map_tmp" "$isolation_unit_tmp" "$isolation_dropin_tmp" "$device_map_exec_tmp"
 }
 trap cleanup EXIT
 
@@ -152,13 +153,19 @@ PREFLIGHT_SOURCE="$REPO_ROOT/libexec/gpu-preflight"
 DEVICE_MAP_HELPER_SOURCE="$REPO_ROOT/libexec/gpu-device-map"
 GPU_ISOLATION_PROBE_SOURCE="$REPO_ROOT/libexec/gpu-isolation-probe"
 [[ -f "$PREFLIGHT_SOURCE" ]] || die "GPU preflight helper is unavailable"
-[[ -x "$DEVICE_MAP_HELPER_SOURCE" ]] || die "canonical GPU mapper helper is unavailable"
+[[ -f "$DEVICE_MAP_HELPER_SOURCE" ]] || die "canonical GPU mapper helper is unavailable"
 [[ -f "$GPU_ISOLATION_PROBE_SOURCE" ]] || die "GPU isolation capability probe is unavailable"
 GPU_MAPPING_PYTHON_SOURCE="$REPO_ROOT/libexec/gpu_mapping.py"
 if [[ ! -f "$GPU_MAPPING_PYTHON_SOURCE" ]]; then
   GPU_MAPPING_PYTHON_SOURCE="$REPO_ROOT/src/astrumweaver/validation/gpu_mapping.py"
 fi
 [[ -f "$GPU_MAPPING_PYTHON_SOURCE" ]] || die "canonical GPU mapper is unavailable"
+
+cat >"$device_map_exec_tmp" <<EOF
+#!/usr/bin/env bash
+exec bash "$DEVICE_MAP_HELPER_SOURCE" "\$@"
+EOF
+chmod 0755 "$device_map_exec_tmp"
 
 normalize_reviewed_legacy_bash_script() {
   local source="$1" normalized="$2" first_line
@@ -289,9 +296,9 @@ if [[ "$ROOT" == "/" ]]; then
 
   if [[ "$isolation_enabled" == 1 ]]; then
     if [[ ! -s "$device_map_tmp" ]]; then
-      "$DEVICE_MAP_HELPER_SOURCE" discover "$expected_tmp" >"$device_map_tmp"
+      "$device_map_exec_tmp" discover "$expected_tmp" >"$device_map_tmp"
     fi
-    "$DEVICE_MAP_HELPER_SOURCE" verify "$expected_tmp" "$device_map_tmp"
+    "$device_map_exec_tmp" verify "$expected_tmp" "$device_map_tmp"
 
     if systemctl is-active --quiet astrumweaver-worker.service; then
       die "Worker service is active; stop it before applying GPU isolation"
@@ -302,7 +309,7 @@ if [[ "$ROOT" == "/" ]]; then
 
     visible="$(IFS=,; printf '%s' "${GPU_UUIDS[*]}")"
     set +e
-    ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND="$DEVICE_MAP_HELPER_SOURCE" \
+    ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND="$device_map_exec_tmp" \
     ASTRUMWEAVER_NVIDIA_SMI="$(command -v nvidia-smi)" \
       bash "$GPU_ISOLATION_PROBE_SOURCE" \
       "$expected_tmp" \
