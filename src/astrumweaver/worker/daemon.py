@@ -27,6 +27,7 @@ from .runtime import (
     load_executor,
     require_exact_gpu_set,
     require_executor_capabilities,
+    require_isolated_gpu_access,
 )
 
 
@@ -111,10 +112,42 @@ async def run_worker(
     spec = _build_spec(worker_section)
 
     if spec.gpu_uuids and bool(worker_section.get("gpu_preflight", True)):
-        require_exact_gpu_set(
-            spec.gpu_uuids,
-            command=str(worker_section.get("nvidia_smi_command", "nvidia-smi")),
-        )
+        nvidia_smi_command = os.environ.get(
+            "ASTRUMWEAVER_NVIDIA_SMI",
+            str(worker_section.get("nvidia_smi_command", "nvidia-smi")),
+        ).strip()
+        preflight_mode = os.environ.get(
+            "ASTRUMWEAVER_GPU_PREFLIGHT_MODE",
+            "exact-visible",
+        ).strip()
+        if preflight_mode == "exact-visible":
+            require_exact_gpu_set(
+                spec.gpu_uuids,
+                command=nvidia_smi_command,
+            )
+        elif preflight_mode == "isolated-access":
+            reviewed_map_path = os.environ.get(
+                "ASTRUMWEAVER_GPU_DEVICE_MAP",
+                "",
+            ).strip()
+            if not reviewed_map_path:
+                raise RuntimeError(
+                    "isolated-access GPU preflight requires "
+                    "ASTRUMWEAVER_GPU_DEVICE_MAP"
+                )
+            require_isolated_gpu_access(
+                spec.gpu_uuids,
+                reviewed_map_path=reviewed_map_path,
+                command=nvidia_smi_command,
+                cuda_visible_devices=os.environ.get(
+                    "CUDA_VISIBLE_DEVICES"
+                ),
+            )
+        else:
+            raise RuntimeError(
+                "ASTRUMWEAVER_GPU_PREFLIGHT_MODE must be "
+                "exact-visible or isolated-access"
+            )
 
     client = ControlClient(
         str(worker_section["control_url"]),
