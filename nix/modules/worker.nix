@@ -61,8 +61,14 @@ let
       accelerators = cfg.accelerators;
       max_concurrency = cfg.maxConcurrency;
       gpu_preflight = cfg.gpuUuids != [ ];
+      gpu_preflight_mode =
+        if cfg.gpuIsolation.enable
+        then "isolated-access"
+        else "exact-visible";
       health_host = cfg.healthHost;
       health_port = cfg.healthPort;
+    } // lib.optionalAttrs cfg.gpuIsolation.enable {
+      gpu_device_map = gpuIsolationMap;
     };
     executor = {
       factory = cfg.executorFactory;
@@ -642,7 +648,10 @@ in
         ];
       }
       // lib.optionalAttrs (cfg.gpuUuids != [ ]) {
-        ExecStartPre = "+${preflight}/bin/astrumweaver-gpu-preflight ${expectedGpuUuids}";
+        ExecStartPre =
+          if cfg.gpuIsolation.enable
+          then "+${gpuDeviceMapVerifier}/bin/astrumweaver-gpu-device-map verify-isolated-access ${expectedGpuUuids} ${gpuIsolationMap} ${generatedConfig}"
+          else "+${preflight}/bin/astrumweaver-gpu-preflight ${expectedGpuUuids}";
       }
       // lib.optionalAttrs (cfg.environmentFile != null) {
         EnvironmentFile = cfg.environmentFile;
