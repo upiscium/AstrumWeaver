@@ -468,7 +468,7 @@ def _select_mapping(
     return tuple(sorted(selected.items()))
 
 
-def _load_reviewed_map(path: Path) -> tuple[tuple[str, str], ...]:
+def load_reviewed_gpu_map(path: Path) -> tuple[tuple[str, str], ...]:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeError) as exc:
@@ -488,6 +488,12 @@ def _load_reviewed_map(path: Path) -> tuple[tuple[str, str], ...]:
     if not mapping:
         raise GpuMappingError("reviewed GPU device map is empty")
     return tuple(sorted(mapping.items()))
+
+
+def _load_reviewed_map(path: Path) -> tuple[tuple[str, str], ...]:
+    """Backward-compatible private alias for existing callers/tests."""
+
+    return load_reviewed_gpu_map(path)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -541,7 +547,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             expected = _load_expected(Path(args.paths[0]))
             selected = _select_mapping(mapping, expected)
             if args.mode == "verify":
-                if selected != _load_reviewed_map(Path(args.paths[1])):
+                if selected != load_reviewed_gpu_map(Path(args.paths[1])):
                     raise GpuMappingError("reviewed GPU device map changed")
                 print(f"[astrumweaver-gpu-device-map] ok count={len(selected)}")
                 return 0
@@ -550,7 +556,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 verify_isolated_gpu_access(
                     mapping,
                     expected,
-                    _load_reviewed_map(Path(args.paths[1])),
+                    load_reviewed_gpu_map(Path(args.paths[1])),
                     worker_gpu_order=worker_order,
                     cuda_visible_devices=os.environ.get(
                         "CUDA_VISIBLE_DEVICES"
