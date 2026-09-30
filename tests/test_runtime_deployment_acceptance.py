@@ -25,7 +25,8 @@ ISOLATED_ENV = (
     "ASTRUMWEAVER_GPU_DEVICE_MAP=/etc/astrumweaver/gpu-device-map "
     "ASTRUMWEAVER_GPU_WORKER_CONFIG=/etc/astrumweaver/worker.toml "
     "ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND="
-    "/usr/local/libexec/astrumweaver/gpu-device-map"
+    "/usr/local/libexec/astrumweaver/gpu-device-map "
+    "ASTRUMWEAVER_NVIDIA_SMI=/usr/bin/nvidia-smi"
 )
 
 
@@ -205,7 +206,7 @@ def test_systemd_host_reads_effective_properties_with_systemctl_show(
         "  'Environment=ASTRUMWEAVER_GPU_PREFLIGHT_MODE=isolated-access' \\\n"
         "  'Environment=ASTRUMWEAVER_GPU_DEVICE_MAP=/etc/astrumweaver/gpu-device-map' \\\n"
         "  'Environment=ASTRUMWEAVER_GPU_WORKER_CONFIG=/etc/astrumweaver/worker.toml' \\\n"
-        "  'Environment=ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND=/usr/local/libexec/astrumweaver/gpu-device-map' \\\n"
+        "  'Environment=ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND=/usr/local/libexec/astrumweaver/gpu-device-map' \\\n"        "  'Environment=ASTRUMWEAVER_NVIDIA_SMI=/usr/bin/nvidia-smi' \\\n"
         "  'EnvironmentFiles=/etc/astrumweaver/worker.env (ignore_errors=yes)' \\\n"
         "  'UnsetEnvironment=' \\\n"
         "  'ExecStartPre={ path=/usr/local/libexec/astrumweaver/gpu-preflight ; "
