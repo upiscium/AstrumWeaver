@@ -140,8 +140,9 @@ default) derives the selected UUID→`/dev/nvidiaN` mapping and runs a transient
 systemd access probe before installing any subset-isolation state. Every
 selected physical device must open and every unselected physical device must
 be denied. Only then is a systemd drop-in with `DevicePolicy=closed` plus
-exact physical `DeviceAllow` entries installed. The original
-exact-set preflight then runs inside that restricted cgroup.
+exact physical `DeviceAllow` entries installed. An access-aware preflight
+then re-proves selected-device access and unselected-device denial inside that
+restricted cgroup; the Worker daemon repeats the same proof before registration.
 
 For staged `--root` installs, isolation requires reviewed
 `--gpu-device UUID=/dev/nvidiaN` mappings because live GPU discovery is not
