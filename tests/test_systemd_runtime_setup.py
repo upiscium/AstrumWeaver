@@ -238,34 +238,57 @@ def test_systemd_gpu_preflight_accepts_exact_set_and_rejects_unisolated_superset
 
 
 @pytest.mark.parametrize(
-    ("effective_policy", "effective_exec_start_pre", "should_verify"),
+    (
+        "effective_policy",
+        "effective_exec_start_pre",
+        "enforcement_rc",
+        "should_verify",
+    ),
     (
         (
             "closed",
-            "{ path=/usr/local/libexec/astrumweaver/gpu-preflight ; "
-            "argv[]=/usr/local/libexec/astrumweaver/gpu-preflight "
-            "/etc/astrumweaver/gpu-uuids ; ignore_errors=no ; }",
+            "{ path=/usr/local/libexec/astrumweaver/gpu-device-map ; "
+            "argv[]=/usr/local/libexec/astrumweaver/gpu-device-map "
+            "probe-access /etc/astrumweaver/gpu-uuids "
+            "/run/astrumweaver-worker-gpu-isolation/gpu-visible-map ; "
+            "ignore_errors=no ; }",
+            0,
             True,
         ),
         (
             "auto",
-            "{ path=/usr/local/libexec/astrumweaver/gpu-preflight ; "
-            "argv[]=/usr/local/libexec/astrumweaver/gpu-preflight "
-            "/etc/astrumweaver/gpu-uuids ; ignore_errors=no ; }",
+            "{ path=/usr/local/libexec/astrumweaver/gpu-device-map ; "
+            "argv[]=/usr/local/libexec/astrumweaver/gpu-device-map "
+            "probe-access /etc/astrumweaver/gpu-uuids "
+            "/run/astrumweaver-worker-gpu-isolation/gpu-visible-map ; "
+            "ignore_errors=no ; }",
+            0,
             False,
         ),
         (
             "closed",
             "{ path=/bin/false ; argv[]=/bin/false gpu-preflight ; "
             "ignore_errors=no ; }",
+            0,
+            False,
+        ),
+        (
+            "closed",
+            "{ path=/usr/local/libexec/astrumweaver/gpu-device-map ; "
+            "argv[]=/usr/local/libexec/astrumweaver/gpu-device-map "
+            "probe-access /etc/astrumweaver/gpu-uuids "
+            "/run/astrumweaver-worker-gpu-isolation/gpu-visible-map ; "
+            "ignore_errors=no ; }",
+            3,
             False,
         ),
     ),
 )
-def test_systemd_gpu_preflight_uses_effective_device_isolation_properties(
+def test_systemd_gpu_preflight_requires_actual_device_isolation(
     tmp_path: Path,
     effective_policy: str,
     effective_exec_start_pre: str,
+    enforcement_rc: int,
     should_verify: bool,
 ) -> None:
     worker_config = tmp_path / "worker.toml"
@@ -285,18 +308,32 @@ def test_systemd_gpu_preflight_uses_effective_device_isolation_properties(
         "DevicePolicy=closed\n"
         "DeviceAllow=/dev/nvidia0 rw\n"
         "DeviceAllow=/dev/nvidiactl rw\n"
-        "Environment=CUDA_VISIBLE_DEVICES=GPU-a\n",
+        "Environment=CUDA_VISIBLE_DEVICES=GPU-a\n"
+        "Environment=ASTRUMWEAVER_GPU_ISOLATION_VISIBLE_MAP="
+        "/run/astrumweaver-worker-gpu-isolation/gpu-visible-map\n",
         encoding="utf-8",
     )
+
     verifier = tmp_path / "gpu-device-map-verify"
     verifier_args = tmp_path / "gpu-device-map-verify.args"
     verifier.write_text(
         "#!/usr/bin/env bash\n"
-        f"printf '%s\\n' \"$@\" > {str(verifier_args)!r}\n"
+        f"printf '%s\\n' \"$@\" >> {str(verifier_args)!r}\n"
+        "if [[ \"$*\" == *discover-visible* ]]; then\n"
+        "  printf '%s\\n' 'GPU-a=/dev/nvidia0' 'GPU-b=/dev/nvidia1'\n"
+        "fi\n"
         "exit 0\n",
         encoding="utf-8",
     )
     verifier.chmod(0o755)
+
+    systemd_run = tmp_path / "systemd-run"
+    systemd_run.write_text(
+        "#!/bin/sh\n"
+        f"exit {enforcement_rc}\n",
+        encoding="utf-8",
+    )
+    systemd_run.chmod(0o755)
 
     superset_dir = tmp_path / "isolated-superset"
     superset_dir.mkdir()
@@ -307,12 +344,19 @@ def test_systemd_gpu_preflight_uses_effective_device_isolation_properties(
             f"DevicePolicy={effective_policy}",
             "DeviceAllow=/dev/nvidia0 rw",
             "DeviceAllow=/dev/nvidiactl rw",
-            "Environment=CUDA_VISIBLE_DEVICES=GPU-a",
+            (
+                "Environment=CUDA_VISIBLE_DEVICES=GPU-a "
+                "ASTRUMWEAVER_GPU_ISOLATION_VISIBLE_MAP="
+                "/run/astrumweaver-worker-gpu-isolation/gpu-visible-map"
+            ),
             "EnvironmentFiles=",
             "UnsetEnvironment=",
             f"ExecStartPre={effective_exec_start_pre}",
             "Requires=astrumweaver-worker-gpu-isolation-preflight.service",
-            "After=network-online.target astrumweaver-worker-gpu-isolation-preflight.service",
+            (
+                "After=network-online.target "
+                "astrumweaver-worker-gpu-isolation-preflight.service"
+            ),
         ],
     )
     driver = SystemdSetupDriver(
@@ -324,6 +368,7 @@ def test_systemd_gpu_preflight_uses_effective_device_isolation_properties(
         gpu_device_map_command=str(verifier),
         nvidia_smi=nvidia_smi,
         systemctl=systemctl,
+        systemd_run=str(systemd_run),
     )
 
     result = driver.inspect(
@@ -335,13 +380,12 @@ def test_systemd_gpu_preflight_uses_effective_device_isolation_properties(
 
     if should_verify:
         assert result.state is SetupActionState.SATISFIED
-        assert "device-cgroup isolation is verified" in result.detail
-        assert "ExecStartPre must still prove the exact set" in result.detail
-        assert verifier_args.read_text(encoding="utf-8").splitlines()[:2] == [
-            "--nvidia-smi",
-            nvidia_smi,
-        ]
+        assert "actual systemd device-access isolation is verified" in result.detail
+        assert "selected access and unselected denial" in result.detail
+        args = verifier_args.read_text(encoding="utf-8")
+        assert "discover-visible" in args
+        assert "verify" in args
     else:
         assert result.state is SetupActionState.BLOCKED
         assert "no verified service device isolation" in result.detail
-        assert not verifier_args.exists()
+
