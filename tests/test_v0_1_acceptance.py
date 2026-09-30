@@ -23,6 +23,7 @@ EXPECTED_CHECKS = {
     "single-gpu-worker-registration",
     "multi-gpu-worker-registration",
     "exact-gpu-uuid-preflight",
+    "isolated-gpu-access-preflight",
     "multi-vs-single-vram-shape",
     "capability-matching",
     "draining-offline-lifecycle",
