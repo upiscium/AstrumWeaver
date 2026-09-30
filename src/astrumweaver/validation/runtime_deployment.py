@@ -819,23 +819,27 @@ def render_runtime_deployment_markdown(
         ("Date (UTC)", evidence.date_utc),
         ("AstrumWeaver revision", evidence.astrumweaver_revision),
         ("Deployment path", evidence.deployment_path),
+        ("Outcome", evidence.outcome),
         ("Host-visible GPU count", str(evidence.host_gpu_count)),
         ("Selected GPU count", str(evidence.selected_gpu_count)),
         ("Private values omitted", str(evidence.private_values_omitted).lower()),
         ("Host-visible GPU superset", evidence.host_gpu_superset),
         ("Worker GPU contract exact", evidence.worker_contract_exact),
         (
-            "Worker exact-set preflight enabled",
-            evidence.worker_exact_set_preflight_enabled,
+            "Worker GPU preflight enabled",
+            evidence.worker_gpu_preflight_enabled,
         ),
         ("UUID/device mapping verified", evidence.uuid_device_mapping_verified),
+        ("Isolation enforcement", evidence.isolation_enforcement),
+        ("Fail closed", evidence.fail_closed),
         ("DevicePolicy closed", evidence.device_policy_closed),
         ("Selected DeviceAllow exact", evidence.selected_device_allow_exact),
         ("CUDA visible-device order exact", evidence.cuda_visible_devices_exact),
         (
-            "In-service exact-set gate present",
-            evidence.in_service_exact_set_gate_present,
+            "In-service GPU preflight present",
+            evidence.in_service_gpu_preflight_present,
         ),
+        ("Worker start attempted", evidence.worker_start_attempted),
         ("Worker started ready", evidence.worker_started_ready),
         ("Worker registered", evidence.worker_registered),
         (
@@ -899,6 +903,14 @@ def main() -> None:
         default=None,
     )
     parser.add_argument(
+        "--gpu-isolation-probe",
+        default=None,
+    )
+    parser.add_argument(
+        "--expect-isolation-unavailable",
+        action="store_true",
+    )
+    parser.add_argument(
         "--health-url",
         default="http://127.0.0.1:9100/health",
     )
@@ -931,6 +943,7 @@ def main() -> None:
             systemctl=args.systemctl,
             nvidia_smi=args.nvidia_smi,
             gpu_device_map=args.gpu_device_map,
+            gpu_isolation_probe=args.gpu_isolation_probe,
             health_url=args.health_url,
         )
         runner = RuntimeDeploymentAcceptanceRunner(
@@ -940,7 +953,11 @@ def main() -> None:
             deployment_path=args.deployment_path,
             start_timeout_seconds=args.start_timeout_seconds,
         )
-        evidence = runner.run()
+        evidence = (
+            runner.run_fail_closed()
+            if args.expect_isolation_unavailable
+            else runner.run()
+        )
         write_runtime_deployment_evidence(args.evidence, evidence)
     except (
         RuntimeDeploymentAcceptanceError,
