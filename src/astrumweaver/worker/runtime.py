@@ -7,12 +7,18 @@ import contextlib
 import importlib
 import inspect
 import subprocess
+from pathlib import Path
 from collections.abc import Mapping
 from typing import Any
 
 from ..contracts import WorkerSpec
 from ..control.models import WorkerState
 from ..execution import JobExecutor, JobResult
+from ..validation.gpu_mapping import (
+    discover_gpu_mapping,
+    load_reviewed_gpu_map,
+    verify_isolated_gpu_access,
+)
 from .client import ClaimedJob, ControlClient, ControlTransportError
 
 
@@ -49,6 +55,29 @@ def require_exact_gpu_set(
         raise RuntimeError(
             f"GPU UUID set mismatch (expected_count={len(expected_sorted)} observed_count={len(observed)})"
         )
+
+
+def require_isolated_gpu_access(
+    expected: tuple[str, ...],
+    *,
+    reviewed_map_path: str,
+    command: str = "nvidia-smi",
+    cuda_visible_devices: str | None,
+) -> None:
+    if not expected:
+        return
+    map_path = Path(reviewed_map_path)
+    if not map_path.is_absolute():
+        raise RuntimeError("isolated GPU device map path must be absolute")
+    mapping = discover_gpu_mapping(nvidia_smi=command)
+    reviewed = load_reviewed_gpu_map(map_path)
+    verify_isolated_gpu_access(
+        mapping,
+        expected,
+        reviewed,
+        worker_gpu_order=expected,
+        cuda_visible_devices=cuda_visible_devices,
+    )
 
 
 def executor_capabilities(executor: JobExecutor) -> frozenset[str]:
