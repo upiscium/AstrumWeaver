@@ -411,9 +411,6 @@ def verify_isolated_gpu_access(
     reviewed = tuple(sorted(reviewed_mapping))
     if selected != reviewed:
         raise GpuMappingError("reviewed GPU device map changed")
-    if len(mapping) <= len(selected):
-        raise GpuMappingError("isolated-access requires a host GPU superset")
-
     ordered = tuple(_validate_uuid(str(value)) for value in worker_gpu_order)
     if len(set(ordered)) != len(ordered):
         raise GpuMappingError("Worker GPU UUID order is not unique")
@@ -454,6 +451,50 @@ def verify_isolated_gpu_access(
                 "GPU subset isolation is not enforceable in this environment"
             )
 
+
+
+def require_isolated_gpu_access(
+    expected: Sequence[str],
+    reviewed_map_path: Path,
+    *,
+    worker_gpu_order: Sequence[str] | None = None,
+    cuda_visible_devices: str | None = None,
+    nvidia_smi: str = "nvidia-smi",
+    proc_root: Path = Path("/proc/driver/nvidia/gpus"),
+    proc_devices: Path = Path("/proc/devices"),
+    device_root: Path = Path("/dev"),
+) -> None:
+    """Require the reviewed selected GPU set to be the effective accessible set."""
+
+    expected_values = tuple(_validate_uuid(str(value)) for value in expected)
+    if not expected_values:
+        raise GpuMappingError("expected GPU UUID set is empty")
+    if len(set(expected_values)) != len(expected_values):
+        raise GpuMappingError("expected GPU UUID set is not unique")
+
+    mapping = discover_gpu_mapping(
+        nvidia_smi=nvidia_smi,
+        proc_root=proc_root,
+        proc_devices=proc_devices,
+        device_root=device_root,
+    )
+    reviewed = _load_reviewed_map(reviewed_map_path)
+    verify_isolated_gpu_access(
+        mapping,
+        expected_values,
+        reviewed,
+        worker_gpu_order=(
+            expected_values
+            if worker_gpu_order is None
+            else worker_gpu_order
+        ),
+        cuda_visible_devices=(
+            os.environ.get("CUDA_VISIBLE_DEVICES")
+            if cuda_visible_devices is None
+            else cuda_visible_devices
+        ),
+        device_root=device_root,
+    )
 
 def _select_mapping(
     mapping: Sequence[tuple[str, str]],
@@ -547,14 +588,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 0
             if args.mode == "verify-isolated-access":
                 worker_order = _load_worker_gpu_order(Path(args.paths[2]))
-                verify_isolated_gpu_access(
-                    mapping,
+                require_isolated_gpu_access(
                     expected,
-                    _load_reviewed_map(Path(args.paths[1])),
+                    Path(args.paths[1]),
                     worker_gpu_order=worker_order,
                     cuda_visible_devices=os.environ.get(
                         "CUDA_VISIBLE_DEVICES"
                     ),
+                    nvidia_smi=args.nvidia_smi,
+                    proc_root=args.proc_root,
+                    proc_devices=args.proc_devices,
                     device_root=args.device_root,
                 )
                 print(
