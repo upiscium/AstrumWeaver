@@ -14,7 +14,7 @@ from typing import Any
 from ..contracts import WorkerSpec
 from ..control.models import WorkerState
 from ..execution import JobExecutor, JobResult
-from ..validation.gpu_mapping import (
+from ..gpu_mapping import (
     discover_gpu_mapping,
     load_reviewed_gpu_map,
     verify_isolated_gpu_access,
