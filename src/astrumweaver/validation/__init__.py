@@ -17,6 +17,9 @@ __all__ = [
     "RuntimeDeploymentAcceptanceError",
     "RuntimeDeploymentAcceptanceEvidence",
     "RuntimeDeploymentAcceptanceRunner",
+    "RuntimeDeploymentFailClosedEvidence",
+    "RuntimeDeploymentFailClosedRunner",
+    "WorkerGpuContract",
     "render_runtime_deployment_markdown",
     "write_runtime_deployment_evidence",
 ]
@@ -25,6 +28,9 @@ from .runtime_deployment import (
     RuntimeDeploymentAcceptanceError,
     RuntimeDeploymentAcceptanceEvidence,
     RuntimeDeploymentAcceptanceRunner,
+    RuntimeDeploymentFailClosedEvidence,
+    RuntimeDeploymentFailClosedRunner,
+    WorkerGpuContract,
     render_runtime_deployment_markdown,
     write_runtime_deployment_evidence,
 )
