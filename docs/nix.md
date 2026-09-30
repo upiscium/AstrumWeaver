@@ -238,9 +238,9 @@ fails runtime startup rather than triggering an unreviewed download.
 store and therefore must remain non-secret. Credentials stay in
 `environmentFile` or another protected secret mechanism.
 
-The exact-set GPU preflight remains authoritative. For a host-visible GPU
-superset, enable `gpuIsolation` and declare the exact UUID→`/dev/nvidiaN`
-mapping:
+A non-isolated GPU Worker uses `exact-visible` preflight. For a
+host-visible GPU superset, enable `gpuIsolation` and declare the exact
+UUID→`/dev/nvidiaN` mapping:
 
 ```nix
 gpuIsolation = {
@@ -249,10 +249,17 @@ gpuIsolation = {
 };
 ```
 
-The module verifies that mapping in a separate host-level oneshot service, then
-runs the Worker under `DevicePolicy=closed` with only the selected physical
-GPU nodes plus configured shared NVIDIA control/UVM nodes. The existing
-`gpu-preflight` still runs inside the restricted Worker cgroup.
+The module verifies that mapping in a separate host-level oneshot service,
+generates `gpu_preflight_mode = "isolated-access"`, and runs the Worker under
+`DevicePolicy=closed` with only the selected physical GPU nodes plus
+configured shared NVIDIA control/UVM nodes. ExecStartPre uses the
+`verify-isolated-access` verifier and the Worker daemon independently repeats
+the same access proof before registration.
+
+A declarative DevicePolicy is not itself proof that a surrounding container
+delegates an enforceable device boundary. Real-host acceptance must still
+prove selected-device access and unselected-device denial; if that cannot be
+proven, the VM/LXC/hypervisor must narrow guest-visible GPU exposure.
 
 See [Runtime Deployment GPU Isolation Acceptance](runtime-deployment-acceptance.md)
 for the real-host acceptance contract.
