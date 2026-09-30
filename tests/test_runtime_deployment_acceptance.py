@@ -193,10 +193,6 @@ def test_systemd_host_reads_effective_properties_with_systemctl_show(
 
 
 @pytest.mark.parametrize(
-    ("status", "expected"),
-    ((0, True), (3, False)),
-)
-@pytest.mark.parametrize(
     ("probe_rc", "expected"),
     ((0, True), (3, False)),
 )
@@ -243,6 +239,10 @@ def test_systemd_host_probes_actual_subset_device_access(
     assert "probe-access" in args
 
 
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    ((0, True), (3, False)),
+)
 def test_systemd_host_decodes_known_service_activity_statuses(
     tmp_path: Path,
     status: int,
