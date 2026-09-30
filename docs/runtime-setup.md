@@ -246,10 +246,13 @@ The generic systemd implementation is `SystemdSetupDriver`. It materializes revi
 
 If the host-visible GPU set is larger than the Worker set,
 `SystemdSetupDriver` accepts the preflight only when the existing Worker host
-integration proves `DevicePolicy=closed`, exact selected physical
-`DeviceAllow` entries, a verified UUID/device mapping, and ordered
-`CUDA_VISIBLE_DEVICES`. The Worker service must still pass the unchanged
-exact-set preflight inside its restricted cgroup.
+integration proves a verified UUID/device mapping, proposed
+`DevicePolicy=closed`, exact selected physical `DeviceAllow` entries,
+ordered `CUDA_VISIBLE_DEVICES`, and—critically—actual denial when opening
+every unselected physical GPU from the proposed service cgroup. A subset Worker
+uses explicit `isolated-access` preflight in ExecStartPre and repeats that
+same effective ownership proof in the daemon. If actual denial cannot be
+enforced, deployment fails closed before the Worker starts.
 
 NixOS uses the same `RuntimeDeploymentSpec` contract declaratively: the module writes an immutable provider+demand manifest and puts explicitly selected runtime packages in the Worker service closure.
 
