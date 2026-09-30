@@ -19,6 +19,7 @@ from typing import Any, Mapping
 from ..worker.runtime import require_exact_gpu_set
 from ..validation.runtime_deployment import (
     RuntimeDeploymentAcceptanceError,
+    SystemdRuntimeDeploymentHost,
     parse_systemd_show_properties,
     validate_effective_worker_gpu_isolation,
 )
@@ -82,6 +83,7 @@ class SystemdSetupDriver:
         gpu_device_map_command: str = "/usr/local/libexec/astrumweaver/gpu-device-map",
         service_name: str = "astrumweaver-worker.service",
         systemctl: str = "systemctl",
+        systemd_run: str = "systemd-run",
         nvidia_smi: str = "nvidia-smi",
         ready_url: str = "http://127.0.0.1:9100/ready",
         installers: Mapping[str, tuple[str, ...]] | None = None,
@@ -99,6 +101,7 @@ class SystemdSetupDriver:
         self.gpu_device_map_command = gpu_device_map_command
         self.service_name = service_name
         self.systemctl = systemctl
+        self.systemd_run = systemd_run
         self.nvidia_smi = nvidia_smi
         self.ready_url = ready_url
         self.installers = {
@@ -304,7 +307,22 @@ class SystemdSetupDriver:
             capture_output=True,
             text=True,
         )
-        return completed.returncode == 0
+        if completed.returncode != 0:
+            return False
+
+        try:
+            host = SystemdRuntimeDeploymentHost(
+                service=self.service_name,
+                worker_config=self.worker_config_path,
+                systemctl=self.systemctl,
+                systemd_run=self.systemd_run,
+                nvidia_smi=self.nvidia_smi,
+                gpu_device_map=self.gpu_device_map_command,
+            )
+            host_map = host.host_gpu_device_map()
+            return host.probe_isolation_enforcement(host_map, expected)
+        except RuntimeDeploymentAcceptanceError:
+            return False
 
     def _service_active(self) -> bool:
         if self.root != Path("/"):
@@ -839,6 +857,10 @@ def create_systemd_driver() -> SystemdSetupDriver:
         systemctl=os.environ.get(
             "ASTRUMWEAVER_SYSTEMCTL",
             "systemctl",
+        ),
+        systemd_run=os.environ.get(
+            "ASTRUMWEAVER_SYSTEMD_RUN",
+            "systemd-run",
         ),
         nvidia_smi=os.environ.get(
             "ASTRUMWEAVER_NVIDIA_SMI",
