@@ -18,6 +18,16 @@ from astrumweaver.validation.runtime_deployment import (
 
 ROOT = Path(__file__).resolve().parents[1]
 
+ISOLATED_ENV = (
+    "CUDA_VISIBLE_DEVICES=GPU-selected "
+    "ASTRUMWEAVER_GPU_PREFLIGHT_MODE=isolated-access "
+    "ASTRUMWEAVER_GPU_DEVICE_MAP=/etc/astrumweaver/gpu-device-map "
+    "ASTRUMWEAVER_GPU_WORKER_CONFIG=/etc/astrumweaver/worker.toml "
+    "ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND="
+    "/usr/local/libexec/astrumweaver/gpu-device-map"
+)
+
+
 
 def test_acceptance_resolves_absolute_profile_sibling_without_ambient_path(
     tmp_path: Path,
@@ -155,6 +165,10 @@ def test_systemd_host_reads_effective_properties_with_systemctl_show(
         "  'DeviceAllow=/dev/nvidia0 rw' \\\n"
         "  'DeviceAllow=/dev/nvidiactl rw' \\\n"
         "  'Environment=CUDA_VISIBLE_DEVICES=GPU-selected' \\\n"
+        "  'Environment=ASTRUMWEAVER_GPU_PREFLIGHT_MODE=isolated-access' \\\n"
+        "  'Environment=ASTRUMWEAVER_GPU_DEVICE_MAP=/etc/astrumweaver/gpu-device-map' \\\n"
+        "  'Environment=ASTRUMWEAVER_GPU_WORKER_CONFIG=/etc/astrumweaver/worker.toml' \\\n"
+        "  'Environment=ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND=/usr/local/libexec/astrumweaver/gpu-device-map' \\\n"
         "  'EnvironmentFiles=/etc/astrumweaver/worker.env (ignore_errors=yes)' \\\n"
         "  'UnsetEnvironment=' \\\n"
         "  'ExecStartPre={ path=/usr/local/libexec/astrumweaver/gpu-preflight ; "
@@ -249,6 +263,7 @@ class FakeHost:
         registered: bool = True,
         start_error_after_activation: bool = False,
         stop_failures: int = 0,
+        isolation_classification: str = "UNAVAILABLE",
     ) -> None:
         self._host_map = host_map or {
             "GPU-selected": "/dev/nvidia0",
@@ -259,7 +274,7 @@ class FakeHost:
         self._unit_properties = unit_properties if unit_properties is not None else {
             "DevicePolicy": "closed",
             "DeviceAllow": "/dev/nvidia0 rw /dev/nvidiactl rw",
-            "Environment": "CUDA_VISIBLE_DEVICES=GPU-selected",
+            "Environment": ISOLATED_ENV,
             "EnvironmentFiles": "",
             "UnsetEnvironment": "",
             "ExecStartPre": (
@@ -278,6 +293,7 @@ class FakeHost:
         self.registered = registered
         self.start_error_after_activation = start_error_after_activation
         self.stop_failures = stop_failures
+        self.isolation_classification = isolation_classification
         self.actions: list[str] = []
 
     def host_gpu_device_map(self):
@@ -312,6 +328,11 @@ class FakeHost:
             "ready": self.ready,
             "registered": self.registered,
         }
+
+    def probe_isolation_enforcement(self, expected_gpu_uuids):
+        assert expected_gpu_uuids == self._worker_uuids
+        self.actions.append("probe-isolation")
+        return self.isolation_classification
 
 
 def test_systemd_host_uses_canonical_gpu_device_mapper(tmp_path: Path) -> None:
@@ -365,6 +386,10 @@ def test_runtime_deployment_acceptance_proves_isolated_subset_start() -> None:
     evidence = make_runner(host).run()
 
     assert evidence.overall == "PASS"
+    assert evidence.evidence_version == "runtime-deployment-v2"
+    assert evidence.outcome == "ENFORCED_SUBSET"
+    assert evidence.isolation_enforcement == "PASS"
+    assert evidence.worker_start_attempted == "YES"
     assert evidence.host_gpu_count == 2
     assert evidence.selected_gpu_count == 1
     assert evidence.host_gpu_superset == "PASS"
@@ -375,12 +400,54 @@ def test_runtime_deployment_acceptance_proves_isolated_subset_start() -> None:
     assert not host.active
 
 
+
+def test_runtime_deployment_acceptance_records_expected_fail_closed_outcome() -> None:
+    host = FakeHost()
+    evidence = make_runner(host).run_fail_closed()
+
+    assert evidence.evidence_version == "runtime-deployment-v2"
+    assert evidence.outcome == "FAIL_CLOSED"
+    assert evidence.isolation_enforcement == "UNAVAILABLE"
+    assert evidence.fail_closed == "PASS"
+    assert evidence.worker_start_attempted == "NO"
+    assert evidence.worker_started_ready == "NOT_RUN"
+    assert evidence.worker_registered == "NOT_RUN"
+    assert evidence.overall == "PASS"
+    assert host.actions == ["probe-isolation"]
+    assert not host.active
+
+
+def test_runtime_deployment_fail_closed_rejects_enforceable_environment() -> None:
+    host = FakeHost(isolation_classification="ENFORCEABLE")
+
+    with pytest.raises(
+        RuntimeDeploymentAcceptanceError,
+        match="was enforceable",
+    ):
+        make_runner(host).run_fail_closed()
+
+    assert host.actions == ["probe-isolation"]
+    assert not host.active
+
+
+def test_runtime_deployment_fail_closed_requires_inactive_worker() -> None:
+    host = FakeHost(initially_active=True)
+
+    with pytest.raises(
+        RuntimeDeploymentAcceptanceError,
+        match="requires the Worker service inactive",
+    ):
+        make_runner(host).run_fail_closed()
+
+    assert host.actions == []
+
+
 def test_runtime_deployment_acceptance_rejects_extra_physical_device_allow() -> None:
     host = FakeHost(
         unit_properties={
             "DevicePolicy": "closed",
             "DeviceAllow": "/dev/nvidia0 rw /dev/nvidia1 rw",
-            "Environment": "CUDA_VISIBLE_DEVICES=GPU-selected",
+            "Environment": ISOLATED_ENV,
             "EnvironmentFiles": "",
             "UnsetEnvironment": "",
             "ExecStartPre": "/usr/local/libexec/astrumweaver/gpu-preflight x",
@@ -411,7 +478,7 @@ def test_runtime_deployment_rejects_broad_or_incomplete_device_grants(
         unit_properties={
             "DevicePolicy": "closed",
             "DeviceAllow": device_allow,
-            "Environment": "CUDA_VISIBLE_DEVICES=GPU-selected",
+            "Environment": ISOLATED_ENV,
             "ExecStartPre": "path=/usr/local/libexec/astrumweaver/gpu-preflight ;",
         }
     )
@@ -428,7 +495,7 @@ def test_runtime_deployment_rejects_effective_policy_override() -> None:
         unit_properties={
             "DevicePolicy": "auto",
             "DeviceAllow": "/dev/nvidia0 rw /dev/nvidiactl rw",
-            "Environment": "CUDA_VISIBLE_DEVICES=GPU-selected",
+            "Environment": ISOLATED_ENV,
             "ExecStartPre": "/usr/local/libexec/astrumweaver/gpu-preflight x",
         }
     )
@@ -445,7 +512,7 @@ def test_runtime_deployment_requires_effective_gpu_preflight_executable() -> Non
         unit_properties={
             "DevicePolicy": "closed",
             "DeviceAllow": "/dev/nvidia0 rw /dev/nvidiactl rw",
-            "Environment": "CUDA_VISIBLE_DEVICES=GPU-selected",
+            "Environment": ISOLATED_ENV,
             "ExecStartPre": (
                 "{ path=/bin/false ; argv[]=/bin/false gpu-preflight ; }"
             ),
@@ -454,7 +521,7 @@ def test_runtime_deployment_requires_effective_gpu_preflight_executable() -> Non
 
     with pytest.raises(
         RuntimeDeploymentAcceptanceError,
-        match="lacks in-cgroup exact-set preflight",
+        match="lacks in-cgroup GPU preflight",
     ):
         make_runner(host).run()
 
@@ -505,7 +572,7 @@ def test_runtime_deployment_accepts_reviewed_nixos_preflight_command() -> None:
         unit_properties={
             "DevicePolicy": "closed",
             "DeviceAllow": "/dev/nvidia0 rw /dev/nvidiactl rw",
-            "Environment": "CUDA_VISIBLE_DEVICES=GPU-selected",
+            "Environment": ISOLATED_ENV,
             "ExecStartPre": (
                 f"{{ path={preflight} ; argv[]={preflight} {expected_uuids} ; "
                 "ignore_errors=no ; }"
@@ -535,7 +602,7 @@ def test_runtime_deployment_acceptance_requires_exact_set_gate() -> None:
 
     with pytest.raises(
         RuntimeDeploymentAcceptanceError,
-        match="exact GPU preflight is disabled",
+        match="GPU preflight is disabled",
     ):
         make_runner(host).run()
 
@@ -602,6 +669,7 @@ def test_runtime_deployment_evidence_is_private_safe() -> None:
     ):
         assert private_value not in markdown
 
+    assert "| Outcome | ENFORCED_SUBSET |" in markdown
     assert "| Host-visible GPU count | 2 |" in markdown
     assert "| Selected GPU count | 1 |" in markdown
     assert "| Overall | PASS |" in markdown
