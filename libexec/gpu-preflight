@@ -10,7 +10,37 @@ die() {
 [[ $# -eq 1 ]] || die "usage: gpu-preflight EXPECTED_UUID_FILE"
 EXPECTED_FILE="$1"
 [[ -f "$EXPECTED_FILE" ]] || die "expected GPU UUID file is missing"
-command -v nvidia-smi >/dev/null 2>&1 || die "nvidia-smi is not available"
+
+MODE="${ASTRUMWEAVER_GPU_PREFLIGHT_MODE:-exact-visible}"
+NVIDIA_SMI="${ASTRUMWEAVER_NVIDIA_SMI:-$(command -v nvidia-smi || true)}"
+[[ -n "$NVIDIA_SMI" ]] || die "nvidia-smi is not available"
+
+if [[ "$MODE" == "isolated-access" ]]; then
+  REVIEWED_MAP="${ASTRUMWEAVER_GPU_DEVICE_MAP:-}"
+  WORKER_CONFIG="${ASTRUMWEAVER_GPU_WORKER_CONFIG:-}"
+  GPU_DEVICE_MAP="${ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND:-}"
+
+  [[ "$REVIEWED_MAP" == /* && -f "$REVIEWED_MAP" ]] \
+    || die "isolated-access reviewed GPU map is unavailable"
+  [[ "$WORKER_CONFIG" == /* && -f "$WORKER_CONFIG" ]] \
+    || die "isolated-access Worker config is unavailable"
+  [[ "$GPU_DEVICE_MAP" == /* && -x "$GPU_DEVICE_MAP" ]] \
+    || die "isolated-access canonical GPU mapper is unavailable"
+
+  "$GPU_DEVICE_MAP" \
+    --nvidia-smi "$NVIDIA_SMI" \
+    verify-isolated-access \
+    "$EXPECTED_FILE" \
+    "$REVIEWED_MAP" \
+    "$WORKER_CONFIG" >/dev/null
+
+  count="$(awk 'NF {n++} END {print n+0}' "$EXPECTED_FILE")"
+  printf '[astrumweaver-gpu-preflight] isolated-access ok count=%s\n' "$count"
+  exit 0
+fi
+
+[[ "$MODE" == "exact-visible" ]] \
+  || die "GPU preflight mode must be exact-visible or isolated-access"
 
 expected_tmp="$(mktemp)"
 observed_tmp="$(mktemp)"
@@ -26,7 +56,7 @@ if [[ -n "$(uniq -d "$expected_tmp")" ]]; then
   die "expected GPU UUID file contains duplicates"
 fi
 
-nvidia-smi --query-gpu=uuid --format=csv,noheader \
+"$NVIDIA_SMI" --query-gpu=uuid --format=csv,noheader \
   | awk 'NF { gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print }' \
   | sort >"$observed_tmp"
 
