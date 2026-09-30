@@ -136,10 +136,14 @@ For a live install it verifies `nvidia-smi` before the worker can be started.
 The systemd unit repeats exact UUID preflight as `ExecStartPre`, so reboot/service restart cannot silently start a worker against a changed GPU set.
 
 When the live host exposes additional GPUs, `--gpu-isolation auto` (the
-default) derives the selected UUID→`/dev/nvidiaN` mapping, verifies it outside
-the Worker cgroup, and installs a systemd drop-in with
-`DevicePolicy=closed` plus exact physical `DeviceAllow` entries. The original
-exact-set preflight then runs inside that restricted cgroup.
+default) derives the selected UUID→`/dev/nvidiaN` mapping and, for a true
+host-visible superset, first proves the proposed device policy in a transient
+service by opening selected physical devices and requiring every unselected
+physical device to be denied. Only after that proof does setup install the
+systemd drop-in with `DevicePolicy=closed`, exact physical `DeviceAllow`
+entries, and ordered `CUDA_VISIBLE_DEVICES`. The Worker contract then uses
+`gpu_preflight_mode = "isolated-access"`; both ExecStartPre and the daemon
+repeat the effective ownership proof before registration.
 
 For staged `--root` installs, isolation requires reviewed
 `--gpu-device UUID=/dev/nvidiaN` mappings because live GPU discovery is not
