@@ -189,6 +189,22 @@ normalize_reviewed_legacy_bash_script() {
   return 1
 }
 
+
+normalize_reviewed_gpu_mapper_v59() {
+  local source="$1" migrated="$2"
+  local old='../src/astrumweaver/validation/gpu_mapping.py'
+  local new='../src/astrumweaver/gpu_mapping.py'
+  local count
+
+  count="$(grep -oF -- "$old" "$source" | wc -l | tr -d ' ')"
+  [[ "$count" == 2 ]] || return 1
+  if grep -Fq -- "$new" "$source"; then
+    return 1
+  fi
+
+  sed "s#${old}#${new}#g" "$source" >"$migrated"
+}
+
 install_reviewed_script_upgrade() {
   local source="$1" destination="$2" mode="$3" legacy_sha256="${4:-}"
   local normalized digest
@@ -217,6 +233,18 @@ install_reviewed_script_upgrade() {
     log "upgrading reviewed Nix-patched helper: $destination"
     install -D -m "$mode" "$source" "$destination"
     return 0
+  fi
+
+  if [[ "$(basename "$destination")" == "gpu-device-map" ]]; then
+    migrated="$(mktemp)"
+    if normalize_reviewed_gpu_mapper_v59 "$normalized" "$migrated" \
+      && cmp -s "$source" "$migrated"; then
+      rm -f "$normalized" "$migrated"
+      log "upgrading reviewed v59 GPU mapper: $destination"
+      install -D -m "$mode" "$source" "$destination"
+      return 0
+    fi
+    rm -f "$migrated"
   fi
 
   if [[ -n "$legacy_sha256" ]]; then
