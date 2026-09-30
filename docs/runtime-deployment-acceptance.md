@@ -37,8 +37,9 @@ Worker registration
 ```
 
 The host-level mapping verifier runs outside the restricted Worker cgroup.
-The existing exact-set preflight then runs inside the restricted Worker
-service cgroup.
+For an isolated subset, the Worker service and daemon then verify actual
+physical-device access inside the restricted cgroup. The original raw
+`nvidia-smi` exact-visible check remains unchanged for non-isolated Workers.
 
 This separation is intentional. AstrumWeaver does not weaken the ordinary
 exact-visible preflight into accepting a host superset. A superset is accepted
