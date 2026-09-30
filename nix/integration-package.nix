@@ -21,6 +21,7 @@ stdenvNoCC.mkDerivation {
     cp systemd/astrumweaver-worker.service.in "$assetRoot/systemd/"
     cp libexec/gpu-preflight "$assetRoot/libexec/"
     cp libexec/gpu-device-map "$assetRoot/libexec/"
+    cp libexec/gpu-isolation-probe "$assetRoot/libexec/"
     cp src/astrumweaver/validation/gpu_mapping.py "$assetRoot/libexec/"
     cp libexec/worker-gpu-uuids "$assetRoot/libexec/"
 
@@ -32,6 +33,7 @@ stdenvNoCC.mkDerivation {
       "$assetRoot/setup/setup-gpu-worker.sh" \
       "$assetRoot/libexec/gpu-preflight" \
       "$assetRoot/libexec/gpu-device-map" \
+      "$assetRoot/libexec/gpu-isolation-probe" \
       "$assetRoot/libexec/worker-gpu-uuids"
 
     cat >"$out/bin/astrumweaver-setup-control-plane" <<EOF
@@ -54,6 +56,12 @@ stdenvNoCC.mkDerivation {
     cat >"$out/bin/astrumweaver-gpu-preflight" <<EOF
     #!${bash}/bin/bash
     exec ${bash}/bin/bash "$assetRoot/libexec/gpu-preflight" "\$@"
+    EOF
+
+    cat >"$out/bin/astrumweaver-gpu-isolation-probe" <<EOF
+    #!${bash}/bin/bash
+    export ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND="$out/bin/astrumweaver-gpu-device-map"
+    exec ${bash}/bin/bash "$assetRoot/libexec/gpu-isolation-probe" "\$@"
     EOF
 
     chmod +x "$out/bin/"*
