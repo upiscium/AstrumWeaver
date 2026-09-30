@@ -84,6 +84,9 @@ done
 [[ -f "$CONFIG_SOURCE" ]] || die "config file does not exist: $CONFIG_SOURCE"
 if [[ -n "$ENV_SOURCE" ]]; then
   [[ -f "$ENV_SOURCE" ]] || die "environment file does not exist: $ENV_SOURCE"
+  if grep -Eq '^[[:space:]]*ASTRUMWEAVER_GPU_ISOLATION_VISIBLE_MAP[[:space:]]*=' "$ENV_SOURCE"; then
+    die "environment file must not override reserved GPU isolation authority"
+  fi
 fi
 if [[ -n "$RUNTIME_MANIFEST_SOURCE" ]]; then
   [[ -f "$RUNTIME_MANIFEST_SOURCE" ]] || die "runtime manifest does not exist: $RUNTIME_MANIFEST_SOURCE"
@@ -106,6 +109,7 @@ ENV_DEST="$ETC_DIR/worker.env"
 RUNTIME_MANIFEST_DEST="$ETC_DIR/runtime-deployment.json"
 GPU_UUID_DEST="$ETC_DIR/gpu-uuids"
 GPU_DEVICE_MAP_DEST="$ETC_DIR/gpu-device-map"
+GPU_VISIBLE_MAP_DEST="$ETC_DIR/gpu-visible-map"
 PREFLIGHT_DEST="$LIBEXEC_DIR/gpu-preflight"
 DEVICE_MAP_HELPER_DEST="$LIBEXEC_DIR/gpu-device-map"
 GPU_MAPPING_PYTHON_DEST="$LIBEXEC_DIR/gpu_mapping.py"
@@ -123,7 +127,7 @@ validate_legacy_shared_state_path "$ROOT" worker
 EXECUTABLE="$(resolve_executable "$EXECUTABLE" "$ROOT" astrumweaver-worker)"
 reject_symlink_path \
   "$ETC_DIR" "$STATE_DIR" "$CONFIG_DEST" "$ENV_DEST" \
-  "$RUNTIME_MANIFEST_DEST" "$GPU_UUID_DEST" "$GPU_DEVICE_MAP_DEST" \
+  "$RUNTIME_MANIFEST_DEST" "$GPU_UUID_DEST" "$GPU_DEVICE_MAP_DEST" "$GPU_VISIBLE_MAP_DEST" \
   "$PREFLIGHT_DEST" "$DEVICE_MAP_HELPER_DEST" "$GPU_MAPPING_PYTHON_DEST" "$UNIT_DEST" \
   "$ISOLATION_UNIT_DEST" "$ISOLATION_DROPIN_DEST"
 validate_unit_template \
@@ -138,10 +142,11 @@ validate_unit_template \
 declared_tmp="$(mktemp)"
 expected_tmp="$(mktemp)"
 device_map_tmp="$(mktemp)"
+visible_map_tmp="$(mktemp)"
 isolation_unit_tmp="$(mktemp)"
 isolation_dropin_tmp="$(mktemp)"
 cleanup() {
-  rm -f "$declared_tmp" "$expected_tmp" "$device_map_tmp" "$isolation_unit_tmp" "$isolation_dropin_tmp"
+  rm -f "$declared_tmp" "$expected_tmp" "$device_map_tmp" "$visible_map_tmp" "$isolation_unit_tmp" "$isolation_dropin_tmp"
 }
 trap cleanup EXIT
 
@@ -306,6 +311,7 @@ if [[ "$ROOT" == "/" ]]; then
   esac
 
   if [[ "$isolation_enabled" == 1 ]]; then
+    "$DEVICE_MAP_HELPER_DEST" discover-visible >"$visible_map_tmp"
     if [[ ! -s "$device_map_tmp" ]]; then
       "$DEVICE_MAP_HELPER_DEST" discover "$GPU_UUID_DEST" >"$device_map_tmp"
     fi
@@ -316,10 +322,40 @@ if [[ "$ROOT" == "/" ]]; then
       service_status=$?
       [[ "$service_status" == 3 ]] || die "cannot determine Worker service state"
     fi
+
+    require_cmd systemd-run
+    probe_command=(
+      systemd-run
+      --quiet
+      --wait
+      --pipe
+      --collect
+      --property=Type=oneshot
+      --property=DevicePolicy=closed
+    )
+    while IFS='=' read -r uuid path; do
+      probe_command+=(--property="DeviceAllow=$path rw")
+    done <"$device_map_tmp"
+    for path in \
+      /dev/nvidiactl \
+      /dev/nvidia-modeset \
+      /dev/nvidia-uvm \
+      /dev/nvidia-uvm-tools \
+      /dev/nvidia-nvswitchctl; do
+      if [[ -e "$path" ]]; then
+        probe_command+=(--property="DeviceAllow=$path rw")
+      fi
+    done
+    if ! "${probe_command[@]}" "$DEVICE_MAP_HELPER_DEST" \
+      probe-access "$GPU_UUID_DEST" "$visible_map_tmp"; then
+      die "GPU subset isolation is not enforceable in this environment; narrow guest-visible GPU exposure externally"
+    fi
+
     install_same_or_fail "$device_map_tmp" "$GPU_DEVICE_MAP_DEST" 0640
+    install_same_or_fail "$visible_map_tmp" "$GPU_VISIBLE_MAP_DEST" 0640
   else
     "$PREFLIGHT_DEST" "$GPU_UUID_DEST"
-    if [[ -e "$ISOLATION_DROPIN_DEST" || -e "$ISOLATION_UNIT_DEST" || -e "$GPU_DEVICE_MAP_DEST" ]]; then
+    if [[ -e "$ISOLATION_DROPIN_DEST" || -e "$ISOLATION_UNIT_DEST" || -e "$GPU_DEVICE_MAP_DEST" || -e "$GPU_VISIBLE_MAP_DEST" ]]; then
       die "existing GPU isolation state requires reviewed removal before --gpu-isolation off"
     fi
   fi
@@ -342,7 +378,7 @@ if [[ "$ROOT" == "/" ]]; then
 else
   isolation_enabled=0
   if [[ "$GPU_ISOLATION" == "off" ]] && {
-    [[ -e "$ISOLATION_DROPIN_DEST" || -e "$ISOLATION_UNIT_DEST" || -e "$GPU_DEVICE_MAP_DEST" ]]
+    [[ -e "$ISOLATION_DROPIN_DEST" || -e "$ISOLATION_UNIT_DEST" || -e "$GPU_DEVICE_MAP_DEST" || -e "$GPU_VISIBLE_MAP_DEST" ]]
   }; then
     die "existing GPU isolation state requires reviewed removal before --gpu-isolation off"
   fi
@@ -367,6 +403,7 @@ Before=astrumweaver-worker.service
 
 [Service]
 Type=oneshot
+ExecStart=/usr/local/libexec/astrumweaver/gpu-device-map verify-visible /etc/astrumweaver/gpu-visible-map
 ExecStart=/usr/local/libexec/astrumweaver/gpu-device-map verify /etc/astrumweaver/gpu-uuids /etc/astrumweaver/gpu-device-map
 EOF
   install_generated_same_or_fail "$isolation_unit_tmp" "$ISOLATION_UNIT_DEST" 0644
@@ -376,6 +413,8 @@ EOF
     printf 'Requires=astrumweaver-worker-gpu-isolation-preflight.service\n'
     printf 'After=astrumweaver-worker-gpu-isolation-preflight.service\n\n'
     printf '[Service]\n'
+    printf 'ExecStartPre=\n'
+    printf 'ExecStartPre=+/usr/local/libexec/astrumweaver/gpu-device-map probe-access /etc/astrumweaver/gpu-uuids /etc/astrumweaver/gpu-visible-map\n'
     printf 'DevicePolicy=closed\n'
     while IFS='=' read -r uuid path; do
       printf 'DeviceAllow=%s rw\n' "$path"
@@ -394,6 +433,7 @@ EOF
 
     visible="$(IFS=,; printf '%s' "${GPU_UUIDS[*]}")"
     printf 'Environment=CUDA_VISIBLE_DEVICES=%s\n' "$visible"
+    printf 'Environment=ASTRUMWEAVER_GPU_ISOLATION_VISIBLE_MAP=/etc/astrumweaver/gpu-visible-map\n'
   } >"$isolation_dropin_tmp"
   install_generated_same_or_fail "$isolation_dropin_tmp" "$ISOLATION_DROPIN_DEST" 0644
 fi
@@ -403,6 +443,7 @@ reconcile_service_file "$ROOT" "$SERVICE_USER" "$ENV_DEST"
 reconcile_service_file "$ROOT" "$SERVICE_USER" "$RUNTIME_MANIFEST_DEST"
 reconcile_service_file "$ROOT" "$SERVICE_USER" "$GPU_UUID_DEST"
 reconcile_service_file "$ROOT" "$SERVICE_USER" "$GPU_DEVICE_MAP_DEST"
+reconcile_service_file "$ROOT" "$SERVICE_USER" "$GPU_VISIBLE_MAP_DEST"
 
 if [[ "$ROOT" == "/" ]]; then
   systemd_reload_and_maybe_start astrumweaver-worker.service "$START"
