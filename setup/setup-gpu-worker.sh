@@ -109,7 +109,6 @@ ENV_DEST="$ETC_DIR/worker.env"
 RUNTIME_MANIFEST_DEST="$ETC_DIR/runtime-deployment.json"
 GPU_UUID_DEST="$ETC_DIR/gpu-uuids"
 GPU_DEVICE_MAP_DEST="$ETC_DIR/gpu-device-map"
-GPU_VISIBLE_MAP_DEST="$ETC_DIR/gpu-visible-map"
 PREFLIGHT_DEST="$LIBEXEC_DIR/gpu-preflight"
 DEVICE_MAP_HELPER_DEST="$LIBEXEC_DIR/gpu-device-map"
 GPU_MAPPING_PYTHON_DEST="$LIBEXEC_DIR/gpu_mapping.py"
@@ -127,7 +126,7 @@ validate_legacy_shared_state_path "$ROOT" worker
 EXECUTABLE="$(resolve_executable "$EXECUTABLE" "$ROOT" astrumweaver-worker)"
 reject_symlink_path \
   "$ETC_DIR" "$STATE_DIR" "$CONFIG_DEST" "$ENV_DEST" \
-  "$RUNTIME_MANIFEST_DEST" "$GPU_UUID_DEST" "$GPU_DEVICE_MAP_DEST" "$GPU_VISIBLE_MAP_DEST" \
+  "$RUNTIME_MANIFEST_DEST" "$GPU_UUID_DEST" "$GPU_DEVICE_MAP_DEST" \
   "$PREFLIGHT_DEST" "$DEVICE_MAP_HELPER_DEST" "$GPU_MAPPING_PYTHON_DEST" "$UNIT_DEST" \
   "$ISOLATION_UNIT_DEST" "$ISOLATION_DROPIN_DEST"
 validate_unit_template \
@@ -352,10 +351,9 @@ if [[ "$ROOT" == "/" ]]; then
     fi
 
     install_same_or_fail "$device_map_tmp" "$GPU_DEVICE_MAP_DEST" 0640
-    install_same_or_fail "$visible_map_tmp" "$GPU_VISIBLE_MAP_DEST" 0640
   else
     "$PREFLIGHT_DEST" "$GPU_UUID_DEST"
-    if [[ -e "$ISOLATION_DROPIN_DEST" || -e "$ISOLATION_UNIT_DEST" || -e "$GPU_DEVICE_MAP_DEST" || -e "$GPU_VISIBLE_MAP_DEST" ]]; then
+    if [[ -e "$ISOLATION_DROPIN_DEST" || -e "$ISOLATION_UNIT_DEST" || -e "$GPU_DEVICE_MAP_DEST" ]]; then
       die "existing GPU isolation state requires reviewed removal before --gpu-isolation off"
     fi
   fi
@@ -378,7 +376,7 @@ if [[ "$ROOT" == "/" ]]; then
 else
   isolation_enabled=0
   if [[ "$GPU_ISOLATION" == "off" ]] && {
-    [[ -e "$ISOLATION_DROPIN_DEST" || -e "$ISOLATION_UNIT_DEST" || -e "$GPU_DEVICE_MAP_DEST" || -e "$GPU_VISIBLE_MAP_DEST" ]]
+    [[ -e "$ISOLATION_DROPIN_DEST" || -e "$ISOLATION_UNIT_DEST" || -e "$GPU_DEVICE_MAP_DEST" ]]
   }; then
     die "existing GPU isolation state requires reviewed removal before --gpu-isolation off"
   fi
@@ -403,7 +401,10 @@ Before=astrumweaver-worker.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/libexec/astrumweaver/gpu-device-map verify-visible /etc/astrumweaver/gpu-visible-map
+RuntimeDirectory=astrumweaver-worker-gpu-isolation
+RuntimeDirectoryMode=0755
+RemainAfterExit=yes
+ExecStart=/usr/local/libexec/astrumweaver/gpu-device-map snapshot-visible /run/astrumweaver-worker-gpu-isolation/gpu-visible-map
 ExecStart=/usr/local/libexec/astrumweaver/gpu-device-map verify /etc/astrumweaver/gpu-uuids /etc/astrumweaver/gpu-device-map
 EOF
   install_generated_same_or_fail "$isolation_unit_tmp" "$ISOLATION_UNIT_DEST" 0644
@@ -414,7 +415,7 @@ EOF
     printf 'After=astrumweaver-worker-gpu-isolation-preflight.service\n\n'
     printf '[Service]\n'
     printf 'ExecStartPre=\n'
-    printf 'ExecStartPre=+/usr/local/libexec/astrumweaver/gpu-device-map probe-access /etc/astrumweaver/gpu-uuids /etc/astrumweaver/gpu-visible-map\n'
+    printf 'ExecStartPre=+/usr/local/libexec/astrumweaver/gpu-device-map probe-access /etc/astrumweaver/gpu-uuids /run/astrumweaver-worker-gpu-isolation/gpu-visible-map\n'
     printf 'DevicePolicy=closed\n'
     while IFS='=' read -r uuid path; do
       printf 'DeviceAllow=%s rw\n' "$path"
@@ -433,7 +434,7 @@ EOF
 
     visible="$(IFS=,; printf '%s' "${GPU_UUIDS[*]}")"
     printf 'Environment=CUDA_VISIBLE_DEVICES=%s\n' "$visible"
-    printf 'Environment=ASTRUMWEAVER_GPU_ISOLATION_VISIBLE_MAP=/etc/astrumweaver/gpu-visible-map\n'
+    printf 'Environment=ASTRUMWEAVER_GPU_ISOLATION_VISIBLE_MAP=/run/astrumweaver-worker-gpu-isolation/gpu-visible-map\n'
   } >"$isolation_dropin_tmp"
   install_generated_same_or_fail "$isolation_dropin_tmp" "$ISOLATION_DROPIN_DEST" 0644
 fi
@@ -443,7 +444,6 @@ reconcile_service_file "$ROOT" "$SERVICE_USER" "$ENV_DEST"
 reconcile_service_file "$ROOT" "$SERVICE_USER" "$RUNTIME_MANIFEST_DEST"
 reconcile_service_file "$ROOT" "$SERVICE_USER" "$GPU_UUID_DEST"
 reconcile_service_file "$ROOT" "$SERVICE_USER" "$GPU_DEVICE_MAP_DEST"
-reconcile_service_file "$ROOT" "$SERVICE_USER" "$GPU_VISIBLE_MAP_DEST"
 
 if [[ "$ROOT" == "/" ]]; then
   systemd_reload_and_maybe_start astrumweaver-worker.service "$START"
