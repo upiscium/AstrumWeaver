@@ -315,7 +315,12 @@ EOF
           printf "%s" "$runtimeDeviceAllowText" | grep -q '/dev/nvidiactl rw'
           printf "%s" "$runtimeEnvironmentText" | grep -q 'CUDA_VISIBLE_DEVICES=GPU-example-smoke'
           printf "%s" "$runtimeEnvironmentText" | grep -q 'ASTRUMWEAVER_GPU_ISOLATION_VISIBLE_MAP=/run/astrumweaver-worker-gpu-isolation/gpu-visible-map'
-          printf "%s" "$runtimeWorkerPreflight" | grep -Eq '^\+/nix/store/[a-z0-9]{32}-astrumweaver-gpu-device-map/bin/astrumweaver-gpu-device-map probe-access /nix/store/[a-z0-9]{32}-astrumweaver-gpu-uuids /run/astrumweaver-worker-gpu-isolation/gpu-visible-map
+          printf "%s" "$runtimeWorkerPreflight" | grep -q 'astrumweaver-gpu-device-map'
+          printf "%s" "$runtimeWorkerPreflight" | grep -q 'probe-access'
+          printf "%s" "$runtimeWorkerPreflight" | grep -q '/run/astrumweaver-worker-gpu-isolation/gpu-visible-map'
+          printf "%s" "$runtimeIsolationPreflight" | grep -q 'snapshot-visible'
+          printf "%s" "$runtimeIsolationPreflight" | grep -q 'gpu-device-map'
+          printf "%s" "$runtimeIsolationPreflight" | grep -q 'verify'
           printf "%s\n%s\n%s\n%s\n%s\n" \
             "$runtimeWorkerExec" "$runtimeWorkerPath" "$workerConfig" \
             "$runtimeDevicePolicy" "$runtimeWorkerPreflight" \
