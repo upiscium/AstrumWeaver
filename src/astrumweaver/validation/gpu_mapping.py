@@ -473,7 +473,14 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "mode",
-        choices=("discover", "discover-visible", "verify", "verify-visible", "probe-access"),
+        choices=(
+            "discover",
+            "discover-visible",
+            "snapshot-visible",
+            "verify",
+            "verify-visible",
+            "probe-access",
+        ),
     )
     parser.add_argument("paths", nargs="*")
     return parser
@@ -505,6 +512,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.paths:
                 raise GpuMappingError("discover-visible arguments are invalid")
             selected = mapping
+        elif args.mode == "snapshot-visible":
+            if len(args.paths) != 1:
+                raise GpuMappingError("snapshot-visible arguments are invalid")
+            target = Path(args.paths[0])
+            target.write_text(
+                "".join(f"{uuid}={device_path}\n" for uuid, device_path in mapping),
+                encoding="utf-8",
+            )
+            os.chmod(target, 0o644)
+            print(f"[astrumweaver-gpu-device-map] snapshot-ok count={len(mapping)}")
+            return 0
         elif args.mode == "verify-visible":
             if len(args.paths) != 1:
                 raise GpuMappingError("verify-visible arguments are invalid")
