@@ -325,17 +325,21 @@ class RuntimeDeploymentAcceptanceEvidence:
     date_utc: str
     astrumweaver_revision: str
     deployment_path: str
+    outcome: str
     host_gpu_count: int
     selected_gpu_count: int
     private_values_omitted: bool
     host_gpu_superset: str
     worker_contract_exact: str
-    worker_exact_set_preflight_enabled: str
+    worker_gpu_preflight_enabled: str
     uuid_device_mapping_verified: str
+    isolation_enforcement: str
+    fail_closed: str
     device_policy_closed: str
     selected_device_allow_exact: str
     cuda_visible_devices_exact: str
-    in_service_exact_set_gate_present: str
+    in_service_gpu_preflight_present: str
+    worker_start_attempted: str
     worker_started_ready: str
     worker_registered: str
     service_stopped_after_acceptance: str
@@ -443,22 +447,39 @@ def _has_exact_set_preflight(value: str) -> bool:
     return False
 
 
-def _reject_effective_cuda_environment_override(
+def _environment_values(
+    environment: list[str],
+    name: str,
+) -> list[str]:
+    prefix = name + "="
+    return [
+        assignment[len(prefix):]
+        for assignment in environment
+        if assignment.startswith(prefix)
+    ]
+
+
+def _reject_effective_gpu_environment_override(
     properties: Mapping[str, str],
+    protected_names: frozenset[str],
 ) -> None:
     unset_environment = _split_systemd_list(
         properties.get("UnsetEnvironment", ""), "UnsetEnvironment"
     )
     if any(
-        item.partition("=")[0] == "CUDA_VISIBLE_DEVICES"
+        item.partition("=")[0] in protected_names
         for item in unset_environment
     ):
         raise RuntimeDeploymentAcceptanceError(
-            "Worker CUDA_VISIBLE_DEVICES is unset by effective systemd policy"
+            "Worker GPU preflight environment is unset by effective systemd policy"
         )
 
     environment_files = _split_systemd_list(
         properties.get("EnvironmentFiles", ""), "EnvironmentFiles"
+    )
+    pattern = re.compile(
+        r"^\s*(" + "|".join(re.escape(name) for name in sorted(protected_names))
+        + r")\s*="
     )
     for item in environment_files:
         if item.startswith("(") and item.endswith(")"):
@@ -480,12 +501,12 @@ def _reject_effective_cuda_environment_override(
                 "Worker EnvironmentFile could not be checked for GPU overrides"
             ) from exc
         if any(
-            re.match(r"^\s*CUDA_VISIBLE_DEVICES\s*=", line)
+            pattern.match(line)
             for line in lines
             if not line.lstrip().startswith(("#", ";"))
         ):
             raise RuntimeDeploymentAcceptanceError(
-                "Worker CUDA_VISIBLE_DEVICES may be overridden by an EnvironmentFile"
+                "Worker GPU preflight environment may be overridden by an EnvironmentFile"
             )
 
 
@@ -525,20 +546,45 @@ def validate_effective_worker_gpu_isolation(
     environment = _split_systemd_list(
         properties.get("Environment", ""), "Environment"
     )
-    visible_matches = [
-        assignment.partition("=")[2]
-        for assignment in environment
-        if assignment.startswith("CUDA_VISIBLE_DEVICES=")
-    ]
-    if visible_matches != [",".join(expected_gpu_uuids)]:
+    protected_names = frozenset(
+        {
+            "CUDA_VISIBLE_DEVICES",
+            "ASTRUMWEAVER_GPU_PREFLIGHT_MODE",
+            "ASTRUMWEAVER_GPU_DEVICE_MAP",
+            "ASTRUMWEAVER_GPU_WORKER_CONFIG",
+            "ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND",
+        }
+    )
+    if _environment_values(
+        environment, "CUDA_VISIBLE_DEVICES"
+    ) != [",".join(expected_gpu_uuids)]:
         raise RuntimeDeploymentAcceptanceError(
             "Worker CUDA_VISIBLE_DEVICES does not preserve selected GPU order"
         )
-    _reject_effective_cuda_environment_override(properties)
+    if _environment_values(
+        environment, "ASTRUMWEAVER_GPU_PREFLIGHT_MODE"
+    ) != ["isolated-access"]:
+        raise RuntimeDeploymentAcceptanceError(
+            "Worker service does not explicitly use isolated-access GPU preflight"
+        )
+    for name in (
+        "ASTRUMWEAVER_GPU_DEVICE_MAP",
+        "ASTRUMWEAVER_GPU_WORKER_CONFIG",
+        "ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND",
+    ):
+        values = _environment_values(environment, name)
+        if len(values) != 1 or not values[0].startswith("/"):
+            raise RuntimeDeploymentAcceptanceError(
+                f"Worker service lacks explicit absolute {name}"
+            )
+    _reject_effective_gpu_environment_override(
+        properties,
+        protected_names,
+    )
 
     if not _has_exact_set_preflight(properties.get("ExecStartPre", "")):
         raise RuntimeDeploymentAcceptanceError(
-            "Worker service lacks in-cgroup exact-set preflight"
+            "Worker service lacks in-cgroup GPU preflight"
         )
 
     isolation_preflight = "astrumweaver-worker-gpu-isolation-preflight.service"
