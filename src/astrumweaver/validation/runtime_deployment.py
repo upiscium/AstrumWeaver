@@ -9,6 +9,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 from dataclasses import asdict, dataclass
@@ -66,6 +67,12 @@ class RuntimeDeploymentHost(Protocol):
 
     def worker_unit_properties(self) -> Mapping[str, str]: ...
 
+    def probe_isolation_enforcement(
+        self,
+        host_map: Mapping[str, str],
+        expected_gpu_uuids: tuple[str, ...],
+    ) -> bool: ...
+
     def service_active(self) -> bool: ...
 
     def start_service(self) -> None: ...
@@ -82,6 +89,7 @@ class SystemdRuntimeDeploymentHost:
         service: str,
         worker_config: Path,
         systemctl: str = "systemctl",
+        systemd_run: str = "systemd-run",
         nvidia_smi: str = "nvidia-smi",
         gpu_device_map: str | None = None,
         health_url: str = "http://127.0.0.1:9100/health",
@@ -89,6 +97,7 @@ class SystemdRuntimeDeploymentHost:
         self.service = service
         self.worker_config = worker_config
         self.systemctl = systemctl
+        self.systemd_run = systemd_run
         self.nvidia_smi = nvidia_smi
         if gpu_device_map is not None:
             mapper_path = Path(gpu_device_map)
@@ -180,6 +189,75 @@ class SystemdRuntimeDeploymentHost:
         )
         return parse_systemd_show_properties(completed.stdout)
 
+    def probe_isolation_enforcement(
+        self,
+        host_map: Mapping[str, str],
+        expected_gpu_uuids: tuple[str, ...],
+    ) -> bool:
+        if len(host_map) <= len(expected_gpu_uuids):
+            raise RuntimeDeploymentAcceptanceError(
+                "isolation capability probe requires a GPU superset"
+            )
+        selected_paths = []
+        for uuid in expected_gpu_uuids:
+            path = host_map.get(uuid)
+            if path is None:
+                raise RuntimeDeploymentAcceptanceError(
+                    "selected GPU UUID is not visible on the host"
+                )
+            selected_paths.append(path)
+
+        with tempfile.TemporaryDirectory(
+            prefix="astrumweaver-gpu-isolation-"
+        ) as raw_tmp:
+            tmp = Path(raw_tmp)
+            expected_path = tmp / "expected-uuids"
+            visible_map_path = tmp / "visible-map"
+            expected_path.write_text(
+                "".join(f"{uuid}\n" for uuid in expected_gpu_uuids),
+                encoding="utf-8",
+            )
+            visible_map_path.write_text(
+                "".join(
+                    f"{uuid}={path}\n"
+                    for uuid, path in sorted(host_map.items())
+                ),
+                encoding="utf-8",
+            )
+
+            command = [
+                self.systemd_run,
+                "--quiet",
+                "--wait",
+                "--pipe",
+                "--collect",
+                "--property=Type=oneshot",
+                "--property=DevicePolicy=closed",
+            ]
+            command.extend(
+                f"--property=DeviceAllow={path} rw"
+                for path in selected_paths
+            )
+            for path in _NVIDIA_AUXILIARY_DEVICE_PATHS:
+                if Path(path).exists():
+                    command.append(f"--property=DeviceAllow={path} rw")
+            command.extend(
+                [
+                    self.gpu_device_map,
+                    "probe-access",
+                    str(expected_path),
+                    str(visible_map_path),
+                ]
+            )
+            completed = self._run(command, check=False)
+            if completed.returncode == 0:
+                return True
+            if completed.returncode == 3:
+                return False
+            raise RuntimeDeploymentAcceptanceError(
+                "GPU isolation capability probe failed"
+            )
+
     def service_active(self) -> bool:
         completed = self._run(
             [self.systemctl, "is-active", "--quiet", self.service],
@@ -233,12 +311,21 @@ class RuntimeDeploymentAcceptanceEvidence:
     worker_started_ready: str
     worker_registered: str
     service_stopped_after_acceptance: str
+    isolation_enforcement: str
+    fail_closed: str
     overall: str
 
 
 _GPU_DEVICE_PATH_RE = re.compile(r"^/dev/nvidia[0-9]+$")
 _GPU_ALLOWED_DEVICE_PATH_RE = re.compile(
     r"^/dev/nvidia(?:[0-9]+|[-a-zA-Z0-9_/]+)$"
+)
+_NVIDIA_AUXILIARY_DEVICE_PATHS = (
+    "/dev/nvidiactl",
+    "/dev/nvidia-modeset",
+    "/dev/nvidia-uvm",
+    "/dev/nvidia-uvm-tools",
+    "/dev/nvidia-nvswitchctl",
 )
 _NIX_STORE_HASH = r"[a-z0-9]{32}"
 _NIX_GPU_PREFLIGHT_RE = re.compile(
@@ -526,6 +613,36 @@ class RuntimeDeploymentAcceptanceRunner:
                 "selected GPU UUID is not visible on the host"
             )
 
+        if self.host.service_active():
+            raise RuntimeDeploymentAcceptanceError(
+                "acceptance requires the Worker service to start from inactive state"
+            )
+
+        if not self.host.probe_isolation_enforcement(host_map, expected):
+            return RuntimeDeploymentAcceptanceEvidence(
+                evidence_version="runtime-deployment-v2",
+                date_utc=datetime.now(UTC).date().isoformat(),
+                astrumweaver_revision=self.revision,
+                deployment_path=self.deployment_path,
+                host_gpu_count=len(host_map),
+                selected_gpu_count=len(expected),
+                private_values_omitted=True,
+                host_gpu_superset="PASS",
+                worker_contract_exact="NOT_RUN",
+                worker_exact_set_preflight_enabled="NOT_RUN",
+                uuid_device_mapping_verified="PASS",
+                device_policy_closed="NOT_RUN",
+                selected_device_allow_exact="NOT_RUN",
+                cuda_visible_devices_exact="NOT_RUN",
+                in_service_exact_set_gate_present="NOT_RUN",
+                worker_started_ready="NOT_RUN",
+                worker_registered="NOT_RUN",
+                service_stopped_after_acceptance="PASS",
+                isolation_enforcement="UNAVAILABLE",
+                fail_closed="PASS",
+                overall="PASS",
+            )
+
         configured_uuids, gpu_preflight = self.host.worker_gpu_contract()
         if configured_uuids != expected:
             raise RuntimeDeploymentAcceptanceError(
@@ -542,11 +659,6 @@ class RuntimeDeploymentAcceptanceRunner:
             expected_gpu_uuids=expected,
             expected_device_paths=expected_paths,
         )
-
-        if self.host.service_active():
-            raise RuntimeDeploymentAcceptanceError(
-                "acceptance requires the Worker service to start from inactive state"
-            )
 
         start_attempted = False
         try:
@@ -571,7 +683,7 @@ class RuntimeDeploymentAcceptanceRunner:
             )
 
         return RuntimeDeploymentAcceptanceEvidence(
-            evidence_version="runtime-deployment-v1",
+            evidence_version="runtime-deployment-v2",
             date_utc=datetime.now(UTC).date().isoformat(),
             astrumweaver_revision=self.revision,
             deployment_path=self.deployment_path,
@@ -589,6 +701,8 @@ class RuntimeDeploymentAcceptanceRunner:
             worker_started_ready="PASS",
             worker_registered="PASS",
             service_stopped_after_acceptance="PASS",
+            isolation_enforcement="PASS",
+            fail_closed="N/A",
             overall="PASS",
         )
 
@@ -624,6 +738,8 @@ def render_runtime_deployment_markdown(
             "Service stopped after acceptance",
             evidence.service_stopped_after_acceptance,
         ),
+        ("Isolation enforcement", evidence.isolation_enforcement),
+        ("Fail closed", evidence.fail_closed),
         ("Overall", evidence.overall),
     ]
     rows = "\n".join(f"| {key} | {value} |" for key, value in fields)
@@ -675,6 +791,7 @@ def main() -> None:
         default="astrumweaver-worker.service",
     )
     parser.add_argument("--systemctl", default="systemctl")
+    parser.add_argument("--systemd-run", default="systemd-run")
     parser.add_argument("--nvidia-smi", default="nvidia-smi")
     parser.add_argument(
         "--gpu-device-map",
@@ -711,6 +828,7 @@ def main() -> None:
             service=args.service,
             worker_config=args.worker_config,
             systemctl=args.systemctl,
+            systemd_run=args.systemd_run,
             nvidia_smi=args.nvidia_smi,
             gpu_device_map=args.gpu_device_map,
             health_url=args.health_url,
