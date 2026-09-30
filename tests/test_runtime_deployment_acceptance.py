@@ -15,6 +15,7 @@ from astrumweaver.validation.runtime_deployment import (
     parse_systemd_show_properties,
     render_runtime_deployment_markdown,
     resolve_packaged_gpu_device_map,
+    resolve_packaged_gpu_isolation_probe,
 )
 
 
@@ -46,7 +47,7 @@ def test_acceptance_resolves_absolute_profile_sibling_without_ambient_path(
     assert resolved == str(sibling)
 
 
-def test_acceptance_prefers_reviewed_installed_mapper_over_profile_sibling(
+def test_acceptance_prefers_same_revision_profile_mapper_over_installed_copy(
     tmp_path: Path,
 ) -> None:
     installed = tmp_path / "usr/local/libexec/astrumweaver/gpu-device-map"
@@ -64,7 +65,44 @@ def test_acceptance_prefers_reviewed_installed_mapper_over_profile_sibling(
         installed_path=installed,
     )
 
+    assert resolved == str(sibling)
+
+
+def test_acceptance_falls_back_to_reviewed_installed_mapper(
+    tmp_path: Path,
+) -> None:
+    installed = tmp_path / "usr/local/libexec/astrumweaver/gpu-device-map"
+    installed.parent.mkdir(parents=True)
+    installed.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    installed.chmod(0o755)
+
+    resolved = resolve_packaged_gpu_device_map(
+        argv0=str(tmp_path / "missing-profile/bin/astrumweaver-runtime-deployment-accept"),
+        installed_path=installed,
+    )
+
     assert resolved == str(installed)
+
+
+def test_acceptance_isolation_probe_prefers_profile_sibling(
+    tmp_path: Path,
+) -> None:
+    installed = tmp_path / "usr/local/libexec/astrumweaver/gpu-isolation-probe"
+    installed.parent.mkdir(parents=True)
+    installed.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+    installed.chmod(0o755)
+    profile_bin = tmp_path / "installer-profile" / "bin"
+    profile_bin.mkdir(parents=True)
+    sibling = profile_bin / "astrumweaver-gpu-isolation-probe"
+    sibling.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    sibling.chmod(0o755)
+
+    resolved = resolve_packaged_gpu_isolation_probe(
+        argv0=str(profile_bin / "astrumweaver-runtime-deployment-accept"),
+        installed_path=installed,
+    )
+
+    assert resolved == str(sibling)
 
 
 def test_acceptance_rejects_bare_mapper_override(tmp_path: Path) -> None:
