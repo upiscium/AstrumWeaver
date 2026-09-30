@@ -399,7 +399,9 @@ def _parse_device_allow(value: str) -> list[tuple[str, str]]:
     return list(zip(fields[::2], fields[1::2], strict=True))
 
 
-def _has_exact_set_preflight(value: str) -> bool:
+def _has_isolated_access_preflight(value: str) -> bool:
+    """Require the reviewed in-cgroup physical-device access probe."""
+
     for record in re.findall(r"\{([^{}]*)\}", value):
         properties = {
             name.strip(): field_value.strip()
@@ -417,19 +419,6 @@ def _has_exact_set_preflight(value: str) -> bool:
             continue
         if not argv or argv[0] != executable:
             continue
-
-        if (
-            len(argv) == 2
-            and executable == "/usr/local/libexec/astrumweaver/gpu-preflight"
-            and argv[1] == "/etc/astrumweaver/gpu-uuids"
-        ):
-            return True
-        if (
-            len(argv) == 2
-            and _NIX_GPU_PREFLIGHT_RE.fullmatch(executable)
-            and _NIX_GPU_UUIDS_RE.fullmatch(argv[1])
-        ):
-            return True
 
         generic_mapper = (
             executable == "/usr/local/libexec/astrumweaver/gpu-device-map"
@@ -561,7 +550,7 @@ def validate_effective_worker_gpu_isolation(
         )
     _reject_effective_cuda_environment_override(properties)
 
-    if not _has_exact_set_preflight(properties.get("ExecStartPre", "")):
+    if not _has_isolated_access_preflight(properties.get("ExecStartPre", "")):
         raise RuntimeDeploymentAcceptanceError(
             "Worker service lacks in-cgroup GPU access preflight"
         )
