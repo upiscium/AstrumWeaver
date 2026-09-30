@@ -23,6 +23,7 @@ PREFLIGHT = ROOT / "libexec" / "gpu-preflight"
 LEGACY_GPU_PREFLIGHT = ROOT / "tests/fixtures/gpu-preflight-v59"
 LEGACY_GPU_DEVICE_MAP = ROOT / "tests/fixtures/gpu-device-map-v48"
 LEGACY_GPU_DEVICE_MAP_V59 = ROOT / "tests/fixtures/gpu-device-map-v59"
+LEGACY_GPU_MAPPING_V54 = ROOT / "tests/fixtures/gpu-mapping-v54.py"
 
 
 def reviewed_gpu_mapping_v59_bytes() -> bytes:
@@ -312,6 +313,73 @@ def test_worker_setup_upgrades_reviewed_v48_gpu_mapper_to_canonical_helper(
     )
     assert os.access(helper, os.X_OK)
 
+
+
+
+def test_worker_setup_upgrades_reviewed_v54_gpu_mapping_python(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "worker.toml"
+    config.write_text(
+        '[worker]\ngpu_uuids = ["GPU-legacy"]\n',
+        encoding="utf-8",
+    )
+    staged = tmp_path / "root"
+    helper = staged / "usr/local/libexec/astrumweaver/gpu_mapping.py"
+    helper.parent.mkdir(parents=True)
+    helper.write_bytes(LEGACY_GPU_MAPPING_V54.read_bytes())
+
+    assert hashlib.sha256(helper.read_bytes()).hexdigest() == (
+        "41d4e6d29650a5da43b1441fb8c8c711e717fca95693e7cc60f607903fd67b69"
+    )
+
+    result = run(
+        "bash",
+        str(SETUP / "setup-gpu-worker.sh"),
+        "--config",
+        str(config),
+        "--executable",
+        "/usr/local/bin/astrumweaver-worker",
+        "--root",
+        str(staged),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert helper.read_bytes() == (
+        ROOT / "src/astrumweaver/gpu_mapping.py"
+    ).read_bytes()
+
+
+def test_worker_setup_rejects_modified_v54_gpu_mapping_python(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "worker.toml"
+    config.write_text(
+        '[worker]\ngpu_uuids = ["GPU-legacy"]\n',
+        encoding="utf-8",
+    )
+    staged = tmp_path / "root"
+    helper = staged / "usr/local/libexec/astrumweaver/gpu_mapping.py"
+    helper.parent.mkdir(parents=True)
+    helper.write_bytes(
+        LEGACY_GPU_MAPPING_V54.read_bytes() + b"# operator change\n"
+    )
+    before = helper.read_bytes()
+
+    result = run(
+        "bash",
+        str(SETUP / "setup-gpu-worker.sh"),
+        "--config",
+        str(config),
+        "--executable",
+        "/usr/local/bin/astrumweaver-worker",
+        "--root",
+        str(staged),
+    )
+
+    assert result.returncode != 0
+    assert "destination differs; refusing overwrite" in result.stderr
+    assert helper.read_bytes() == before
 
 
 def test_worker_setup_upgrades_reviewed_v59_gpu_mapping_python(
