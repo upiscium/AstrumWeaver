@@ -153,7 +153,7 @@ DEVICE_MAP_HELPER_SOURCE="$REPO_ROOT/libexec/gpu-device-map"
 GPU_ISOLATION_PROBE_SOURCE="$REPO_ROOT/libexec/gpu-isolation-probe"
 [[ -f "$PREFLIGHT_SOURCE" ]] || die "GPU preflight helper is unavailable"
 [[ -x "$DEVICE_MAP_HELPER_SOURCE" ]] || die "canonical GPU mapper helper is unavailable"
-[[ -x "$GPU_ISOLATION_PROBE_SOURCE" ]] || die "GPU isolation capability probe is unavailable"
+[[ -f "$GPU_ISOLATION_PROBE_SOURCE" ]] || die "GPU isolation capability probe is unavailable"
 GPU_MAPPING_PYTHON_SOURCE="$REPO_ROOT/libexec/gpu_mapping.py"
 if [[ ! -f "$GPU_MAPPING_PYTHON_SOURCE" ]]; then
   GPU_MAPPING_PYTHON_SOURCE="$REPO_ROOT/src/astrumweaver/validation/gpu_mapping.py"
@@ -304,7 +304,7 @@ if [[ "$ROOT" == "/" ]]; then
     set +e
     ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND="$DEVICE_MAP_HELPER_SOURCE" \
     ASTRUMWEAVER_NVIDIA_SMI="$(command -v nvidia-smi)" \
-      "$GPU_ISOLATION_PROBE_SOURCE" \
+      bash "$GPU_ISOLATION_PROBE_SOURCE" \
       "$expected_tmp" \
       "$device_map_tmp" \
       "$CONFIG_SOURCE" \
