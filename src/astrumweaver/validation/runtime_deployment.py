@@ -59,10 +59,18 @@ def resolve_packaged_gpu_device_map(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class WorkerGpuContract:
+    gpu_uuids: tuple[str, ...]
+    preflight_enabled: bool
+    preflight_mode: str
+    gpu_device_map: str
+
+
 class RuntimeDeploymentHost(Protocol):
     def host_gpu_device_map(self) -> Mapping[str, str]: ...
 
-    def worker_gpu_contract(self) -> tuple[tuple[str, ...], bool]: ...
+    def worker_gpu_contract(self) -> WorkerGpuContract: ...
 
     def worker_unit_properties(self) -> Mapping[str, str]: ...
 
@@ -154,7 +162,7 @@ class SystemdRuntimeDeploymentHost:
             )
         return result
 
-    def worker_gpu_contract(self) -> tuple[tuple[str, ...], bool]:
+    def worker_gpu_contract(self) -> WorkerGpuContract:
         try:
             with self.worker_config.open("rb") as handle:
                 config = tomllib.load(handle)
@@ -164,8 +172,14 @@ class SystemdRuntimeDeploymentHost:
             ) from exc
         worker = dict(config.get("worker") or {})
         uuids = tuple(str(item) for item in worker.get("gpu_uuids", ()))
-        preflight = bool(worker.get("gpu_preflight", True))
-        return uuids, preflight
+        return WorkerGpuContract(
+            gpu_uuids=uuids,
+            preflight_enabled=bool(worker.get("gpu_preflight", True)),
+            preflight_mode=str(
+                worker.get("gpu_preflight_mode", "exact-visible")
+            ).strip(),
+            gpu_device_map=str(worker.get("gpu_device_map", "")).strip(),
+        )
 
     def worker_unit_properties(self) -> Mapping[str, str]:
         completed = self._run(
@@ -224,12 +238,14 @@ class RuntimeDeploymentAcceptanceEvidence:
     private_values_omitted: bool
     host_gpu_superset: str
     worker_contract_exact: str
-    worker_exact_set_preflight_enabled: str
+    worker_gpu_preflight_enabled: str
+    preflight_mode: str
     uuid_device_mapping_verified: str
     device_policy_closed: str
     selected_device_allow_exact: str
     cuda_visible_devices_exact: str
-    in_service_exact_set_gate_present: str
+    in_service_gpu_ownership_gate_present: str
+    isolation_enforcement: str
     worker_started_ready: str
     worker_registered: str
     service_stopped_after_acceptance: str
@@ -247,6 +263,16 @@ _NIX_GPU_PREFLIGHT_RE = re.compile(
 )
 _NIX_GPU_UUIDS_RE = re.compile(
     rf"^/nix/store/{_NIX_STORE_HASH}-astrumweaver-gpu-uuids$"
+)
+_NIX_GPU_DEVICE_MAP_RE = re.compile(
+    rf"^/nix/store/{_NIX_STORE_HASH}-astrumweaver-gpu-device-map/"
+    r"bin/astrumweaver-gpu-device-map$"
+)
+_NIX_GPU_DEVICE_MAP_DATA_RE = re.compile(
+    rf"^/nix/store/{_NIX_STORE_HASH}-astrumweaver-gpu-device-map$"
+)
+_NIX_WORKER_CONFIG_RE = re.compile(
+    rf"^/nix/store/{_NIX_STORE_HASH}-astrumweaver-worker\.toml$"
 )
 _SYSTEMD_ACCEPTANCE_PROPERTIES = frozenset(
     {
@@ -332,6 +358,47 @@ def _has_exact_set_preflight(value: str) -> bool:
         if (
             _NIX_GPU_PREFLIGHT_RE.fullmatch(executable)
             and _NIX_GPU_UUIDS_RE.fullmatch(argv[1])
+        ):
+            return True
+    return False
+
+
+def _has_isolated_access_preflight(value: str) -> bool:
+    for record in re.findall(r"\{([^{}]*)\}", value):
+        properties = {
+            name.strip(): field_value.strip()
+            for field in record.split(";")
+            for name, separator, field_value in [field.partition("=")]
+            if separator
+        }
+        executable = properties.get("path", "")
+        argv_text = properties.get("argv[]", "")
+        if properties.get("ignore_errors") != "no":
+            continue
+        try:
+            argv = shlex.split(argv_text)
+        except ValueError:
+            continue
+        if len(argv) != 5 or argv[0] != executable:
+            continue
+        if argv[1] != "verify-isolated-access":
+            continue
+
+        if (
+            executable == "/usr/local/libexec/astrumweaver/gpu-device-map"
+            and argv[2:] == [
+                "/etc/astrumweaver/gpu-uuids",
+                "/etc/astrumweaver/gpu-device-map",
+                "/etc/astrumweaver/worker.toml",
+            ]
+        ):
+            return True
+
+        if (
+            _NIX_GPU_DEVICE_MAP_RE.fullmatch(executable)
+            and _NIX_GPU_UUIDS_RE.fullmatch(argv[2])
+            and _NIX_GPU_DEVICE_MAP_DATA_RE.fullmatch(argv[3])
+            and _NIX_WORKER_CONFIG_RE.fullmatch(argv[4])
         ):
             return True
     return False
@@ -430,9 +497,11 @@ def validate_effective_worker_gpu_isolation(
         )
     _reject_effective_cuda_environment_override(properties)
 
-    if not _has_exact_set_preflight(properties.get("ExecStartPre", "")):
+    if not _has_isolated_access_preflight(
+        properties.get("ExecStartPre", "")
+    ):
         raise RuntimeDeploymentAcceptanceError(
-            "Worker service lacks in-cgroup exact-set preflight"
+            "Worker service lacks in-cgroup isolated-access preflight"
         )
 
     isolation_preflight = "astrumweaver-worker-gpu-isolation-preflight.service"
@@ -526,14 +595,22 @@ class RuntimeDeploymentAcceptanceRunner:
                 "selected GPU UUID is not visible on the host"
             )
 
-        configured_uuids, gpu_preflight = self.host.worker_gpu_contract()
-        if configured_uuids != expected:
+        contract = self.host.worker_gpu_contract()
+        if contract.gpu_uuids != expected:
             raise RuntimeDeploymentAcceptanceError(
                 "Worker GPU UUID order/set does not match acceptance selection"
             )
-        if not gpu_preflight:
+        if not contract.preflight_enabled:
             raise RuntimeDeploymentAcceptanceError(
-                "Worker exact GPU preflight is disabled"
+                "Worker GPU ownership preflight is disabled"
+            )
+        if contract.preflight_mode != "isolated-access":
+            raise RuntimeDeploymentAcceptanceError(
+                "Worker GPU preflight mode is not isolated-access"
+            )
+        if not contract.gpu_device_map:
+            raise RuntimeDeploymentAcceptanceError(
+                "Worker isolated-access device map is unavailable"
             )
 
         expected_paths = {host_map[uuid] for uuid in expected}
@@ -571,7 +648,7 @@ class RuntimeDeploymentAcceptanceRunner:
             )
 
         return RuntimeDeploymentAcceptanceEvidence(
-            evidence_version="runtime-deployment-v1",
+            evidence_version="runtime-deployment-v2",
             date_utc=datetime.now(UTC).date().isoformat(),
             astrumweaver_revision=self.revision,
             deployment_path=self.deployment_path,
@@ -580,12 +657,14 @@ class RuntimeDeploymentAcceptanceRunner:
             private_values_omitted=True,
             host_gpu_superset="PASS",
             worker_contract_exact="PASS",
-            worker_exact_set_preflight_enabled="PASS",
+            worker_gpu_preflight_enabled="PASS",
+            preflight_mode="isolated-access",
             uuid_device_mapping_verified="PASS",
             device_policy_closed="PASS",
             selected_device_allow_exact="PASS",
             cuda_visible_devices_exact="PASS",
-            in_service_exact_set_gate_present="PASS",
+            in_service_gpu_ownership_gate_present="PASS",
+            isolation_enforcement="PASS",
             worker_started_ready="PASS",
             worker_registered="PASS",
             service_stopped_after_acceptance="PASS",
@@ -607,17 +686,19 @@ def render_runtime_deployment_markdown(
         ("Host-visible GPU superset", evidence.host_gpu_superset),
         ("Worker GPU contract exact", evidence.worker_contract_exact),
         (
-            "Worker exact-set preflight enabled",
-            evidence.worker_exact_set_preflight_enabled,
+            "Worker GPU preflight enabled",
+            evidence.worker_gpu_preflight_enabled,
         ),
+        ("GPU preflight mode", evidence.preflight_mode),
         ("UUID/device mapping verified", evidence.uuid_device_mapping_verified),
         ("DevicePolicy closed", evidence.device_policy_closed),
         ("Selected DeviceAllow exact", evidence.selected_device_allow_exact),
         ("CUDA visible-device order exact", evidence.cuda_visible_devices_exact),
         (
-            "In-service exact-set gate present",
-            evidence.in_service_exact_set_gate_present,
+            "In-service GPU ownership gate present",
+            evidence.in_service_gpu_ownership_gate_present,
         ),
+        ("Isolation enforcement", evidence.isolation_enforcement),
         ("Worker started ready", evidence.worker_started_ready),
         ("Worker registered", evidence.worker_registered),
         (
