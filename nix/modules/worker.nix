@@ -639,6 +639,11 @@ in
         );
         Environment = [
           "CUDA_VISIBLE_DEVICES=${lib.concatStringsSep "," cfg.gpuUuids}"
+          "ASTRUMWEAVER_GPU_PREFLIGHT_MODE=isolated-access"
+          "ASTRUMWEAVER_GPU_DEVICE_MAP=${gpuIsolationMap}"
+          "ASTRUMWEAVER_GPU_WORKER_CONFIG=${generatedConfig}"
+          "ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND=${gpuDeviceMapVerifier}/bin/astrumweaver-gpu-device-map"
+          "ASTRUMWEAVER_NVIDIA_SMI=${nvidiaSmiCommand}"
         ];
       }
       // lib.optionalAttrs (cfg.gpuUuids != [ ]) {
