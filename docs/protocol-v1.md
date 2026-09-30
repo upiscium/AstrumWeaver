@@ -254,6 +254,8 @@ gpu_count = 0
 total_vram_mb = 0
 max_single_gpu_vram_mb = 0
 max_concurrency = 1
+gpu_preflight = false
+gpu_preflight_mode = "exact-visible"
 poll_interval_seconds = 1
 heartbeat_interval_seconds = 5
 health_host = "127.0.0.1"
@@ -277,9 +279,22 @@ gpu_uuids = ["GPU-example"]
 gpu_count = 1
 total_vram_mb = 24576
 max_single_gpu_vram_mb = 24576
+gpu_preflight = true
+gpu_preflight_mode = "exact-visible"
 ```
 
-The daemon repeats exact guest-visible GPU UUID preflight before registration unless `gpu_preflight = false` is explicitly configured. Normal deployment should leave it enabled.
+GPU Workers use one of two explicit preflight modes:
+
+- `exact-visible`: the daemon requires the raw NVIDIA-visible UUID set to
+  equal `gpu_uuids`.
+- `isolated-access`: the daemon requires an absolute reviewed
+  `gpu_device_map`, the configured CUDA UUID order, selected physical device
+  access, and denial of every unselected visible physical GPU.
+
+`isolated-access` cannot be combined with `gpu_preflight = false`. The
+deployment layer must establish and verify the isolation boundary before the
+daemon starts; the daemon then independently repeats the ownership proof before
+registration.
 
 Worker authority is provided only through:
 
