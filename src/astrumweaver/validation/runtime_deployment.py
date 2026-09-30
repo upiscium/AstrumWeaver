@@ -685,7 +685,7 @@ class RuntimeDeploymentAcceptanceRunner:
             )
         if not gpu_preflight:
             raise RuntimeDeploymentAcceptanceError(
-                "Worker exact GPU preflight is disabled"
+                "Worker GPU preflight is disabled"
             )
 
         expected_paths = {host_map[uuid] for uuid in expected}
@@ -707,7 +707,7 @@ class RuntimeDeploymentAcceptanceRunner:
             ready = self._wait_ready()
             if ready.get("ready") is not True:
                 raise RuntimeDeploymentAcceptanceError(
-                    "Worker readiness did not prove exact-set startup"
+                    "Worker readiness did not prove isolated-access startup"
                 )
             if ready.get("registered") is not True:
                 raise RuntimeDeploymentAcceptanceError(
@@ -723,23 +723,89 @@ class RuntimeDeploymentAcceptanceRunner:
             )
 
         return RuntimeDeploymentAcceptanceEvidence(
-            evidence_version="runtime-deployment-v1",
+            evidence_version="runtime-deployment-v2",
             date_utc=datetime.now(UTC).date().isoformat(),
             astrumweaver_revision=self.revision,
             deployment_path=self.deployment_path,
+            outcome="ENFORCED_SUBSET",
             host_gpu_count=len(host_map),
             selected_gpu_count=len(expected),
             private_values_omitted=True,
             host_gpu_superset="PASS",
             worker_contract_exact="PASS",
-            worker_exact_set_preflight_enabled="PASS",
+            worker_gpu_preflight_enabled="PASS",
             uuid_device_mapping_verified="PASS",
+            isolation_enforcement="PASS",
+            fail_closed="NOT_APPLICABLE",
             device_policy_closed="PASS",
             selected_device_allow_exact="PASS",
             cuda_visible_devices_exact="PASS",
-            in_service_exact_set_gate_present="PASS",
+            in_service_gpu_preflight_present="PASS",
+            worker_start_attempted="YES",
             worker_started_ready="PASS",
             worker_registered="PASS",
+            service_stopped_after_acceptance="PASS",
+            overall="PASS",
+        )
+
+    def run_fail_closed(self) -> RuntimeDeploymentAcceptanceEvidence:
+        host_map = dict(self.host.host_gpu_device_map())
+        expected = self.expected_gpu_uuids
+        if len(host_map) <= len(expected):
+            raise RuntimeDeploymentAcceptanceError(
+                "fail-closed acceptance requires a host-visible GPU superset"
+            )
+        if any(uuid not in host_map for uuid in expected):
+            raise RuntimeDeploymentAcceptanceError(
+                "selected GPU UUID is not visible on the host"
+            )
+
+        configured_uuids, gpu_preflight = self.host.worker_gpu_contract()
+        if configured_uuids != expected:
+            raise RuntimeDeploymentAcceptanceError(
+                "Worker GPU UUID order/set does not match acceptance selection"
+            )
+        if not gpu_preflight:
+            raise RuntimeDeploymentAcceptanceError(
+                "Worker GPU preflight is disabled"
+            )
+        if self.host.service_active():
+            raise RuntimeDeploymentAcceptanceError(
+                "fail-closed acceptance requires the Worker service inactive"
+            )
+
+        classification = self.host.probe_isolation_enforcement(expected)
+        if classification != "UNAVAILABLE":
+            raise RuntimeDeploymentAcceptanceError(
+                "GPU subset isolation was enforceable; expected isolation unavailable"
+            )
+        if self.host.service_active():
+            raise RuntimeDeploymentAcceptanceError(
+                "Worker service started during fail-closed acceptance"
+            )
+
+        return RuntimeDeploymentAcceptanceEvidence(
+            evidence_version="runtime-deployment-v2",
+            date_utc=datetime.now(UTC).date().isoformat(),
+            astrumweaver_revision=self.revision,
+            deployment_path=self.deployment_path,
+            outcome="FAIL_CLOSED",
+            host_gpu_count=len(host_map),
+            selected_gpu_count=len(expected),
+            private_values_omitted=True,
+            host_gpu_superset="PASS",
+            worker_contract_exact="PASS",
+            worker_gpu_preflight_enabled="PASS",
+            uuid_device_mapping_verified="PASS",
+            isolation_enforcement="UNAVAILABLE",
+            fail_closed="PASS",
+            device_policy_closed="NOT_APPLICABLE",
+            selected_device_allow_exact="NOT_APPLICABLE",
+            cuda_visible_devices_exact="PASS",
+            in_service_gpu_preflight_present="NOT_APPLICABLE",
+            worker_start_attempted="NO",
+            worker_started_ready="NOT_RUN",
+            worker_registered="NOT_RUN",
             service_stopped_after_acceptance="PASS",
             overall="PASS",
         )
