@@ -9,6 +9,7 @@ import json
 import os
 import signal
 import tomllib
+from pathlib import Path
 from typing import Any
 
 import uvicorn
@@ -20,9 +21,11 @@ from ..runtime import (
     discover_runtime_host_facts,
     managed_runtime_from_deployment,
 )
+from ..validation.gpu_mapping import GpuMappingError, require_isolated_gpu_access
 from .client import ControlClient
 from .health import create_health_app
 from .runtime import (
+    GpuPreflightMode,
     WorkerRuntime,
     load_executor,
     require_exact_gpu_set,
@@ -110,11 +113,61 @@ async def run_worker(
 
     spec = _build_spec(worker_section)
 
-    if spec.gpu_uuids and bool(worker_section.get("gpu_preflight", True)):
-        require_exact_gpu_set(
-            spec.gpu_uuids,
-            command=str(worker_section.get("nvidia_smi_command", "nvidia-smi")),
+    gpu_preflight_enabled = bool(worker_section.get("gpu_preflight", True))
+    try:
+        gpu_preflight_mode = GpuPreflightMode(
+            str(
+                worker_section.get(
+                    "gpu_preflight_mode",
+                    GpuPreflightMode.EXACT_VISIBLE.value,
+                )
+            ).strip()
         )
+    except ValueError as exc:
+        raise RuntimeError(
+            "worker.gpu_preflight_mode must be exact-visible or isolated-access"
+        ) from exc
+
+    gpu_device_map = str(worker_section.get("gpu_device_map", "")).strip()
+    nvidia_smi_command = str(
+        worker_section.get("nvidia_smi_command", "nvidia-smi")
+    )
+
+    if gpu_preflight_mode is GpuPreflightMode.ISOLATED_ACCESS:
+        if not spec.gpu_uuids:
+            raise RuntimeError("isolated-access preflight requires GPU ownership")
+        if not gpu_preflight_enabled:
+            raise RuntimeError("isolated-access preflight cannot be disabled")
+        if not gpu_device_map or not Path(gpu_device_map).is_absolute():
+            raise RuntimeError(
+                "isolated-access preflight requires an absolute gpu_device_map"
+            )
+    elif gpu_device_map:
+        raise RuntimeError(
+            "gpu_device_map is valid only with isolated-access preflight"
+        )
+
+    if spec.gpu_uuids and gpu_preflight_enabled:
+        if gpu_preflight_mode is GpuPreflightMode.EXACT_VISIBLE:
+            require_exact_gpu_set(
+                spec.gpu_uuids,
+                command=nvidia_smi_command,
+            )
+        else:
+            try:
+                require_isolated_gpu_access(
+                    spec.gpu_uuids,
+                    Path(gpu_device_map),
+                    worker_gpu_order=spec.gpu_uuids,
+                    cuda_visible_devices=os.environ.get(
+                        "CUDA_VISIBLE_DEVICES"
+                    ),
+                    nvidia_smi=nvidia_smi_command,
+                )
+            except GpuMappingError as exc:
+                raise RuntimeError(
+                    "isolated GPU ownership preflight failed"
+                ) from exc
 
     client = ControlClient(
         str(worker_section["control_url"]),
