@@ -53,9 +53,15 @@ The default is `auto`.
 On a live host:
 
 - when the host-visible set already equals the Worker set, ordinary exact-set preflight remains sufficient
-- when the host has extra GPUs, setup discovers the selected UUID/minor mapping and enables the systemd device-cgroup isolation drop-in
-- if the mapping cannot be proven, setup fails closed
+- when the host has extra GPUs, setup discovers the selected UUID/minor mapping but does **not** trust `DevicePolicy=closed` or `DeviceAllow=` configuration text by itself
+- before any persistent subset-isolation map, unit, or drop-in is written, setup runs a transient service with the proposed device policy and verifies that selected physical GPU nodes can be opened while every unselected physical GPU node is denied
+- if an unselected GPU remains openable (for example inside an LXC where the parent did not delegate an effective device-cgroup boundary), setup fails closed and tells the operator to narrow guest-visible GPU exposure at the VM/container/hypervisor boundary
+- if the mapping or enforcement capability cannot be proven, setup fails closed
 - if the Worker is already active, stop it before applying GPU isolation; setup refuses to claim an isolation change on a running process
+
+A successful transient capability probe is only authorization to materialize the
+subset policy. Worker startup still needs an in-service ownership preflight;
+configuration text alone is never accepted as proof of isolation.
 
 For staged `--root` installs there is no live GPU discovery. To stage an
 isolated subset, pass one reviewed `--gpu-device` mapping per selected UUID.
