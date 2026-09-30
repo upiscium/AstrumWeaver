@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Emit the canonical Worker GPU UUID sequence from worker.toml."""
+"""Read canonical Worker GPU ownership/preflight fields from worker.toml."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import tomllib
 from pathlib import Path
 
 
-def load_gpu_uuids(path: Path) -> tuple[str, ...]:
+def load_worker(path: Path) -> dict[str, object]:
     try:
         with path.open("rb") as handle:
             config = tomllib.load(handle)
@@ -19,7 +19,10 @@ def load_gpu_uuids(path: Path) -> tuple[str, ...]:
     worker = config.get("worker")
     if not isinstance(worker, dict):
         raise ValueError("Worker config must contain a [worker] table")
+    return worker
 
+
+def load_gpu_uuids(worker: dict[str, object]) -> tuple[str, ...]:
     raw = worker.get("gpu_uuids")
     if not isinstance(raw, list):
         raise ValueError("worker.gpu_uuids must be a TOML array")
@@ -46,16 +49,43 @@ def load_gpu_uuids(path: Path) -> tuple[str, ...]:
     return tuple(values)
 
 
+def load_preflight_mode(worker: dict[str, object]) -> str:
+    value = worker.get("gpu_preflight_mode", "exact-visible")
+    if not isinstance(value, str):
+        raise ValueError("worker.gpu_preflight_mode must be a string")
+    normalized = value.strip()
+    if normalized not in {"exact-visible", "isolated-access"}:
+        raise ValueError(
+            "worker.gpu_preflight_mode must be exact-visible or isolated-access"
+        )
+    return normalized
+
+
+def load_gpu_device_map(worker: dict[str, object]) -> str:
+    value = worker.get("gpu_device_map", "")
+    if not isinstance(value, str):
+        raise ValueError("worker.gpu_device_map must be a string")
+    return value.strip()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="astrumweaver-worker-gpu-uuids",
         description="Read the canonical GPU UUID sequence from worker.toml",
     )
     parser.add_argument("--config", required=True)
+    parser.add_argument(
+        "--field",
+        choices=("gpu-uuids", "preflight-mode", "gpu-device-map"),
+        default="gpu-uuids",
+    )
     args = parser.parse_args(argv)
 
     try:
-        values = load_gpu_uuids(Path(args.config))
+        worker = load_worker(Path(args.config))
+        values = load_gpu_uuids(worker)
+        preflight_mode = load_preflight_mode(worker)
+        gpu_device_map = load_gpu_device_map(worker)
     except ValueError as exc:
         print(
             f"[astrumweaver-worker-gpu-uuids] ERROR: {exc}",
@@ -63,8 +93,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    for value in values:
-        print(value)
+    if args.field == "gpu-uuids":
+        for value in values:
+            print(value)
+    elif args.field == "preflight-mode":
+        print(preflight_mode)
+    else:
+        print(gpu_device_map)
     return 0
 
 
