@@ -92,7 +92,7 @@ let
     ) + "\n"
   );
   gpuMappingPython = pkgs.writeText "astrumweaver-gpu-mapping.py" (
-    builtins.readFile ../../src/astrumweaver/validation/gpu_mapping.py
+    builtins.readFile ../../src/astrumweaver/gpu_mapping.py
   );
   preflight = pkgs.writeShellApplication {
     name = "astrumweaver-gpu-preflight";
