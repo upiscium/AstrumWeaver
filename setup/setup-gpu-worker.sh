@@ -444,6 +444,9 @@ EOF
       printf 'Environment=ASTRUMWEAVER_GPU_DEVICE_MAP=/etc/astrumweaver/gpu-device-map\n'
       printf 'Environment=ASTRUMWEAVER_GPU_WORKER_CONFIG=/etc/astrumweaver/worker.toml\n'
       printf 'Environment=ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND=/usr/local/libexec/astrumweaver/gpu-device-map\n'
+      if [[ "$ROOT" == "/" ]]; then
+        printf 'Environment=ASTRUMWEAVER_NVIDIA_SMI=%s\n' "$(command -v nvidia-smi)"
+      fi
     fi
   } >"$isolation_dropin_tmp"
   install_generated_same_or_fail "$isolation_dropin_tmp" "$ISOLATION_DROPIN_DEST" 0644
