@@ -63,6 +63,8 @@ let
       gpu_preflight = cfg.gpuUuids != [ ];
       health_host = cfg.healthHost;
       health_port = cfg.healthPort;
+    } // lib.optionalAttrs cfg.gpuIsolation.enable {
+      gpu_isolation_visible_map = gpuIsolationVisibleMap;
     };
     executor = {
       factory = cfg.executorFactory;
@@ -84,6 +86,7 @@ let
   gpuIsolationDevicePaths = map (
     uuid: cfg.gpuIsolation.deviceMap.${uuid} or ""
   ) cfg.gpuUuids;
+  gpuIsolationVisibleMap = "/run/astrumweaver-worker-gpu-isolation/gpu-visible-map";
   gpuIsolationMap = pkgs.writeText "astrumweaver-gpu-device-map" (
     lib.concatStringsSep "\n" (
       map (
@@ -591,9 +594,18 @@ in
         before = [ "astrumweaver-worker.service" ];
         path = [ gpuDeviceMapVerifier ]
           ++ lib.optional (cfg.nvidiaSmiPackage != null) cfg.nvidiaSmiPackage;
+        script = ''
+          set -eu
+          ${gpuDeviceMapVerifier}/bin/astrumweaver-gpu-device-map \
+            snapshot-visible ${gpuIsolationVisibleMap}
+          ${gpuDeviceMapVerifier}/bin/astrumweaver-gpu-device-map \
+            verify ${expectedGpuUuids} ${gpuIsolationMap}
+        '';
         serviceConfig = {
           Type = "oneshot";
-          ExecStart = "${gpuDeviceMapVerifier}/bin/astrumweaver-gpu-device-map verify ${expectedGpuUuids} ${gpuIsolationMap}";
+          RuntimeDirectory = "astrumweaver-worker-gpu-isolation";
+          RuntimeDirectoryMode = "0755";
+          RemainAfterExit = true;
         };
       };
 
@@ -639,10 +651,14 @@ in
         );
         Environment = [
           "CUDA_VISIBLE_DEVICES=${lib.concatStringsSep "," cfg.gpuUuids}"
+          "ASTRUMWEAVER_GPU_ISOLATION_VISIBLE_MAP=${gpuIsolationVisibleMap}"
         ];
       }
       // lib.optionalAttrs (cfg.gpuUuids != [ ]) {
-        ExecStartPre = "+${preflight}/bin/astrumweaver-gpu-preflight ${expectedGpuUuids}";
+        ExecStartPre =
+          if cfg.gpuIsolation.enable
+          then "+${gpuDeviceMapVerifier}/bin/astrumweaver-gpu-device-map probe-access ${expectedGpuUuids} ${gpuIsolationVisibleMap}"
+          else "+${preflight}/bin/astrumweaver-gpu-preflight ${expectedGpuUuids}";
       }
       // lib.optionalAttrs (cfg.environmentFile != null) {
         EnvironmentFile = cfg.environmentFile;
