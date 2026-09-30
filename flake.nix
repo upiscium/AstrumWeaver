@@ -348,33 +348,3 @@ EOF
       };
     };
 }
-
-          printf "%s" "$runtimeIsolationPreflight" | grep -q 'snapshot-visible'
-          printf "%s" "$runtimeIsolationPreflight" | grep -q 'gpu-device-map.*verify'
-          printf "%s\n%s\n%s\n%s\n%s\n" \
-            "$runtimeWorkerExec" "$runtimeWorkerPath" "$workerConfig" \
-            "$runtimeDevicePolicy" "$runtimeWorkerPreflight" \
-            "$runtimeIsolationPreflight" > "$out"
-        '';
-        gpu-isolation-requires-gpu =
-          assert gpuIsolationNoGpuRejected;
-          pkgs.runCommand "astrumweaver-gpu-isolation-requires-gpu" { } ''
-            touch "$out"
-          '';
-        module-eval = pkgs.runCommand "astrumweaver-module-eval" {
-          controlExec = moduleSmoke.config.systemd.services.astrumweaver-control.serviceConfig.ExecStart;
-          workerExec = moduleSmoke.config.systemd.services.astrumweaver-worker.serviceConfig.ExecStart;
-          workerPreflight = moduleSmoke.config.systemd.services.astrumweaver-worker.serviceConfig.ExecStartPre;
-          modeTool = borrowableMode;
-        } ''
-          test -n "$controlExec"
-          test -n "$workerExec"
-          test -n "$workerPreflight"
-          test -x "$modeTool/bin/astrumweaver-gpu-mode"
-          printf "%s" "$controlExec" | grep -q astrumweaver-control
-          printf "%s" "$workerExec" | grep -q astrumweaver-worker
-          printf "%s\n%s\n%s\n%s\n" "$controlExec" "$workerExec" "$workerPreflight" "$modeTool" > "$out"
-        '';
-      };
-    };
-}
