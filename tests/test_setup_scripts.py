@@ -565,6 +565,48 @@ def test_worker_setup_stages_gpu_device_cgroup_isolation(
     assert_no_trailing_whitespace(verifier_unit)
 
 
+def test_staged_isolated_access_replaces_exact_visible_execstartpre(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "worker.toml"
+    config.write_text(
+        '[worker]\nid = "worker-isolated"\nclass = "gpu-single"\n'
+        'gpu_uuids = ["GPU-example-a"]\n'
+        'gpu_preflight_mode = "isolated-access"\n'
+        'gpu_device_map = "/etc/astrumweaver/gpu-device-map"\n',
+        encoding="utf-8",
+    )
+    staged = tmp_path / "root"
+
+    result = run(
+        "bash",
+        str(SETUP / "setup-gpu-worker.sh"),
+        "--config",
+        str(config),
+        "--executable",
+        "/usr/local/bin/astrumweaver-worker",
+        "--gpu-isolation",
+        "on",
+        "--gpu-device",
+        "GPU-example-a=/dev/nvidia3",
+        "--root",
+        str(staged),
+    )
+
+    assert result.returncode == 0, result.stderr
+    dropin = (
+        staged
+        / "etc/systemd/system/astrumweaver-worker.service.d/10-gpu-isolation.conf"
+    ).read_text(encoding="utf-8")
+    assert "ExecStartPre=\n" in dropin
+    assert (
+        "ExecStartPre=+/usr/local/libexec/astrumweaver/gpu-device-map "
+        "verify-isolated-access /etc/astrumweaver/gpu-uuids "
+        "/etc/astrumweaver/gpu-device-map "
+        "/etc/astrumweaver/worker.toml"
+    ) in dropin
+
+
 def test_staged_gpu_isolation_requires_explicit_uuid_device_mapping(
     tmp_path: Path,
 ) -> None:
