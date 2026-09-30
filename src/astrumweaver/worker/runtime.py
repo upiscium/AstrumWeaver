@@ -7,15 +7,10 @@ import contextlib
 import importlib
 import inspect
 import subprocess
-from pathlib import Path
 from collections.abc import Mapping
 from typing import Any
 
 from ..contracts import WorkerSpec
-from ..validation.gpu_mapping import (
-    GpuMappingError,
-    probe_gpu_access_isolation_file,
-)
 from ..control.models import WorkerState
 from ..execution import JobExecutor, JobResult
 from .client import ClaimedJob, ControlClient, ControlTransportError
@@ -64,6 +59,14 @@ def require_isolated_gpu_access(
         return
     if not reviewed_visible_map.strip():
         raise RuntimeError("isolated GPU access map is required")
+    # Import lazily to avoid worker -> validation.__init__ -> hardware ->
+    # worker.mode import cycles during package initialization.
+    from pathlib import Path
+    from ..validation.gpu_mapping import (
+        GpuMappingError,
+        probe_gpu_access_isolation_file,
+    )
+
     try:
         probe_gpu_access_isolation_file(
             expected,
