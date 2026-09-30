@@ -124,11 +124,7 @@ def test_systemctl_show_properties_parse_effective_values() -> None:
     assert properties == {
         "DevicePolicy": "closed",
         "DeviceAllow": "/dev/nvidia0 rw /dev/nvidiactl rw",
-        "Environment": (
-            "CUDA_VISIBLE_DEVICES=GPU-selected "
-            "ASTRUMWEAVER_GPU_ISOLATION_VISIBLE_MAP="
-            "/run/astrumweaver-worker-gpu-isolation/gpu-visible-map OTHER=value"
-        ),
+        "Environment": "CUDA_VISIBLE_DEVICES=GPU-selected OTHER=value",
         "EnvironmentFiles": (
             "/etc/astrumweaver/worker.env (ignore_errors=yes)"
         ),
