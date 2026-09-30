@@ -163,9 +163,11 @@ def test_systemd_host_reads_effective_properties_with_systemctl_show(
         "  'Environment=CUDA_VISIBLE_DEVICES=GPU-selected' \\\n"
         "  'EnvironmentFiles=/etc/astrumweaver/worker.env (ignore_errors=yes)' \\\n"
         "  'UnsetEnvironment=' \\\n"
-        "  'ExecStartPre={ path=/usr/local/libexec/astrumweaver/gpu-preflight ; "
-        "argv[]=/usr/local/libexec/astrumweaver/gpu-preflight "
-        "/etc/astrumweaver/gpu-uuids ; ignore_errors=no ; }' \\\n"
+        "  'ExecStartPre={ path=/usr/local/libexec/astrumweaver/gpu-device-map ; "
+        "argv[]=/usr/local/libexec/astrumweaver/gpu-device-map "
+        "verify-isolated-access /etc/astrumweaver/gpu-uuids "
+        "/etc/astrumweaver/gpu-device-map /etc/astrumweaver/worker.toml ; "
+        "ignore_errors=no ; }' \\\n"
         "  'Requires=astrumweaver-worker-gpu-isolation-preflight.service' \\\n"
         "  'After=network-online.target astrumweaver-worker-gpu-isolation-preflight.service'\n",
         encoding="utf-8",
