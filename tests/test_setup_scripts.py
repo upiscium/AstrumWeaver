@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -207,7 +208,15 @@ def test_worker_setup_stages_exact_gpu_identity_and_is_idempotent(tmp_path: Path
         encoding="utf-8"
     ) == "GPU-example-a\nGPU-example-b\n"
     assert (staged / "usr/local/libexec/astrumweaver/gpu-preflight").exists()
-    assert (staged / "usr/local/libexec/astrumweaver/gpu_mapping.py").exists()
+    mapping_impl = staged / "usr/local/libexec/astrumweaver/gpu_mapping.py"
+    mapping_receipt = (
+        staged / "usr/local/libexec/astrumweaver/gpu_mapping.py.sha256"
+    )
+    assert mapping_impl.exists()
+    assert mapping_receipt.read_text(encoding="utf-8").strip() == hashlib.sha256(
+        mapping_impl.read_bytes()
+    ).hexdigest()
+    assert (mapping_receipt.stat().st_mode & 0o777) == 0o600
     unit = (staged / "etc/systemd/system/astrumweaver-worker.service").read_text(
         encoding="utf-8"
     )
@@ -405,6 +414,81 @@ def test_worker_setup_rejects_modified_legacy_gpu_mapper(tmp_path: Path) -> None
     assert result.returncode != 0
     assert "destination differs; refusing overwrite" in result.stderr
     assert helper.read_bytes() == before
+
+
+def test_worker_setup_rejects_managed_gpu_mapping_body_drift(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "worker.toml"
+    config.write_text(
+        '[worker]\ngpu_uuids = ["GPU-legacy"]\n',
+        encoding="utf-8",
+    )
+    staged = tmp_path / "root"
+    command = [
+        "bash",
+        str(SETUP / "setup-gpu-worker.sh"),
+        "--config",
+        str(config),
+        "--executable",
+        "/usr/local/bin/astrumweaver-worker",
+        "--root",
+        str(staged),
+    ]
+    first = run(*command)
+    assert first.returncode == 0, first.stderr
+
+    mapping_impl = staged / "usr/local/libexec/astrumweaver/gpu_mapping.py"
+    mapping_impl.write_bytes(mapping_impl.read_bytes() + b"# operator change\n")
+    before = mapping_impl.read_bytes()
+
+    changed = run(*command)
+
+    assert changed.returncode != 0
+    assert "differs from reviewed managed content" in changed.stderr
+    assert mapping_impl.read_bytes() == before
+
+
+def test_worker_setup_upgrades_receipted_managed_gpu_mapping(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "worker.toml"
+    config.write_text(
+        '[worker]\ngpu_uuids = ["GPU-legacy"]\n',
+        encoding="utf-8",
+    )
+    staged = tmp_path / "root"
+    command = [
+        "bash",
+        str(SETUP / "setup-gpu-worker.sh"),
+        "--config",
+        str(config),
+        "--executable",
+        "/usr/local/bin/astrumweaver-worker",
+        "--root",
+        str(staged),
+    ]
+    first = run(*command)
+    assert first.returncode == 0, first.stderr
+
+    mapping_impl = staged / "usr/local/libexec/astrumweaver/gpu_mapping.py"
+    receipt = staged / "usr/local/libexec/astrumweaver/gpu_mapping.py.sha256"
+    prior_reviewed = mapping_impl.read_bytes() + b"# prior reviewed version\n"
+    mapping_impl.write_bytes(prior_reviewed)
+    receipt.write_text(
+        hashlib.sha256(prior_reviewed).hexdigest() + "\n",
+        encoding="utf-8",
+    )
+
+    upgraded = run(*command)
+
+    assert upgraded.returncode == 0, upgraded.stderr
+    assert mapping_impl.read_bytes() == (
+        ROOT / "src/astrumweaver/validation/gpu_mapping.py"
+    ).read_bytes()
+    assert receipt.read_text(encoding="utf-8").strip() == hashlib.sha256(
+        mapping_impl.read_bytes()
+    ).hexdigest()
 
 
 def test_worker_setup_stages_runtime_manifest_and_wires_service(
