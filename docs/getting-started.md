@@ -276,11 +276,15 @@ deployment-driver environment when an action needs an installer/downloader.
 
 ## 5. GPU subset deployments
 
-If a Worker owns only some GPUs visible on the host, do not disable the
-exact-set checks.
+If a Worker owns only some GPUs visible on the host, do not disable GPU
+ownership checks.
 
-AstrumWeaver supports a reviewed systemd device-cgroup isolation path and then
-runs the existing exact GPU-set check inside the restricted Worker service.
+AstrumWeaver switches that Worker to explicit `isolated-access` preflight.
+Setup first proves actual device denial in a transient service. If an
+unselected physical GPU remains openable, setup fails closed and the
+VM/LXC/hypervisor must expose only the intended GPU set. When isolation is
+enforceable, the Worker repeats the access proof in ExecStartPre and again in
+the daemon before registration.
 
 Read:
 
