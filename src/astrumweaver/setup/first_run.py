@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Iterator, Mapping
 
 from ..contracts import WorkerSpec
+from ..worker.runtime import GpuPreflightMode
 
 
 class FirstRunRole(StrEnum):
@@ -178,6 +179,8 @@ def render_worker_toml(
     control_url: str,
     execution_mode: FirstRunExecutionMode,
     runtime_manifest: str = "/etc/astrumweaver/runtime-deployment.json",
+    gpu_preflight_mode: GpuPreflightMode = GpuPreflightMode.EXACT_VISIBLE,
+    gpu_device_map: str = "/etc/astrumweaver/gpu-device-map",
     health_host: str = "127.0.0.1",
     health_port: int = 9100,
 ) -> str:
@@ -186,6 +189,16 @@ def render_worker_toml(
     if not 1 <= health_port <= 65535:
         raise ValueError("Worker health port must be between 1 and 65535")
     _validate_smoke_capabilities(worker, execution_mode)
+    if (
+        gpu_preflight_mode is GpuPreflightMode.ISOLATED_ACCESS
+        and not worker.gpu_uuids
+    ):
+        raise ValueError("isolated-access preflight requires at least one GPU")
+    if (
+        gpu_preflight_mode is GpuPreflightMode.ISOLATED_ACCESS
+        and not gpu_device_map.strip()
+    ):
+        raise ValueError("isolated-access preflight requires gpu_device_map")
 
     capabilities = tuple(sorted(worker.capabilities))
     gpu_uuids = tuple(worker.gpu_uuids)
@@ -201,9 +214,16 @@ def render_worker_toml(
         f"max_single_gpu_vram_mb = {worker.resources.max_single_gpu_vram_mb}",
         "max_concurrency = 1",
         f"gpu_preflight = {'true' if gpu_uuids else 'false'}",
+        f"gpu_preflight_mode = {_toml_string(gpu_preflight_mode.value)}",
+    ]
+    if gpu_preflight_mode is GpuPreflightMode.ISOLATED_ACCESS:
+        lines.append(f"gpu_device_map = {_toml_string(gpu_device_map)}")
+    lines.extend(
+        [
         f"health_host = {_toml_string(health_host)}",
         f"health_port = {health_port}",
-    ]
+        ]
+    )
     if worker.labels:
         lines.append("")
         lines.append("[worker.labels]")
