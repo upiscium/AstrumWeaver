@@ -7,19 +7,17 @@ die() {
   exit 1
 }
 
-[[ $# -eq 5 ]] || die "usage: gpu-isolation-probe EXPECTED_UUID_FILE REVIEWED_MAP WORKER_CONFIG CUDA_VISIBLE_DEVICES SERVICE_USER"
+[[ $# -eq 4 ]] || die "usage: gpu-isolation-probe EXPECTED_UUID_FILE REVIEWED_MAP WORKER_CONFIG CUDA_VISIBLE_DEVICES"
 
 EXPECTED_FILE="$1"
 REVIEWED_MAP="$2"
 WORKER_CONFIG="$3"
 CUDA_VISIBLE="$4"
-SERVICE_USER="$5"
 
 [[ -f "$EXPECTED_FILE" ]] || die "expected GPU UUID file is unavailable"
 [[ -f "$REVIEWED_MAP" ]] || die "reviewed GPU device map is unavailable"
 [[ -f "$WORKER_CONFIG" ]] || die "Worker configuration is unavailable"
 [[ -n "$CUDA_VISIBLE" ]] || die "CUDA visible-device order is empty"
-[[ "$SERVICE_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "service user is invalid"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 GPU_DEVICE_MAP="${ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND:-$SCRIPT_DIR/gpu-device-map}"
@@ -53,8 +51,6 @@ declare -a COMMAND=(
   --collect
   "--unit=astrumweaver-gpu-isolation-probe-$$"
   "--property=Type=oneshot"
-  "--property=User=$SERVICE_USER"
-  "--property=Group=$SERVICE_USER"
   "--property=DevicePolicy=closed"
 )
 
