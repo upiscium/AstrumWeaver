@@ -192,23 +192,17 @@ normalize_reviewed_legacy_bash_script() {
 
 normalize_reviewed_gpu_mapper_v59() {
   local source="$1" migrated="$2"
-  cp -- "$source" "$migrated"
-  python3 - "$migrated" <<'PY'
-from pathlib import Path
-import sys
+  local old='../src/astrumweaver/validation/gpu_mapping.py'
+  local new='../src/astrumweaver/gpu_mapping.py'
+  local count
 
-path = Path(sys.argv[1])
-text = path.read_text(encoding="utf-8")
-old = "../src/astrumweaver/validation/gpu_mapping.py"
-new = "../src/astrumweaver/gpu_mapping.py"
+  count="$(grep -oF -- "$old" "$source" | wc -l | tr -d ' ')"
+  [[ "$count" == 2 ]] || return 1
+  if grep -Fq -- "$new" "$source"; then
+    return 1
+  fi
 
-if text.count(old) != 2:
-    raise SystemExit(1)
-if new in text:
-    raise SystemExit(1)
-
-path.write_text(text.replace(old, new), encoding="utf-8")
-PY
+  sed "s#${old}#${new}#g" "$source" >"$migrated"
 }
 
 install_reviewed_script_upgrade() {
