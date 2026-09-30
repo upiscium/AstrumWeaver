@@ -242,16 +242,20 @@ def test_systemd_gpu_preflight_accepts_exact_set_and_rejects_unisolated_superset
     (
         (
             "closed",
-            "{ path=/usr/local/libexec/astrumweaver/gpu-preflight ; "
-            "argv[]=/usr/local/libexec/astrumweaver/gpu-preflight "
-            "/etc/astrumweaver/gpu-uuids ; ignore_errors=no ; }",
+            "{ path=/usr/local/libexec/astrumweaver/gpu-device-map ; "
+            "argv[]=/usr/local/libexec/astrumweaver/gpu-device-map "
+            "verify-isolated-access /etc/astrumweaver/gpu-uuids "
+            "/etc/astrumweaver/gpu-device-map "
+            "/etc/astrumweaver/worker.toml ; ignore_errors=no ; }",
             True,
         ),
         (
             "auto",
-            "{ path=/usr/local/libexec/astrumweaver/gpu-preflight ; "
-            "argv[]=/usr/local/libexec/astrumweaver/gpu-preflight "
-            "/etc/astrumweaver/gpu-uuids ; ignore_errors=no ; }",
+            "{ path=/usr/local/libexec/astrumweaver/gpu-device-map ; "
+            "argv[]=/usr/local/libexec/astrumweaver/gpu-device-map "
+            "verify-isolated-access /etc/astrumweaver/gpu-uuids "
+            "/etc/astrumweaver/gpu-device-map "
+            "/etc/astrumweaver/worker.toml ; ignore_errors=no ; }",
             False,
         ),
         (
@@ -270,7 +274,9 @@ def test_systemd_gpu_preflight_uses_effective_device_isolation_properties(
 ) -> None:
     worker_config = tmp_path / "worker.toml"
     worker_config.write_text(
-        '[worker]\ngpu_uuids = ["GPU-a"]\n',
+        '[worker]\ngpu_uuids = ["GPU-a"]\n'
+        'gpu_preflight_mode = "isolated-access"\n'
+        'gpu_device_map = "/etc/astrumweaver/gpu-device-map"\n',
         encoding="utf-8",
     )
     manifest = tmp_path / "runtime.json"
@@ -298,6 +304,16 @@ def test_systemd_gpu_preflight_uses_effective_device_isolation_properties(
     )
     verifier.chmod(0o755)
 
+    probe = tmp_path / "gpu-isolation-probe"
+    probe_args = tmp_path / "gpu-isolation-probe.args"
+    probe.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf '%s\\n' \"$@\" > {str(probe_args)!r}\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    probe.chmod(0o755)
+
     superset_dir = tmp_path / "isolated-superset"
     superset_dir.mkdir()
     nvidia_smi = fake_nvidia_smi(superset_dir, "GPU-a\nGPU-b")
@@ -322,6 +338,7 @@ def test_systemd_gpu_preflight_uses_effective_device_isolation_properties(
         gpu_device_map_path=device_map,
         gpu_isolation_dropin_path=dropin,
         gpu_device_map_command=str(verifier),
+        gpu_isolation_probe_command=str(probe),
         nvidia_smi=nvidia_smi,
         systemctl=systemctl,
     )
@@ -335,13 +352,15 @@ def test_systemd_gpu_preflight_uses_effective_device_isolation_properties(
 
     if should_verify:
         assert result.state is SetupActionState.SATISFIED
-        assert "device-cgroup isolation is verified" in result.detail
-        assert "ExecStartPre must still prove the exact set" in result.detail
+        assert "effective device denial" in result.detail
+        assert "ExecStartPre repeats isolated-access" in result.detail
         assert verifier_args.read_text(encoding="utf-8").splitlines()[:2] == [
             "--nvidia-smi",
             nvidia_smi,
         ]
+        assert probe_args.read_text(encoding="utf-8").splitlines()[-1] == "GPU-a"
     else:
         assert result.state is SetupActionState.BLOCKED
         assert "no verified service device isolation" in result.detail
         assert not verifier_args.exists()
+        assert not probe_args.exists()
