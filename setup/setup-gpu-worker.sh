@@ -247,6 +247,22 @@ mapfile -t GPU_UUIDS <"$declared_tmp"
 ((${#GPU_UUIDS[@]} > 0)) || die "worker.toml declares no GPU UUIDs"
 sort "$declared_tmp" >"$expected_tmp"
 
+GPU_PREFLIGHT_MODE="$("${GPU_UUID_READER_CMD[@]}" --config "$CONFIG_SOURCE" --field preflight-mode)"
+GPU_DEVICE_MAP_CONFIG="$("${GPU_UUID_READER_CMD[@]}" --config "$CONFIG_SOURCE" --field gpu-device-map)"
+case "$GPU_PREFLIGHT_MODE" in
+  exact-visible)
+    [[ -z "$GPU_DEVICE_MAP_CONFIG" ]] \
+      || die "worker.gpu_device_map is valid only with isolated-access preflight"
+    ;;
+  isolated-access)
+    [[ "$GPU_DEVICE_MAP_CONFIG" == "/etc/astrumweaver/gpu-device-map" ]] \
+      || die "isolated-access requires worker.gpu_device_map=/etc/astrumweaver/gpu-device-map"
+    ;;
+  *)
+    die "unsupported worker.gpu_preflight_mode"
+    ;;
+esac
+
 if ((${#GPU_DEVICE_ENTRIES[@]} > 0)); then
   for entry in "${GPU_DEVICE_ENTRIES[@]}"; do
     [[ "$entry" == *=* ]] || die "--gpu-device must use UUID=/dev/nvidiaN"
@@ -311,6 +327,8 @@ if [[ "$ROOT" == "/" ]]; then
     fi
 
     if [[ "$exact_set" == 0 ]]; then
+      [[ "$GPU_PREFLIGHT_MODE" == "isolated-access" ]] \
+        || die "GPU subset deployment requires worker.gpu_preflight_mode=isolated-access"
       visible="$(IFS=,; printf '%s' "${GPU_UUIDS[*]}")"
       set +e
       ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND="$device_map_exec_tmp" \
@@ -438,6 +456,10 @@ EOF
 
     visible="$(IFS=,; printf '%s' "${GPU_UUIDS[*]}")"
     printf 'Environment=CUDA_VISIBLE_DEVICES=%s\n' "$visible"
+    if [[ "$GPU_PREFLIGHT_MODE" == "isolated-access" ]]; then
+      printf 'ExecStartPre=\n'
+      printf 'ExecStartPre=+/usr/local/libexec/astrumweaver/gpu-device-map verify-isolated-access /etc/astrumweaver/gpu-uuids /etc/astrumweaver/gpu-device-map /etc/astrumweaver/worker.toml\n'
+    fi
   } >"$isolation_dropin_tmp"
   install_generated_same_or_fail "$isolation_dropin_tmp" "$ISOLATION_DROPIN_DEST" 0644
 fi
