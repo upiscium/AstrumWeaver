@@ -80,6 +80,7 @@ class SystemdSetupDriver:
             "/etc/systemd/system/astrumweaver-worker.service.d/10-gpu-isolation.conf"
         ),
         gpu_device_map_command: str = "/usr/local/libexec/astrumweaver/gpu-device-map",
+        gpu_isolation_probe_command: str = "/usr/local/libexec/astrumweaver/gpu-isolation-probe",
         service_name: str = "astrumweaver-worker.service",
         systemctl: str = "systemctl",
         nvidia_smi: str = "nvidia-smi",
@@ -97,6 +98,7 @@ class SystemdSetupDriver:
         self.gpu_device_map_path = gpu_device_map_path
         self.gpu_isolation_dropin_path = gpu_isolation_dropin_path
         self.gpu_device_map_command = gpu_device_map_command
+        self.gpu_isolation_probe_command = gpu_isolation_probe_command
         self.service_name = service_name
         self.systemctl = systemctl
         self.nvidia_smi = nvidia_smi
@@ -304,7 +306,27 @@ class SystemdSetupDriver:
             capture_output=True,
             text=True,
         )
-        return completed.returncode == 0
+        if completed.returncode != 0:
+            return False
+
+        probe = subprocess.run(
+            [
+                self.gpu_isolation_probe_command,
+                str(expected_file),
+                str(map_file),
+                str(self._target(self.worker_config_path)),
+                ",".join(expected),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={
+                **os.environ,
+                "ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND": self.gpu_device_map_command,
+                "ASTRUMWEAVER_NVIDIA_SMI": self.nvidia_smi,
+            },
+        )
+        return probe.returncode == 0
 
     def _service_active(self) -> bool:
         if self.root != Path("/"):
@@ -504,10 +526,10 @@ class SystemdSetupDriver:
                             ),
                         )
                     visibility_detail = (
-                        "host GPU superset accepted only because reviewed "
-                        "systemd device-cgroup isolation is verified; "
-                        "service ExecStartPre must still prove the exact set "
-                        "inside that cgroup"
+                        "host GPU superset accepted only because effective "
+                        "device denial and reviewed systemd isolation are "
+                        "verified; service ExecStartPre repeats isolated-access "
+                        "ownership proof inside that cgroup"
                     )
                 else:
                     visibility_detail = "host-visible GPU set is already exact"
@@ -831,6 +853,10 @@ def create_systemd_driver() -> SystemdSetupDriver:
         gpu_device_map_command=os.environ.get(
             "ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND",
             "/usr/local/libexec/astrumweaver/gpu-device-map",
+        ),
+        gpu_isolation_probe_command=os.environ.get(
+            "ASTRUMWEAVER_GPU_ISOLATION_PROBE_COMMAND",
+            "/usr/local/libexec/astrumweaver/gpu-isolation-probe",
         ),
         service_name=os.environ.get(
             "ASTRUMWEAVER_WORKER_SERVICE",
