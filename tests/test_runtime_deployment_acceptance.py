@@ -13,6 +13,7 @@ from astrumweaver.validation.runtime_deployment import (
     parse_systemd_show_properties,
     render_runtime_deployment_markdown,
     resolve_packaged_gpu_device_map,
+    resolve_packaged_gpu_isolation_probe,
 )
 
 
@@ -73,6 +74,42 @@ def test_acceptance_prefers_reviewed_installed_mapper_over_profile_sibling(
     )
 
     assert resolved == str(installed)
+
+
+def test_acceptance_resolves_isolation_probe_profile_sibling(
+    tmp_path: Path,
+) -> None:
+    profile_bin = tmp_path / "installer-profile" / "bin"
+    profile_bin.mkdir(parents=True)
+    sibling = profile_bin / "astrumweaver-gpu-isolation-probe"
+    sibling.write_text("#!/usr/bin/env bash\nexit 3\n", encoding="utf-8")
+    sibling.chmod(0o755)
+
+    resolved = resolve_packaged_gpu_isolation_probe(
+        argv0=str(profile_bin / "astrumweaver-runtime-deployment-accept"),
+        installed_path=tmp_path / "missing-installed-helper",
+    )
+
+    assert resolved == str(sibling)
+
+
+def test_acceptance_rejects_bare_isolation_probe_override(
+    tmp_path: Path,
+) -> None:
+    mapper = tmp_path / "mapper"
+    mapper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    mapper.chmod(0o755)
+
+    with pytest.raises(
+        RuntimeDeploymentAcceptanceError,
+        match="gpu-isolation-probe must be an absolute executable path",
+    ):
+        SystemdRuntimeDeploymentHost(
+            service="astrumweaver-worker.service",
+            worker_config=tmp_path / "worker.toml",
+            gpu_device_map=str(mapper),
+            gpu_isolation_probe="astrumweaver-gpu-isolation-probe",
+        )
 
 
 def test_acceptance_rejects_bare_mapper_override(tmp_path: Path) -> None:
@@ -333,6 +370,42 @@ class FakeHost:
         assert expected_gpu_uuids == self._worker_uuids
         self.actions.append("probe-isolation")
         return self.isolation_classification
+
+
+
+def test_systemd_host_classifies_isolation_probe_unavailable(
+    tmp_path: Path,
+) -> None:
+    worker_config = tmp_path / "worker.toml"
+    worker_config.write_text(
+        '[worker]\ngpu_uuids = ["GPU-selected"]\n',
+        encoding="utf-8",
+    )
+    mapper = tmp_path / "gpu-device-map"
+    mapper.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [ \"$3\" = discover-visible ]; then\n"
+        "  printf 'GPU-selected=/dev/nvidia0\\nGPU-other=/dev/nvidia1\\n'\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    mapper.chmod(0o755)
+    probe = tmp_path / "gpu-isolation-probe"
+    probe.write_text("#!/usr/bin/env bash\nexit 3\n", encoding="utf-8")
+    probe.chmod(0o755)
+
+    host = SystemdRuntimeDeploymentHost(
+        service="astrumweaver-worker.service",
+        worker_config=worker_config,
+        gpu_device_map=str(mapper),
+        gpu_isolation_probe=str(probe),
+    )
+
+    assert host.probe_isolation_enforcement(
+        ("GPU-selected",)
+    ) == "UNAVAILABLE"
 
 
 def test_systemd_host_uses_canonical_gpu_device_mapper(tmp_path: Path) -> None:
@@ -672,6 +745,26 @@ def test_runtime_deployment_evidence_is_private_safe() -> None:
     assert "| Outcome | ENFORCED_SUBSET |" in markdown
     assert "| Host-visible GPU count | 2 |" in markdown
     assert "| Selected GPU count | 1 |" in markdown
+    assert "| Overall | PASS |" in markdown
+
+
+
+def test_fail_closed_evidence_is_private_safe() -> None:
+    evidence = make_runner(FakeHost()).run_fail_closed()
+    markdown = render_runtime_deployment_markdown(evidence)
+
+    for private_value in (
+        "GPU-selected",
+        "GPU-other",
+        "/dev/nvidia0",
+        "/dev/nvidia1",
+    ):
+        assert private_value not in markdown
+
+    assert "| Outcome | FAIL_CLOSED |" in markdown
+    assert "| Isolation enforcement | UNAVAILABLE |" in markdown
+    assert "| Fail closed | PASS |" in markdown
+    assert "| Worker start attempted | NO |" in markdown
     assert "| Overall | PASS |" in markdown
 
 
