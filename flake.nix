@@ -188,11 +188,13 @@
           test -x ${installer}/bin/astrumweaver-worker
           test -x ${installer}/bin/astrumweaver-setup-control-plane
           test -x ${installer}/bin/astrumweaver-setup-gpu-worker
+          test -x ${installer}/bin/astrumweaver-gpu-isolation-probe
           test -x ${control}/bin/astrumweaver-control
           test -x ${control}/bin/astrumweaver-migrate
           test -x ${control}/bin/astrumweaver-setup-control-plane
           test -x ${worker}/bin/astrumweaver-worker
           test -x ${worker}/bin/astrumweaver-setup-gpu-worker
+          test -x ${worker}/bin/astrumweaver-gpu-isolation-probe
           test -x ${worker}/bin/astrumweaver-setup-tui
           test -x ${worker}/bin/astrumweaver-runtime-deployment-accept
 

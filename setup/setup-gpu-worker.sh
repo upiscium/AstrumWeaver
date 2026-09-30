@@ -108,6 +108,7 @@ GPU_UUID_DEST="$ETC_DIR/gpu-uuids"
 GPU_DEVICE_MAP_DEST="$ETC_DIR/gpu-device-map"
 PREFLIGHT_DEST="$LIBEXEC_DIR/gpu-preflight"
 DEVICE_MAP_HELPER_DEST="$LIBEXEC_DIR/gpu-device-map"
+GPU_ISOLATION_PROBE_DEST="$LIBEXEC_DIR/gpu-isolation-probe"
 GPU_MAPPING_PYTHON_DEST="$LIBEXEC_DIR/gpu_mapping.py"
 UNIT_DEST="$UNIT_DIR/astrumweaver-worker.service"
 ISOLATION_UNIT_DEST="$UNIT_DIR/astrumweaver-worker-gpu-isolation-preflight.service"
@@ -124,7 +125,7 @@ EXECUTABLE="$(resolve_executable "$EXECUTABLE" "$ROOT" astrumweaver-worker)"
 reject_symlink_path \
   "$ETC_DIR" "$STATE_DIR" "$CONFIG_DEST" "$ENV_DEST" \
   "$RUNTIME_MANIFEST_DEST" "$GPU_UUID_DEST" "$GPU_DEVICE_MAP_DEST" \
-  "$PREFLIGHT_DEST" "$DEVICE_MAP_HELPER_DEST" "$GPU_MAPPING_PYTHON_DEST" "$UNIT_DEST" \
+  "$PREFLIGHT_DEST" "$DEVICE_MAP_HELPER_DEST" "$GPU_ISOLATION_PROBE_DEST" "$GPU_MAPPING_PYTHON_DEST" "$UNIT_DEST" \
   "$ISOLATION_UNIT_DEST" "$ISOLATION_DROPIN_DEST"
 validate_unit_template \
   "$REPO_ROOT/systemd/astrumweaver-worker.service.in" \
@@ -140,18 +141,31 @@ expected_tmp="$(mktemp)"
 device_map_tmp="$(mktemp)"
 isolation_unit_tmp="$(mktemp)"
 isolation_dropin_tmp="$(mktemp)"
+device_map_exec_tmp="$(mktemp)"
 cleanup() {
-  rm -f "$declared_tmp" "$expected_tmp" "$device_map_tmp" "$isolation_unit_tmp" "$isolation_dropin_tmp"
+  rm -f "$declared_tmp" "$expected_tmp" "$device_map_tmp" "$isolation_unit_tmp" "$isolation_dropin_tmp" "$device_map_exec_tmp"
 }
 trap cleanup EXIT
 
 GPU_UUID_READER="$REPO_ROOT/libexec/worker-gpu-uuids"
 [[ -f "$GPU_UUID_READER" ]] || die "Worker GPU config reader is unavailable: $GPU_UUID_READER"
+PREFLIGHT_SOURCE="$REPO_ROOT/libexec/gpu-preflight"
+DEVICE_MAP_HELPER_SOURCE="$REPO_ROOT/libexec/gpu-device-map"
+GPU_ISOLATION_PROBE_SOURCE="$REPO_ROOT/libexec/gpu-isolation-probe"
+[[ -f "$PREFLIGHT_SOURCE" ]] || die "GPU preflight helper is unavailable"
+[[ -f "$DEVICE_MAP_HELPER_SOURCE" ]] || die "canonical GPU mapper helper is unavailable"
+[[ -f "$GPU_ISOLATION_PROBE_SOURCE" ]] || die "GPU isolation capability probe is unavailable"
 GPU_MAPPING_PYTHON_SOURCE="$REPO_ROOT/libexec/gpu_mapping.py"
 if [[ ! -f "$GPU_MAPPING_PYTHON_SOURCE" ]]; then
   GPU_MAPPING_PYTHON_SOURCE="$REPO_ROOT/src/astrumweaver/validation/gpu_mapping.py"
 fi
 [[ -f "$GPU_MAPPING_PYTHON_SOURCE" ]] || die "canonical GPU mapper is unavailable"
+
+cat >"$device_map_exec_tmp" <<EOF
+#!/usr/bin/env bash
+exec bash "$DEVICE_MAP_HELPER_SOURCE" "\$@"
+EOF
+chmod 0755 "$device_map_exec_tmp"
 
 normalize_reviewed_legacy_bash_script() {
   local source="$1" normalized="$2" first_line
@@ -259,6 +273,65 @@ if [[ "$ROOT" == "/" ]]; then
   validate_live_service_accounts worker "$SERVICE_USER"
 fi
 
+isolation_enabled=0
+exact_set=0
+if [[ "$ROOT" == "/" ]]; then
+  require_cmd nvidia-smi
+
+  if bash "$PREFLIGHT_SOURCE" "$expected_tmp" >/dev/null 2>&1; then
+    exact_set=1
+  fi
+
+  case "$GPU_ISOLATION" in
+    on) isolation_enabled=1 ;;
+    off) isolation_enabled=0 ;;
+    auto)
+      if [[ "$exact_set" == 1 ]]; then
+        isolation_enabled=0
+      else
+        isolation_enabled=1
+      fi
+      ;;
+  esac
+
+  if [[ "$isolation_enabled" == 1 ]]; then
+    if [[ ! -s "$device_map_tmp" ]]; then
+      "$device_map_exec_tmp" discover "$expected_tmp" >"$device_map_tmp"
+    fi
+    "$device_map_exec_tmp" verify "$expected_tmp" "$device_map_tmp"
+
+    if systemctl is-active --quiet astrumweaver-worker.service; then
+      die "Worker service is active; stop it before applying GPU isolation"
+    else
+      service_status=$?
+      # systemd returns 3 for an installed inactive unit and 4 when the unit
+      # does not exist yet. Both are safe pre-mutation states.
+      [[ "$service_status" == 3 || "$service_status" == 4 ]] \
+        || die "cannot determine Worker service state"
+    fi
+
+    if [[ "$exact_set" == 0 ]]; then
+      visible="$(IFS=,; printf '%s' "${GPU_UUIDS[*]}")"
+      set +e
+      ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND="$device_map_exec_tmp" \
+      ASTRUMWEAVER_NVIDIA_SMI="$(command -v nvidia-smi)" \
+        bash "$GPU_ISOLATION_PROBE_SOURCE" \
+        "$expected_tmp" \
+        "$device_map_tmp" \
+        "$CONFIG_SOURCE" \
+        "$visible"
+      isolation_probe_rc=$?
+      set -e
+
+      if [[ "$isolation_probe_rc" == 3 ]]; then
+        die "GPU subset isolation is not enforceable in this environment; narrow guest-visible GPU exposure externally"
+      fi
+      [[ "$isolation_probe_rc" == 0 ]] \
+        || die "GPU subset isolation capability probe failed"
+    fi
+  fi
+fi
+
 install -d -m 0710 "$ETC_DIR"
 install -d -m 0750 "$STATE_DIR"
 install -d -m 0755 "$UNIT_DIR" "$LIBEXEC_DIR"
@@ -275,6 +348,7 @@ fi
 install_same_or_fail "$expected_tmp" "$GPU_UUID_DEST" 0640
 install_reviewed_script_upgrade "$REPO_ROOT/libexec/gpu-preflight" "$PREFLIGHT_DEST" 0755
 install_reviewed_script_upgrade "$REPO_ROOT/libexec/gpu-device-map" "$DEVICE_MAP_HELPER_DEST" 0755 "$LEGACY_GPU_DEVICE_MAP_SHA256"
+install_reviewed_script_upgrade "$REPO_ROOT/libexec/gpu-isolation-probe" "$GPU_ISOLATION_PROBE_DEST" 0755
 install_same_or_fail "$GPU_MAPPING_PYTHON_SOURCE" "$GPU_MAPPING_PYTHON_DEST" 0640
 
 render_unit \
@@ -285,37 +359,7 @@ render_unit \
   "$runtime_arg"
 
 if [[ "$ROOT" == "/" ]]; then
-  require_cmd nvidia-smi
-
-  exact_set=0
-  if "$PREFLIGHT_DEST" "$GPU_UUID_DEST" >/dev/null 2>&1; then
-    exact_set=1
-  fi
-
-  isolation_enabled=0
-  case "$GPU_ISOLATION" in
-    on) isolation_enabled=1 ;;
-    off) isolation_enabled=0 ;;
-    auto)
-      if [[ "$exact_set" == 1 ]]; then
-        isolation_enabled=0
-      else
-        isolation_enabled=1
-      fi
-      ;;
-  esac
-
   if [[ "$isolation_enabled" == 1 ]]; then
-    if [[ ! -s "$device_map_tmp" ]]; then
-      "$DEVICE_MAP_HELPER_DEST" discover "$GPU_UUID_DEST" >"$device_map_tmp"
-    fi
-    "$DEVICE_MAP_HELPER_DEST" verify "$GPU_UUID_DEST" "$device_map_tmp"
-    if systemctl is-active --quiet astrumweaver-worker.service; then
-      die "Worker service is active; stop it before applying GPU isolation"
-    else
-      service_status=$?
-      [[ "$service_status" == 3 ]] || die "cannot determine Worker service state"
-    fi
     install_same_or_fail "$device_map_tmp" "$GPU_DEVICE_MAP_DEST" 0640
   else
     "$PREFLIGHT_DEST" "$GPU_UUID_DEST"

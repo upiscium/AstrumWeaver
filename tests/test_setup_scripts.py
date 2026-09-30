@@ -207,6 +207,7 @@ def test_worker_setup_stages_exact_gpu_identity_and_is_idempotent(tmp_path: Path
         encoding="utf-8"
     ) == "GPU-example-a\nGPU-example-b\n"
     assert (staged / "usr/local/libexec/astrumweaver/gpu-preflight").exists()
+    assert (staged / "usr/local/libexec/astrumweaver/gpu-isolation-probe").exists()
     assert (staged / "usr/local/libexec/astrumweaver/gpu_mapping.py").exists()
     unit = (staged / "etc/systemd/system/astrumweaver-worker.service").read_text(
         encoding="utf-8"
