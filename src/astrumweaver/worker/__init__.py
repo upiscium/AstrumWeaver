@@ -9,6 +9,7 @@ from .runtime import (
     load_executor,
     require_exact_gpu_set,
     require_executor_capabilities,
+    require_isolated_gpu_access,
 )
 
 __all__ = [
@@ -25,4 +26,5 @@ __all__ = [
     "load_executor",
     "require_exact_gpu_set",
     "require_executor_capabilities",
+    "require_isolated_gpu_access",
 ]
