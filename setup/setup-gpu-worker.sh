@@ -189,6 +189,28 @@ normalize_reviewed_legacy_bash_script() {
   return 1
 }
 
+
+normalize_reviewed_gpu_mapper_v59() {
+  local source="$1" migrated="$2"
+  cp -- "$source" "$migrated"
+  python3 - "$migrated" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+old = "../src/astrumweaver/validation/gpu_mapping.py"
+new = "../src/astrumweaver/gpu_mapping.py"
+
+if text.count(old) != 2:
+    raise SystemExit(1)
+if new in text:
+    raise SystemExit(1)
+
+path.write_text(text.replace(old, new), encoding="utf-8")
+PY
+}
+
 install_reviewed_script_upgrade() {
   local source="$1" destination="$2" mode="$3" legacy_sha256="${4:-}"
   local normalized digest
@@ -217,6 +239,18 @@ install_reviewed_script_upgrade() {
     log "upgrading reviewed Nix-patched helper: $destination"
     install -D -m "$mode" "$source" "$destination"
     return 0
+  fi
+
+  if [[ "$(basename "$destination")" == "gpu-device-map" ]]; then
+    migrated="$(mktemp)"
+    if normalize_reviewed_gpu_mapper_v59 "$normalized" "$migrated" \
+      && cmp -s "$source" "$migrated"; then
+      rm -f "$normalized" "$migrated"
+      log "upgrading reviewed v59 GPU mapper: $destination"
+      install -D -m "$mode" "$source" "$destination"
+      return 0
+    fi
+    rm -f "$migrated"
   fi
 
   if [[ -n "$legacy_sha256" ]]; then
