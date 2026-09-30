@@ -9,6 +9,7 @@ import pytest
 from astrumweaver.validation.runtime_deployment import (
     RuntimeDeploymentAcceptanceError,
     RuntimeDeploymentAcceptanceRunner,
+    RuntimeDeploymentFailClosedRunner,
     SystemdRuntimeDeploymentHost,
     WorkerGpuContract,
     parse_systemd_show_properties,
@@ -256,6 +257,7 @@ class FakeHost:
         registered: bool = True,
         start_error_after_activation: bool = False,
         stop_failures: int = 0,
+        isolation_enforceable: bool = False,
     ) -> None:
         self._host_map = host_map or {
             "GPU-selected": "/dev/nvidia0",
@@ -289,6 +291,7 @@ class FakeHost:
         self.registered = registered
         self.start_error_after_activation = start_error_after_activation
         self.stop_failures = stop_failures
+        self.isolation_enforceable = isolation_enforceable
         self.actions: list[str] = []
 
     def host_gpu_device_map(self):
@@ -328,6 +331,19 @@ class FakeHost:
             "ready": self.ready,
             "registered": self.registered,
         }
+
+    def probe_gpu_isolation(
+        self,
+        *,
+        candidate_worker_config,
+        expected_gpu_uuids,
+        host_map,
+    ):
+        assert Path(candidate_worker_config).is_file()
+        assert expected_gpu_uuids == ("GPU-selected",)
+        assert "GPU-selected" in host_map
+        self.actions.append("probe")
+        return self.isolation_enforceable
 
 
 def test_systemd_host_uses_canonical_gpu_device_mapper(tmp_path: Path) -> None:
@@ -625,6 +641,75 @@ def test_runtime_deployment_fails_if_cleanup_cannot_stop_service() -> None:
     assert host.active
 
 
+def make_fail_closed_runner(host: FakeHost, tmp_path: Path):
+    candidate = tmp_path / "candidate-worker.toml"
+    candidate.write_text(
+        '[worker]\n'
+        'gpu_uuids = ["GPU-selected"]\n'
+        'gpu_preflight = true\n'
+        'gpu_preflight_mode = "isolated-access"\n'
+        'gpu_device_map = "/etc/astrumweaver/gpu-device-map"\n',
+        encoding="utf-8",
+    )
+    return RuntimeDeploymentFailClosedRunner(
+        host=host,
+        candidate_worker_config=candidate,
+        revision="deadbeef12345678",
+        deployment_path="systemd",
+    )
+
+
+def test_fail_closed_acceptance_records_unavailable_without_worker_start(
+    tmp_path: Path,
+) -> None:
+    host = FakeHost(isolation_enforceable=False)
+
+    evidence = make_fail_closed_runner(host, tmp_path).run()
+
+    assert evidence.overall == "PASS"
+    assert evidence.acceptance_outcome == "FAIL_CLOSED"
+    assert evidence.isolation_enforcement == "UNAVAILABLE"
+    assert evidence.worker_started == "NO"
+    assert evidence.fail_closed == "PASS"
+    assert host.actions == ["probe"]
+    assert not host.active
+
+
+def test_fail_closed_acceptance_rejects_enforceable_environment(
+    tmp_path: Path,
+) -> None:
+    host = FakeHost(isolation_enforceable=True)
+
+    with pytest.raises(
+        RuntimeDeploymentAcceptanceError,
+        match="isolation is enforceable",
+    ):
+        make_fail_closed_runner(host, tmp_path).run()
+
+    assert host.actions == ["probe"]
+    assert not host.active
+
+
+def test_fail_closed_evidence_is_private_safe(tmp_path: Path) -> None:
+    evidence = make_fail_closed_runner(FakeHost(), tmp_path).run()
+    markdown = render_runtime_deployment_markdown(evidence)
+
+    for private_value in (
+        "GPU-selected",
+        "GPU-other",
+        "/dev/nvidia0",
+        "worker-private",
+        "192.168.1.20",
+        "http://control.private",
+    ):
+        assert private_value not in markdown
+
+    assert "| Acceptance outcome | FAIL_CLOSED |" in markdown
+    assert "| Isolation enforcement | UNAVAILABLE |" in markdown
+    assert "| Fail closed | PASS |" in markdown
+    assert "| Overall | PASS |" in markdown
+
+
 def test_runtime_deployment_evidence_is_private_safe() -> None:
     host = FakeHost()
     evidence = make_runner(host).run()
@@ -648,6 +733,20 @@ def test_runtime_deployment_evidence_is_private_safe() -> None:
 
 def test_runtime_deployment_evidence_schema_cannot_carry_private_identity() -> None:
     evidence = make_runner(FakeHost()).run()
+    fields = set(evidence.__dataclass_fields__)
+
+    assert "gpu_uuid" not in fields
+    assert "gpu_uuids" not in fields
+    assert "device_path" not in fields
+    assert "hostname" not in fields
+    assert "worker_id" not in fields
+    assert "control_url" not in fields
+
+
+def test_fail_closed_evidence_schema_cannot_carry_private_identity(
+    tmp_path: Path,
+) -> None:
+    evidence = make_fail_closed_runner(FakeHost(), tmp_path).run()
     fields = set(evidence.__dataclass_fields__)
 
     assert "gpu_uuid" not in fields
