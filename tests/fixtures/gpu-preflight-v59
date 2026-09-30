@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+die() {
+  printf '[astrumweaver-gpu-preflight] ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+[[ $# -eq 1 ]] || die "usage: gpu-preflight EXPECTED_UUID_FILE"
+EXPECTED_FILE="$1"
+[[ -f "$EXPECTED_FILE" ]] || die "expected GPU UUID file is missing"
+command -v nvidia-smi >/dev/null 2>&1 || die "nvidia-smi is not available"
+
+expected_tmp="$(mktemp)"
+observed_tmp="$(mktemp)"
+cleanup() {
+  rm -f "$expected_tmp" "$observed_tmp"
+}
+trap cleanup EXIT
+
+awk 'NF { gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print }' "$EXPECTED_FILE" | sort >"$expected_tmp"
+[[ -s "$expected_tmp" ]] || die "expected GPU UUID set is empty"
+
+if [[ -n "$(uniq -d "$expected_tmp")" ]]; then
+  die "expected GPU UUID file contains duplicates"
+fi
+
+nvidia-smi --query-gpu=uuid --format=csv,noheader \
+  | awk 'NF { gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print }' \
+  | sort >"$observed_tmp"
+
+[[ -s "$observed_tmp" ]] || die "no GPUs were observed"
+if [[ -n "$(uniq -d "$observed_tmp")" ]]; then
+  die "observed GPU UUID set contains duplicates"
+fi
+
+if ! cmp -s "$expected_tmp" "$observed_tmp"; then
+  expected_count="$(wc -l <"$expected_tmp" | tr -d ' ')"
+  observed_count="$(wc -l <"$observed_tmp" | tr -d ' ')"
+  die "GPU UUID set mismatch (expected_count=$expected_count observed_count=$observed_count)"
+fi
+
+count="$(wc -l <"$expected_tmp" | tr -d ' ')"
+printf '[astrumweaver-gpu-preflight] ok count=%s\n' "$count"
