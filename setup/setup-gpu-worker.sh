@@ -115,6 +115,7 @@ ISOLATION_UNIT_DEST="$UNIT_DIR/astrumweaver-worker-gpu-isolation-preflight.servi
 ISOLATION_DROPIN_DEST="$DROPIN_DIR/10-gpu-isolation.conf"
 LEGACY_GPU_DEVICE_MAP_SHA256='faa3836dbf190616d0c4ad32deaad1d3dda66ff1d903468095ab33edc6ea735a'
 LEGACY_GPU_PREFLIGHT_SHA256='6a807fa50fc944193f98a32778ef37df98db8e6744546c99a2694bc492bfc236'
+LEGACY_GPU_MAPPING_PYTHON_SHA256='d7e872214c0768311508b6b4d081ba498e3fd377ea32a10f59b9926e79887485'
 runtime_arg=''
 if [[ -n "$RUNTIME_MANIFEST_SOURCE" ]]; then
   runtime_arg=' --runtime-manifest /etc/astrumweaver/runtime-deployment.json'
@@ -203,6 +204,36 @@ normalize_reviewed_gpu_mapper_v59() {
   fi
 
   sed "s#${old}#${new}#g" "$source" >"$migrated"
+}
+
+install_reviewed_file_upgrade() {
+  local source="$1" destination="$2" mode="$3" legacy_sha256="$4"
+  local digest
+
+  [[ -f "$source" ]] || die "source file does not exist: $source"
+  reject_symlink_path "$destination"
+
+  if [[ ! -e "$destination" ]]; then
+    install -D -m "$mode" "$source" "$destination"
+    return 0
+  fi
+
+  [[ -f "$destination" ]] || die "destination exists but is not a file: $destination"
+  if cmp -s "$source" "$destination"; then
+    chmod "$mode" "$destination"
+    return 0
+  fi
+
+  require_cmd sha256sum
+  digest="$(sha256sum "$destination")"
+  digest="${digest%% *}"
+  if [[ "$digest" == "$legacy_sha256" ]]; then
+    log "upgrading reviewed legacy file: $destination"
+    install -D -m "$mode" "$source" "$destination"
+    return 0
+  fi
+
+  die "destination differs; refusing overwrite: $destination"
 }
 
 install_reviewed_script_upgrade() {
@@ -378,7 +409,11 @@ install_same_or_fail "$expected_tmp" "$GPU_UUID_DEST" 0640
 install_reviewed_script_upgrade "$REPO_ROOT/libexec/gpu-preflight" "$PREFLIGHT_DEST" 0755 "$LEGACY_GPU_PREFLIGHT_SHA256"
 install_reviewed_script_upgrade "$REPO_ROOT/libexec/gpu-device-map" "$DEVICE_MAP_HELPER_DEST" 0755 "$LEGACY_GPU_DEVICE_MAP_SHA256"
 install_reviewed_script_upgrade "$REPO_ROOT/libexec/gpu-isolation-probe" "$GPU_ISOLATION_PROBE_DEST" 0755
-install_same_or_fail "$GPU_MAPPING_PYTHON_SOURCE" "$GPU_MAPPING_PYTHON_DEST" 0640
+install_reviewed_file_upgrade \
+  "$GPU_MAPPING_PYTHON_SOURCE" \
+  "$GPU_MAPPING_PYTHON_DEST" \
+  0640 \
+  "$LEGACY_GPU_MAPPING_PYTHON_SHA256"
 
 render_unit \
   "$REPO_ROOT/systemd/astrumweaver-worker.service.in" \
