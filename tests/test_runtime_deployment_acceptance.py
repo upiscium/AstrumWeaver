@@ -247,6 +247,7 @@ class FakeHost:
         initially_active: bool = False,
         ready: bool = True,
         registered: bool = True,
+        isolation_enforced: bool = True,
         start_error_after_activation: bool = False,
         stop_failures: int = 0,
     ) -> None:
@@ -276,6 +277,7 @@ class FakeHost:
         self.active = initially_active
         self.ready = ready
         self.registered = registered
+        self.isolation_enforced = isolation_enforced
         self.start_error_after_activation = start_error_after_activation
         self.stop_failures = stop_failures
         self.actions: list[str] = []
@@ -288,6 +290,12 @@ class FakeHost:
 
     def worker_unit_properties(self):
         return dict(self._unit_properties)
+
+    def probe_isolation_enforcement(self, host_map, expected_gpu_uuids):
+        assert dict(host_map) == self._host_map
+        assert tuple(expected_gpu_uuids) == ("GPU-selected",)
+        self.actions.append("probe")
+        return self.isolation_enforced
 
     def service_active(self):
         return self.active
@@ -371,8 +379,29 @@ def test_runtime_deployment_acceptance_proves_isolated_subset_start() -> None:
     assert evidence.selected_device_allow_exact == "PASS"
     assert evidence.worker_started_ready == "PASS"
     assert evidence.worker_registered == "PASS"
-    assert host.actions == ["start", "stop"]
+    assert evidence.isolation_enforcement == "PASS"
+    assert evidence.fail_closed == "N/A"
+    assert host.actions == ["probe", "start", "stop"]
     assert not host.active
+
+
+def test_runtime_deployment_acceptance_records_fail_closed_unavailable_isolation() -> None:
+    host = FakeHost(isolation_enforced=False)
+    evidence = make_runner(host).run()
+
+    assert evidence.overall == "PASS"
+    assert evidence.isolation_enforcement == "UNAVAILABLE"
+    assert evidence.fail_closed == "PASS"
+    assert evidence.worker_started_ready == "NOT_RUN"
+    assert evidence.worker_registered == "NOT_RUN"
+    assert evidence.worker_contract_exact == "NOT_RUN"
+    assert host.actions == ["probe"]
+    assert not host.active
+
+    markdown = render_runtime_deployment_markdown(evidence)
+    assert "| Isolation enforcement | UNAVAILABLE |" in markdown
+    assert "| Fail closed | PASS |" in markdown
+    assert "| Overall | PASS |" in markdown
 
 
 def test_runtime_deployment_acceptance_rejects_extra_physical_device_allow() -> None:
@@ -393,7 +422,7 @@ def test_runtime_deployment_acceptance_rejects_extra_physical_device_allow() -> 
     ):
         make_runner(host).run()
 
-    assert host.actions == []
+    assert host.actions == ["probe"]
 
 
 @pytest.mark.parametrize(
@@ -549,7 +578,7 @@ def test_runtime_deployment_acceptance_stops_service_on_readiness_failure() -> N
     ):
         make_runner(host).run()
 
-    assert host.actions == ["start", "stop"]
+    assert host.actions == ["probe", "start", "stop"]
     assert not host.active
 
 
@@ -559,7 +588,7 @@ def test_runtime_deployment_cleans_up_when_start_command_raises_after_start() ->
     with pytest.raises(RuntimeError, match="simulated start command failure"):
         make_runner(host).run()
 
-    assert host.actions == ["start", "stop"]
+    assert host.actions == ["probe", "start", "stop"]
     assert not host.active
 
 
@@ -569,7 +598,7 @@ def test_runtime_deployment_retries_transient_stop_failure() -> None:
     evidence = make_runner(host).run()
 
     assert evidence.overall == "PASS"
-    assert host.actions == ["start", "stop", "stop"]
+    assert host.actions == ["probe", "start", "stop", "stop"]
     assert not host.active
 
 
@@ -582,7 +611,7 @@ def test_runtime_deployment_fails_if_cleanup_cannot_stop_service() -> None:
     ):
         make_runner(host).run()
 
-    assert host.actions == ["start", "stop", "stop"]
+    assert host.actions == ["probe", "start", "stop", "stop"]
     assert host.active
 
 
