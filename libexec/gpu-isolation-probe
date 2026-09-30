@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+die() {
+  printf '[astrumweaver-gpu-isolation-probe] ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+[[ $# -eq 5 ]] || die "usage: gpu-isolation-probe EXPECTED_UUID_FILE REVIEWED_MAP WORKER_CONFIG CUDA_VISIBLE_DEVICES SERVICE_USER"
+
+EXPECTED_FILE="$1"
+REVIEWED_MAP="$2"
+WORKER_CONFIG="$3"
+CUDA_VISIBLE="$4"
+SERVICE_USER="$5"
+
+[[ -f "$EXPECTED_FILE" ]] || die "expected GPU UUID file is unavailable"
+[[ -f "$REVIEWED_MAP" ]] || die "reviewed GPU device map is unavailable"
+[[ -f "$WORKER_CONFIG" ]] || die "Worker configuration is unavailable"
+[[ -n "$CUDA_VISIBLE" ]] || die "CUDA visible-device order is empty"
+[[ "$SERVICE_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "service user is invalid"
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+GPU_DEVICE_MAP="${ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND:-$SCRIPT_DIR/gpu-device-map}"
+NVIDIA_SMI="${ASTRUMWEAVER_NVIDIA_SMI:-$(command -v nvidia-smi || true)}"
+SYSTEMD_RUN="${ASTRUMWEAVER_SYSTEMD_RUN:-$(command -v systemd-run || true)}"
+
+[[ "$GPU_DEVICE_MAP" == /* && -x "$GPU_DEVICE_MAP" ]] \
+  || die "canonical GPU mapper is unavailable"
+[[ -n "$NVIDIA_SMI" && "$NVIDIA_SMI" == /* && -x "$NVIDIA_SMI" ]] \
+  || die "nvidia-smi is unavailable"
+[[ -n "$SYSTEMD_RUN" && "$SYSTEMD_RUN" == /* && -x "$SYSTEMD_RUN" ]] \
+  || die "systemd-run is unavailable"
+
+"$GPU_DEVICE_MAP" \
+  --nvidia-smi "$NVIDIA_SMI" \
+  verify "$EXPECTED_FILE" "$REVIEWED_MAP" >/dev/null
+
+declare -a DEVICE_PATHS=()
+while IFS='=' read -r uuid path; do
+  [[ -n "$uuid" && "$path" =~ ^/dev/nvidia[0-9]+$ ]] \
+    || die "reviewed GPU device map is malformed"
+  DEVICE_PATHS+=("$path")
+done <"$REVIEWED_MAP"
+(("${#DEVICE_PATHS[@]}" > 0)) || die "reviewed GPU device map is empty"
+
+declare -a COMMAND=(
+  "$SYSTEMD_RUN"
+  --quiet
+  --wait
+  --pipe
+  --collect
+  "--unit=astrumweaver-gpu-isolation-probe-$$"
+  "--property=Type=oneshot"
+  "--property=User=$SERVICE_USER"
+  "--property=Group=$SERVICE_USER"
+  "--property=DevicePolicy=closed"
+)
+
+for path in "${DEVICE_PATHS[@]}"; do
+  COMMAND+=("--property=DeviceAllow=$path rw")
+done
+
+for path in \
+  /dev/nvidiactl \
+  /dev/nvidia-modeset \
+  /dev/nvidia-uvm \
+  /dev/nvidia-uvm-tools \
+  /dev/nvidia-nvswitchctl; do
+  if [[ -e "$path" ]]; then
+    COMMAND+=("--property=DeviceAllow=$path rw")
+  fi
+done
+
+COMMAND+=(
+  "--setenv=CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE"
+  "$GPU_DEVICE_MAP"
+  --nvidia-smi
+  "$NVIDIA_SMI"
+  verify-isolated-access
+  "$EXPECTED_FILE"
+  "$REVIEWED_MAP"
+  "$WORKER_CONFIG"
+)
+
+set +e
+PROBE_OUTPUT="$("${COMMAND[@]}" 2>&1)"
+PROBE_RC=$?
+set -e
+
+if [[ "$PROBE_RC" -eq 0 ]]; then
+  printf '[astrumweaver-gpu-isolation-probe] enforceable selected_count=%s\n' \
+    "${#DEVICE_PATHS[@]}"
+  exit 0
+fi
+
+if grep -Fq '[astrumweaver-gpu-device-map] ISOLATION_UNAVAILABLE:' \
+  <<<"$PROBE_OUTPUT"; then
+  printf '%s\n' \
+    '[astrumweaver-gpu-isolation-probe] ISOLATION_UNAVAILABLE: GPU subset isolation is not enforceable in this environment; narrow guest-visible GPU exposure externally' \
+    >&2
+  exit 3
+fi
+
+die "GPU subset isolation capability probe failed"
