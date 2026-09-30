@@ -403,7 +403,7 @@ Before=astrumweaver-worker.service
 Type=oneshot
 RuntimeDirectory=astrumweaver-worker-gpu-isolation
 RuntimeDirectoryMode=0755
-RemainAfterExit=yes
+RuntimeDirectoryPreserve=yes
 ExecStart=/usr/local/libexec/astrumweaver/gpu-device-map snapshot-visible /run/astrumweaver-worker-gpu-isolation/gpu-visible-map
 ExecStart=/usr/local/libexec/astrumweaver/gpu-device-map verify /etc/astrumweaver/gpu-uuids /etc/astrumweaver/gpu-device-map
 EOF
