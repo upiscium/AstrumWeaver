@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from astrumweaver import AcceleratorDevice, ResourceShape, WorkerSpec
+from astrumweaver.worker.runtime import GpuPreflightMode
 from astrumweaver.setup.first_run import (
     ControlBootstrapSpec,
     control_url_for_bind_host,
@@ -116,6 +117,8 @@ def test_worker_toml_is_generated_from_discovered_worker_contract() -> None:
     assert parsed["worker"]["id"] == "worker-test"
     assert parsed["worker"]["gpu_uuids"] == ["GPU-private-a"]
     assert parsed["worker"]["gpu_count"] == 1
+    assert parsed["worker"]["gpu_preflight_mode"] == "exact-visible"
+    assert "gpu_device_map" not in parsed["worker"]
     assert parsed["worker"]["accelerators"][0]["memory_mb"] == 24576
     assert (
         parsed["worker"]["labels"]["gpu.compute_capability.min"]
@@ -125,6 +128,22 @@ def test_worker_toml_is_generated_from_discovered_worker_contract() -> None:
         "/etc/astrumweaver/runtime-deployment.json"
     )
     assert "executor" not in parsed
+
+
+def test_worker_toml_renders_isolated_access_contract() -> None:
+    text = render_worker_toml(
+        worker(),
+        control_url="http://control.internal:9000",
+        execution_mode=FirstRunExecutionMode.RUNTIME,
+        gpu_preflight_mode=GpuPreflightMode.ISOLATED_ACCESS,
+    )
+    parsed = tomllib.loads(text)
+
+    assert parsed["worker"]["gpu_preflight"] is True
+    assert parsed["worker"]["gpu_preflight_mode"] == "isolated-access"
+    assert parsed["worker"]["gpu_device_map"] == (
+        "/etc/astrumweaver/gpu-device-map"
+    )
 
 
 def test_smoke_worker_toml_uses_built_in_echo_executor() -> None:
