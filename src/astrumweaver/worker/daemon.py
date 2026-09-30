@@ -82,37 +82,10 @@ def _build_spec(section: dict[str, Any]) -> WorkerSpec:
     )
 
 
-async def run_worker(
-    config_path: str,
-    runtime_manifest_path: str | None = None,
+def _require_worker_gpu_preflight(
+    worker_section: dict[str, Any],
+    spec: WorkerSpec,
 ) -> None:
-    config = _load_toml(config_path)
-    worker_section = dict(config.get("worker") or {})
-    executor_section = dict(config.get("executor") or {})
-    runtime_section = dict(config.get("runtime") or {})
-
-    required = ("id", "class", "control_url")
-    missing = [name for name in required if not worker_section.get(name)]
-    if missing:
-        raise RuntimeError(f"missing worker configuration: {', '.join(missing)}")
-
-    executor_factory = str(executor_section.get("factory", "")).strip()
-    runtime_manifest = (
-        str(runtime_manifest_path).strip()
-        if runtime_manifest_path is not None
-        else str(runtime_section.get("manifest", "")).strip()
-    )
-    if bool(executor_factory) == bool(runtime_manifest):
-        raise RuntimeError(
-            "configure exactly one of executor.factory or runtime.manifest"
-        )
-
-    worker_token = os.environ.get("ASTRUMWEAVER_WORKER_TOKEN", "")
-    if not worker_token:
-        raise RuntimeError("ASTRUMWEAVER_WORKER_TOKEN is required")
-
-    spec = _build_spec(worker_section)
-
     gpu_preflight_enabled = bool(worker_section.get("gpu_preflight", True))
     try:
         gpu_preflight_mode = GpuPreflightMode(
@@ -147,27 +120,62 @@ async def run_worker(
             "gpu_device_map is valid only with isolated-access preflight"
         )
 
-    if spec.gpu_uuids and gpu_preflight_enabled:
-        if gpu_preflight_mode is GpuPreflightMode.EXACT_VISIBLE:
-            require_exact_gpu_set(
-                spec.gpu_uuids,
-                command=nvidia_smi_command,
-            )
-        else:
-            try:
-                require_isolated_gpu_access(
-                    spec.gpu_uuids,
-                    Path(gpu_device_map),
-                    worker_gpu_order=spec.gpu_uuids,
-                    cuda_visible_devices=os.environ.get(
-                        "CUDA_VISIBLE_DEVICES"
-                    ),
-                    nvidia_smi=nvidia_smi_command,
-                )
-            except GpuMappingError as exc:
-                raise RuntimeError(
-                    "isolated GPU ownership preflight failed"
-                ) from exc
+    if not spec.gpu_uuids or not gpu_preflight_enabled:
+        return
+
+    if gpu_preflight_mode is GpuPreflightMode.EXACT_VISIBLE:
+        require_exact_gpu_set(
+            spec.gpu_uuids,
+            command=nvidia_smi_command,
+        )
+        return
+
+    try:
+        require_isolated_gpu_access(
+            spec.gpu_uuids,
+            Path(gpu_device_map),
+            worker_gpu_order=spec.gpu_uuids,
+            cuda_visible_devices=os.environ.get("CUDA_VISIBLE_DEVICES"),
+            nvidia_smi=nvidia_smi_command,
+        )
+    except GpuMappingError as exc:
+        raise RuntimeError(
+            "isolated GPU ownership preflight failed"
+        ) from exc
+
+
+async def run_worker(
+    config_path: str,
+    runtime_manifest_path: str | None = None,
+) -> None:
+    config = _load_toml(config_path)
+    worker_section = dict(config.get("worker") or {})
+    executor_section = dict(config.get("executor") or {})
+    runtime_section = dict(config.get("runtime") or {})
+
+    required = ("id", "class", "control_url")
+    missing = [name for name in required if not worker_section.get(name)]
+    if missing:
+        raise RuntimeError(f"missing worker configuration: {', '.join(missing)}")
+
+    executor_factory = str(executor_section.get("factory", "")).strip()
+    runtime_manifest = (
+        str(runtime_manifest_path).strip()
+        if runtime_manifest_path is not None
+        else str(runtime_section.get("manifest", "")).strip()
+    )
+    if bool(executor_factory) == bool(runtime_manifest):
+        raise RuntimeError(
+            "configure exactly one of executor.factory or runtime.manifest"
+        )
+
+    worker_token = os.environ.get("ASTRUMWEAVER_WORKER_TOKEN", "")
+    if not worker_token:
+        raise RuntimeError("ASTRUMWEAVER_WORKER_TOKEN is required")
+
+    spec = _build_spec(worker_section)
+
+    _require_worker_gpu_preflight(worker_section, spec)
 
     client = ControlClient(
         str(worker_section["control_url"]),
