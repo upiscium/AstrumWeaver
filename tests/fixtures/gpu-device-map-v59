@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+die() {
+  printf '[astrumweaver-gpu-device-map] ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -n "${ASTRUMWEAVER_GPU_MAPPING_PYTHON:-}" ]]; then
+  MAPPING_PYTHON="$ASTRUMWEAVER_GPU_MAPPING_PYTHON"
+elif [[ -f "$SCRIPT_DIR/gpu_mapping.py" ]]; then
+  MAPPING_PYTHON="$SCRIPT_DIR/gpu_mapping.py"
+elif [[ -f "$SCRIPT_DIR/../src/astrumweaver/validation/gpu_mapping.py" ]]; then
+  MAPPING_PYTHON="$SCRIPT_DIR/../src/astrumweaver/validation/gpu_mapping.py"
+else
+  die "canonical GPU mapper is unavailable"
+fi
+
+PYTHON_BIN="${ASTRUMWEAVER_GPU_MAPPING_PYTHON_BIN:-}"
+if [[ -z "$PYTHON_BIN" ]]; then
+  for candidate in \
+    /run/current-system/sw/bin/python3 \
+    /nix/var/nix/profiles/astrumweaver-installer/bin/python3 \
+    /nix/var/nix/profiles/astrumweaver-worker/bin/python3 \
+    /usr/bin/python3 \
+    /usr/local/bin/python3; do
+    if [[ -x "$candidate" ]]; then
+      PYTHON_BIN="$candidate"
+      break
+    fi
+  done
+fi
+if [[ -z "$PYTHON_BIN" ]]; then
+  PYTHON_BIN="$(command -v python3 || true)"
+fi
+[[ -n "$PYTHON_BIN" ]] || die "canonical GPU mapper runtime is unavailable"
+exec "$PYTHON_BIN" "$MAPPING_PYTHON" "$@"
