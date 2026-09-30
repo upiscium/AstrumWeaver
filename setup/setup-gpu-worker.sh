@@ -112,10 +112,12 @@ GPU_DEVICE_MAP_DEST="$ETC_DIR/gpu-device-map"
 PREFLIGHT_DEST="$LIBEXEC_DIR/gpu-preflight"
 DEVICE_MAP_HELPER_DEST="$LIBEXEC_DIR/gpu-device-map"
 GPU_MAPPING_PYTHON_DEST="$LIBEXEC_DIR/gpu_mapping.py"
+GPU_MAPPING_PYTHON_RECEIPT_DEST="$LIBEXEC_DIR/gpu_mapping.py.sha256"
 UNIT_DEST="$UNIT_DIR/astrumweaver-worker.service"
 ISOLATION_UNIT_DEST="$UNIT_DIR/astrumweaver-worker-gpu-isolation-preflight.service"
 ISOLATION_DROPIN_DEST="$DROPIN_DIR/10-gpu-isolation.conf"
 LEGACY_GPU_DEVICE_MAP_SHA256='faa3836dbf190616d0c4ad32deaad1d3dda66ff1d903468095ab33edc6ea735a'
+LEGACY_GPU_MAPPING_PYTHON_SHA256='41d4e6d29650a5da43b1441fb8c8c711e717fca95693e7cc60f607903fd67b69'
 runtime_arg=''
 if [[ -n "$RUNTIME_MANIFEST_SOURCE" ]]; then
   runtime_arg=' --runtime-manifest /etc/astrumweaver/runtime-deployment.json'
@@ -127,7 +129,8 @@ EXECUTABLE="$(resolve_executable "$EXECUTABLE" "$ROOT" astrumweaver-worker)"
 reject_symlink_path \
   "$ETC_DIR" "$STATE_DIR" "$CONFIG_DEST" "$ENV_DEST" \
   "$RUNTIME_MANIFEST_DEST" "$GPU_UUID_DEST" "$GPU_DEVICE_MAP_DEST" \
-  "$PREFLIGHT_DEST" "$DEVICE_MAP_HELPER_DEST" "$GPU_MAPPING_PYTHON_DEST" "$UNIT_DEST" \
+  "$PREFLIGHT_DEST" "$DEVICE_MAP_HELPER_DEST" "$GPU_MAPPING_PYTHON_DEST" \
+  "$GPU_MAPPING_PYTHON_RECEIPT_DEST" "$UNIT_DEST" \
   "$ISOLATION_UNIT_DEST" "$ISOLATION_DROPIN_DEST"
 validate_unit_template \
   "$REPO_ROOT/systemd/astrumweaver-worker.service.in" \
@@ -224,6 +227,42 @@ install_reviewed_script_upgrade() {
   die "destination differs; refusing overwrite: $destination"
 }
 
+install_managed_file_upgrade() {
+  local source="$1" destination="$2" receipt="$3" mode="$4" legacy_sha256="${5:-}"
+  local source_digest destination_digest recorded_digest='' receipt_tmp
+
+  [[ -f "$source" ]] || die "source file does not exist: $source"
+  reject_symlink_path "$destination" "$receipt"
+  require_cmd sha256sum
+
+  source_digest="$(sha256sum "$source")"
+  source_digest="${source_digest%% *}"
+
+  if [[ -e "$destination" ]]; then
+    [[ -f "$destination" ]] || die "destination exists but is not a file: $destination"
+    if ! cmp -s "$source" "$destination"; then
+      destination_digest="$(sha256sum "$destination")"
+      destination_digest="${destination_digest%% *}"
+
+      if [[ -f "$receipt" ]]; then
+        IFS= read -r recorded_digest <"$receipt" || true
+        [[ "$recorded_digest" =~ ^[0-9a-f]{64}$ ]] || die "managed-file receipt is malformed: $receipt"
+      fi
+
+      if [[ "$destination_digest" != "$legacy_sha256" && "$destination_digest" != "$recorded_digest" ]]; then
+        die "destination differs from reviewed managed content; refusing overwrite: $destination"
+      fi
+      log "upgrading reviewed managed helper: $destination"
+    fi
+  fi
+
+  install -D -m "$mode" "$source" "$destination"
+  receipt_tmp="$(mktemp)"
+  printf '%s\n' "$source_digest" >"$receipt_tmp"
+  install -D -m 0600 "$receipt_tmp" "$receipt"
+  rm -f "$receipt_tmp"
+}
+
 if [[ -x "$GPU_UUID_READER" ]]; then
   GPU_UUID_READER_CMD=("$GPU_UUID_READER")
 else
@@ -279,7 +318,12 @@ fi
 install_same_or_fail "$expected_tmp" "$GPU_UUID_DEST" 0640
 install_reviewed_script_upgrade "$REPO_ROOT/libexec/gpu-preflight" "$PREFLIGHT_DEST" 0755
 install_reviewed_script_upgrade "$REPO_ROOT/libexec/gpu-device-map" "$DEVICE_MAP_HELPER_DEST" 0755 "$LEGACY_GPU_DEVICE_MAP_SHA256"
-install_same_or_fail "$GPU_MAPPING_PYTHON_SOURCE" "$GPU_MAPPING_PYTHON_DEST" 0640
+install_managed_file_upgrade \
+  "$GPU_MAPPING_PYTHON_SOURCE" \
+  "$GPU_MAPPING_PYTHON_DEST" \
+  "$GPU_MAPPING_PYTHON_RECEIPT_DEST" \
+  0640 \
+  "$LEGACY_GPU_MAPPING_PYTHON_SHA256"
 
 render_unit \
   "$REPO_ROOT/systemd/astrumweaver-worker.service.in" \
