@@ -7,10 +7,15 @@ import contextlib
 import importlib
 import inspect
 import subprocess
+from pathlib import Path
 from collections.abc import Mapping
 from typing import Any
 
 from ..contracts import WorkerSpec
+from ..validation.gpu_mapping import (
+    GpuMappingError,
+    probe_gpu_access_isolation_file,
+)
 from ..control.models import WorkerState
 from ..execution import JobExecutor, JobResult
 from .client import ClaimedJob, ControlClient, ControlTransportError
@@ -49,6 +54,23 @@ def require_exact_gpu_set(
         raise RuntimeError(
             f"GPU UUID set mismatch (expected_count={len(expected_sorted)} observed_count={len(observed)})"
         )
+
+
+def require_isolated_gpu_access(
+    expected: tuple[str, ...],
+    reviewed_visible_map: str,
+) -> None:
+    if not expected:
+        return
+    if not reviewed_visible_map.strip():
+        raise RuntimeError("isolated GPU access map is required")
+    try:
+        probe_gpu_access_isolation_file(
+            expected,
+            Path(reviewed_visible_map),
+        )
+    except GpuMappingError as exc:
+        raise RuntimeError("isolated GPU access preflight failed") from exc
 
 
 def executor_capabilities(executor: JobExecutor) -> frozenset[str]:

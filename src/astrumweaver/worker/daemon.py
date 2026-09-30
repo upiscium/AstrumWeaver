@@ -26,6 +26,7 @@ from .runtime import (
     WorkerRuntime,
     load_executor,
     require_exact_gpu_set,
+    require_isolated_gpu_access,
     require_executor_capabilities,
 )
 
@@ -111,10 +112,17 @@ async def run_worker(
     spec = _build_spec(worker_section)
 
     if spec.gpu_uuids and bool(worker_section.get("gpu_preflight", True)):
-        require_exact_gpu_set(
-            spec.gpu_uuids,
-            command=str(worker_section.get("nvidia_smi_command", "nvidia-smi")),
-        )
+        isolation_map = os.environ.get(
+            "ASTRUMWEAVER_GPU_ISOLATION_VISIBLE_MAP",
+            "",
+        ).strip()
+        if isolation_map:
+            require_isolated_gpu_access(spec.gpu_uuids, isolation_map)
+        else:
+            require_exact_gpu_set(
+                spec.gpu_uuids,
+                command=str(worker_section.get("nvidia_smi_command", "nvidia-smi")),
+            )
 
     client = ControlClient(
         str(worker_section["control_url"]),
