@@ -53,6 +53,7 @@ from .contracts import (
 )
 from .discovery import DiscoveredGpu, discover_local_gpus, discover_local_host
 from .planner import build_runtime_setup_plan
+from ..worker.runtime import GpuPreflightMode
 from .first_run import (
     ControlBootstrapSpec,
     control_url_for_bind_host,
@@ -1076,9 +1077,12 @@ def run_first_run_tui(
     execution_mode: FirstRunExecutionMode | None = None
     runtime_plan: RuntimeTuiPlan | None = None
     nix_runtime_package_expression: str | None = None
+    worker_gpu_preflight_mode = GpuPreflightMode.EXACT_VISIBLE
 
     if role in {FirstRunRole.WORKER, FirstRunRole.BOTH}:
         selected_gpus = _select_gpus(io, gpus)
+        if selected_gpus and len(selected_gpus) < len(gpus):
+            worker_gpu_preflight_mode = GpuPreflightMode.ISOLATED_ACCESS
         if not selected_gpus and snapshot.deployment_path is DeploymentPath.SYSTEMD:
             io.write(
                 "Generic systemd first-run Worker setup currently requires "
@@ -1274,6 +1278,7 @@ def run_first_run_tui(
             worker,
             control_url=control_url,
             execution_mode=execution_mode,
+            gpu_preflight_mode=worker_gpu_preflight_mode,
         )
         io.write("Installing Worker base configuration...")
         installer.install_worker(
