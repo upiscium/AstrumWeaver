@@ -18,9 +18,19 @@ evidence = [
 
 [[check]]
 id = "exact-gpu-uuid-preflight"
-description = "GPU Worker startup requires exact expected-vs-observed UUID set equality."
+description = "Non-isolated GPU Worker startup requires exact expected-vs-observed UUID set equality."
 evidence = [
   "tests/test_setup_scripts.py::test_gpu_preflight_requires_exact_set_equality"
+]
+
+[[check]]
+id = "isolated-gpu-access-preflight"
+description = "A reviewed isolated Worker proves selected physical GPU access and denial of unselected visible GPUs; unenforceable subsets fail closed."
+evidence = [
+  "tests/test_gpu_isolation_access.py::test_isolated_access_requires_selected_open_and_unselected_denied",
+  "tests/test_gpu_isolation_access.py::test_isolated_access_fails_closed_when_unselected_device_opens",
+  "tests/test_runtime_deployment_acceptance.py::test_runtime_deployment_acceptance_records_expected_fail_closed_outcome",
+  "flake.nix#checks.x86_64-linux.runtime-module-eval"
 ]
 
 [[check]]
