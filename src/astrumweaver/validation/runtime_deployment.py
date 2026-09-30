@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -241,8 +242,14 @@ class SystemdRuntimeDeploymentHost:
             for path in _NVIDIA_AUXILIARY_DEVICE_PATHS:
                 if Path(path).exists():
                     command.append(f"--property=DeviceAllow={path} rw")
+            bash = shutil.which("bash")
+            if bash is None or not Path(bash).is_absolute():
+                raise RuntimeDeploymentAcceptanceError(
+                    "absolute bash executable is unavailable for GPU isolation probe"
+                )
             command.extend(
                 [
+                    bash,
                     self.gpu_device_map,
                     "probe-access",
                     str(expected_path),
