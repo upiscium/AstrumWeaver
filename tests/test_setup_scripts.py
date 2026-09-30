@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -22,6 +23,54 @@ PREFLIGHT = ROOT / "libexec" / "gpu-preflight"
 LEGACY_GPU_PREFLIGHT = ROOT / "tests/fixtures/gpu-preflight-v59"
 LEGACY_GPU_DEVICE_MAP = ROOT / "tests/fixtures/gpu-device-map-v48"
 LEGACY_GPU_DEVICE_MAP_V59 = ROOT / "tests/fixtures/gpu-device-map-v59"
+
+
+def reviewed_gpu_mapping_v59_bytes() -> bytes:
+    current = (
+        ROOT / "src/astrumweaver/gpu_mapping.py"
+    ).read_text(encoding="utf-8")
+
+    alias = '''def _load_reviewed_map(path: Path) -> tuple[tuple[str, str], ...]:
+    """Backward-compatible private alias for existing callers/tests."""
+
+    return load_reviewed_gpu_map(path)
+
+
+'''
+    assert alias in current
+    legacy = current.replace(alias, "", 1)
+
+    public_loader = (
+        "def load_reviewed_gpu_map(path: Path) "
+        "-> tuple[tuple[str, str], ...]:"
+    )
+    private_loader = (
+        "def _load_reviewed_map(path: Path) "
+        "-> tuple[tuple[str, str], ...]:"
+    )
+    assert legacy.count(public_loader) == 1
+    legacy = legacy.replace(public_loader, private_loader, 1)
+    assert legacy.count("load_reviewed_gpu_map(") == 2
+    legacy = legacy.replace(
+        "load_reviewed_gpu_map(",
+        "_load_reviewed_map(",
+    )
+
+    access_gate = '''    if selected != reviewed:
+        raise GpuMappingError("reviewed GPU device map changed")
+'''
+    legacy_gate = access_gate + '''    if len(mapping) <= len(selected):
+        raise GpuMappingError("isolated-access requires a host GPU superset")
+
+'''
+    assert legacy.count(access_gate) == 1
+    legacy = legacy.replace(access_gate, legacy_gate, 1)
+
+    payload = legacy.encode("utf-8")
+    assert hashlib.sha256(payload).hexdigest() == (
+        "d7e872214c0768311508b6b4d081ba498e3fd377ea32a10f59b9926e79887485"
+    )
+    return payload
 
 
 def nix_patched_bash_script(source: Path) -> bytes:
@@ -262,6 +311,69 @@ def test_worker_setup_upgrades_reviewed_v48_gpu_mapper_to_canonical_helper(
         ("GPU-legacy", "/dev/nvidia0"),
     )
     assert os.access(helper, os.X_OK)
+
+
+
+def test_worker_setup_upgrades_reviewed_v59_gpu_mapping_python(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "worker.toml"
+    config.write_text(
+        '[worker]\ngpu_uuids = ["GPU-legacy"]\n',
+        encoding="utf-8",
+    )
+    staged = tmp_path / "root"
+    helper = staged / "usr/local/libexec/astrumweaver/gpu_mapping.py"
+    helper.parent.mkdir(parents=True)
+    helper.write_bytes(reviewed_gpu_mapping_v59_bytes())
+
+    result = run(
+        "bash",
+        str(SETUP / "setup-gpu-worker.sh"),
+        "--config",
+        str(config),
+        "--executable",
+        "/usr/local/bin/astrumweaver-worker",
+        "--root",
+        str(staged),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert helper.read_bytes() == (
+        ROOT / "src/astrumweaver/gpu_mapping.py"
+    ).read_bytes()
+
+
+def test_worker_setup_rejects_modified_v59_gpu_mapping_python(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "worker.toml"
+    config.write_text(
+        '[worker]\ngpu_uuids = ["GPU-legacy"]\n',
+        encoding="utf-8",
+    )
+    staged = tmp_path / "root"
+    helper = staged / "usr/local/libexec/astrumweaver/gpu_mapping.py"
+    helper.parent.mkdir(parents=True)
+    helper.write_bytes(
+        reviewed_gpu_mapping_v59_bytes() + b"# operator change\n"
+    )
+    before = helper.read_bytes()
+
+    result = run(
+        "bash",
+        str(SETUP / "setup-gpu-worker.sh"),
+        "--config",
+        str(config),
+        "--executable",
+        "/usr/local/bin/astrumweaver-worker",
+        "--root",
+        str(staged),
+    )
+
+    assert result.returncode != 0
+    assert "destination differs; refusing overwrite" in result.stderr
+    assert helper.read_bytes() == before
 
 
 def test_worker_setup_upgrades_reviewed_v59_gpu_preflight_to_current(
