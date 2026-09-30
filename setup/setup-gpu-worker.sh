@@ -114,6 +114,7 @@ UNIT_DEST="$UNIT_DIR/astrumweaver-worker.service"
 ISOLATION_UNIT_DEST="$UNIT_DIR/astrumweaver-worker-gpu-isolation-preflight.service"
 ISOLATION_DROPIN_DEST="$DROPIN_DIR/10-gpu-isolation.conf"
 LEGACY_GPU_DEVICE_MAP_SHA256='faa3836dbf190616d0c4ad32deaad1d3dda66ff1d903468095ab33edc6ea735a'
+LEGACY_GPU_PREFLIGHT_SHA256='6a807fa50fc944193f98a32778ef37df98db8e6744546c99a2694bc492bfc236'
 runtime_arg=''
 if [[ -n "$RUNTIME_MANIFEST_SOURCE" ]]; then
   runtime_arg=' --runtime-manifest /etc/astrumweaver/runtime-deployment.json'
@@ -346,7 +347,7 @@ if [[ -n "$RUNTIME_MANIFEST_SOURCE" ]]; then
   install_same_or_fail "$RUNTIME_MANIFEST_SOURCE" "$RUNTIME_MANIFEST_DEST" 0640
 fi
 install_same_or_fail "$expected_tmp" "$GPU_UUID_DEST" 0640
-install_reviewed_script_upgrade "$REPO_ROOT/libexec/gpu-preflight" "$PREFLIGHT_DEST" 0755
+install_reviewed_script_upgrade "$REPO_ROOT/libexec/gpu-preflight" "$PREFLIGHT_DEST" 0755 "$LEGACY_GPU_PREFLIGHT_SHA256"
 install_reviewed_script_upgrade "$REPO_ROOT/libexec/gpu-device-map" "$DEVICE_MAP_HELPER_DEST" 0755 "$LEGACY_GPU_DEVICE_MAP_SHA256"
 install_reviewed_script_upgrade "$REPO_ROOT/libexec/gpu-isolation-probe" "$GPU_ISOLATION_PROBE_DEST" 0755
 install_same_or_fail "$GPU_MAPPING_PYTHON_SOURCE" "$GPU_MAPPING_PYTHON_DEST" 0640
@@ -438,6 +439,12 @@ EOF
 
     visible="$(IFS=,; printf '%s' "${GPU_UUIDS[*]}")"
     printf 'Environment=CUDA_VISIBLE_DEVICES=%s\n' "$visible"
+    if [[ "$ROOT" != "/" || "$exact_set" == 0 ]]; then
+      printf 'Environment=ASTRUMWEAVER_GPU_PREFLIGHT_MODE=isolated-access\n'
+      printf 'Environment=ASTRUMWEAVER_GPU_DEVICE_MAP=/etc/astrumweaver/gpu-device-map\n'
+      printf 'Environment=ASTRUMWEAVER_GPU_WORKER_CONFIG=/etc/astrumweaver/worker.toml\n'
+      printf 'Environment=ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND=/usr/local/libexec/astrumweaver/gpu-device-map\n'
+    fi
   } >"$isolation_dropin_tmp"
   install_generated_same_or_fail "$isolation_dropin_tmp" "$ISOLATION_DROPIN_DEST" 0644
 fi
