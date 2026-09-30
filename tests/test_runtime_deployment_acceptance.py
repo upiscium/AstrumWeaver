@@ -196,6 +196,53 @@ def test_systemd_host_reads_effective_properties_with_systemctl_show(
     ("status", "expected"),
     ((0, True), (3, False)),
 )
+@pytest.mark.parametrize(
+    ("probe_rc", "expected"),
+    ((0, True), (3, False)),
+)
+def test_systemd_host_probes_actual_subset_device_access(
+    tmp_path: Path,
+    probe_rc: int,
+    expected: bool,
+) -> None:
+    args_file = tmp_path / "systemd-run-args"
+    systemd_run = tmp_path / "systemd-run"
+    systemd_run.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s\\n' \"$@\" > {shlex.quote(str(args_file))}\n"
+        f"exit {probe_rc}\n",
+        encoding="utf-8",
+    )
+    systemd_run.chmod(0o755)
+
+    mapper = tmp_path / "gpu-device-map"
+    mapper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    mapper.chmod(0o755)
+
+    host = SystemdRuntimeDeploymentHost(
+        service="astrumweaver-worker.service",
+        worker_config=tmp_path / "worker.toml",
+        systemd_run=str(systemd_run),
+        gpu_device_map=str(mapper),
+    )
+
+    enforced = host.probe_isolation_enforcement(
+        {
+            "GPU-selected": "/dev/nvidia0",
+            "GPU-other": "/dev/nvidia1",
+        },
+        ("GPU-selected",),
+    )
+
+    assert enforced is expected
+    args = args_file.read_text(encoding="utf-8").splitlines()
+    assert "--property=DevicePolicy=closed" in args
+    assert "--property=DeviceAllow=/dev/nvidia0 rw" in args
+    assert "--property=DeviceAllow=/dev/nvidia1 rw" not in args
+    assert str(mapper) in args
+    assert "probe-access" in args
+
+
 def test_systemd_host_decodes_known_service_activity_statuses(
     tmp_path: Path,
     status: int,
