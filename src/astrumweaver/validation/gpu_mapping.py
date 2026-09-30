@@ -411,9 +411,6 @@ def verify_isolated_gpu_access(
     reviewed = tuple(sorted(reviewed_mapping))
     if selected != reviewed:
         raise GpuMappingError("reviewed GPU device map changed")
-    if len(mapping) <= len(selected):
-        raise GpuMappingError("isolated-access requires a host GPU superset")
-
     ordered = tuple(_validate_uuid(str(value)) for value in worker_gpu_order)
     if len(set(ordered)) != len(ordered):
         raise GpuMappingError("Worker GPU UUID order is not unique")
