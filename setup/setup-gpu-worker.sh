@@ -304,26 +304,31 @@ if [[ "$ROOT" == "/" ]]; then
       die "Worker service is active; stop it before applying GPU isolation"
     else
       service_status=$?
-      [[ "$service_status" == 3 ]] || die "cannot determine Worker service state"
+      # systemd returns 3 for an installed inactive unit and 4 when the unit
+      # does not exist yet. Both are safe pre-mutation states.
+      [[ "$service_status" == 3 || "$service_status" == 4 ]] \
+        || die "cannot determine Worker service state"
     fi
 
-    visible="$(IFS=,; printf '%s' "${GPU_UUIDS[*]}")"
-    set +e
-    ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND="$device_map_exec_tmp" \
-    ASTRUMWEAVER_NVIDIA_SMI="$(command -v nvidia-smi)" \
-      bash "$GPU_ISOLATION_PROBE_SOURCE" \
-      "$expected_tmp" \
-      "$device_map_tmp" \
-      "$CONFIG_SOURCE" \
-      "$visible"
-    isolation_probe_rc=$?
-    set -e
+    if [[ "$exact_set" == 0 ]]; then
+      visible="$(IFS=,; printf '%s' "${GPU_UUIDS[*]}")"
+      set +e
+      ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND="$device_map_exec_tmp" \
+      ASTRUMWEAVER_NVIDIA_SMI="$(command -v nvidia-smi)" \
+        bash "$GPU_ISOLATION_PROBE_SOURCE" \
+        "$expected_tmp" \
+        "$device_map_tmp" \
+        "$CONFIG_SOURCE" \
+        "$visible"
+      isolation_probe_rc=$?
+      set -e
 
-    if [[ "$isolation_probe_rc" == 3 ]]; then
-      die "GPU subset isolation is not enforceable in this environment; narrow guest-visible GPU exposure externally"
+      if [[ "$isolation_probe_rc" == 3 ]]; then
+        die "GPU subset isolation is not enforceable in this environment; narrow guest-visible GPU exposure externally"
+      fi
+      [[ "$isolation_probe_rc" == 0 ]] \
+        || die "GPU subset isolation capability probe failed"
     fi
-    [[ "$isolation_probe_rc" == 0 ]] \
-      || die "GPU subset isolation capability probe failed"
   fi
 fi
 
