@@ -155,9 +155,7 @@ class SystemdRuntimeDeploymentHost:
                 raise RuntimeDeploymentAcceptanceError(
                     "--gpu-isolation-probe must name an existing executable file"
                 )
-            self.gpu_isolation_probe = gpu_isolation_probe
-        else:
-            self.gpu_isolation_probe = resolve_packaged_gpu_isolation_probe()
+        self.gpu_isolation_probe = gpu_isolation_probe
 
         self.health_url = health_url.rstrip("/")
 
@@ -301,7 +299,10 @@ class SystemdRuntimeDeploymentHost:
             )
             completed = self._run(
                 [
-                    self.gpu_isolation_probe,
+                    (
+                        self.gpu_isolation_probe
+                        or resolve_packaged_gpu_isolation_probe()
+                    ),
                     str(expected_path),
                     str(map_path),
                     str(self.worker_config),
