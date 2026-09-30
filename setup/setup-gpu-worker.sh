@@ -158,7 +158,7 @@ GPU_ISOLATION_PROBE_SOURCE="$REPO_ROOT/libexec/gpu-isolation-probe"
 [[ -f "$GPU_ISOLATION_PROBE_SOURCE" ]] || die "GPU isolation capability probe is unavailable"
 GPU_MAPPING_PYTHON_SOURCE="$REPO_ROOT/libexec/gpu_mapping.py"
 if [[ ! -f "$GPU_MAPPING_PYTHON_SOURCE" ]]; then
-  GPU_MAPPING_PYTHON_SOURCE="$REPO_ROOT/src/astrumweaver/validation/gpu_mapping.py"
+  GPU_MAPPING_PYTHON_SOURCE="$REPO_ROOT/src/astrumweaver/gpu_mapping.py"
 fi
 [[ -f "$GPU_MAPPING_PYTHON_SOURCE" ]] || die "canonical GPU mapper is unavailable"
 
