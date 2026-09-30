@@ -108,6 +108,7 @@ GPU_UUID_DEST="$ETC_DIR/gpu-uuids"
 GPU_DEVICE_MAP_DEST="$ETC_DIR/gpu-device-map"
 PREFLIGHT_DEST="$LIBEXEC_DIR/gpu-preflight"
 DEVICE_MAP_HELPER_DEST="$LIBEXEC_DIR/gpu-device-map"
+GPU_ISOLATION_PROBE_DEST="$LIBEXEC_DIR/gpu-isolation-probe"
 GPU_MAPPING_PYTHON_DEST="$LIBEXEC_DIR/gpu_mapping.py"
 UNIT_DEST="$UNIT_DIR/astrumweaver-worker.service"
 ISOLATION_UNIT_DEST="$UNIT_DIR/astrumweaver-worker-gpu-isolation-preflight.service"
@@ -124,7 +125,7 @@ EXECUTABLE="$(resolve_executable "$EXECUTABLE" "$ROOT" astrumweaver-worker)"
 reject_symlink_path \
   "$ETC_DIR" "$STATE_DIR" "$CONFIG_DEST" "$ENV_DEST" \
   "$RUNTIME_MANIFEST_DEST" "$GPU_UUID_DEST" "$GPU_DEVICE_MAP_DEST" \
-  "$PREFLIGHT_DEST" "$DEVICE_MAP_HELPER_DEST" "$GPU_MAPPING_PYTHON_DEST" "$UNIT_DEST" \
+  "$PREFLIGHT_DEST" "$DEVICE_MAP_HELPER_DEST" "$GPU_ISOLATION_PROBE_DEST" "$GPU_MAPPING_PYTHON_DEST" "$UNIT_DEST" \
   "$ISOLATION_UNIT_DEST" "$ISOLATION_DROPIN_DEST"
 validate_unit_template \
   "$REPO_ROOT/systemd/astrumweaver-worker.service.in" \
@@ -275,6 +276,7 @@ fi
 install_same_or_fail "$expected_tmp" "$GPU_UUID_DEST" 0640
 install_reviewed_script_upgrade "$REPO_ROOT/libexec/gpu-preflight" "$PREFLIGHT_DEST" 0755
 install_reviewed_script_upgrade "$REPO_ROOT/libexec/gpu-device-map" "$DEVICE_MAP_HELPER_DEST" 0755 "$LEGACY_GPU_DEVICE_MAP_SHA256"
+install_reviewed_script_upgrade "$REPO_ROOT/libexec/gpu-isolation-probe" "$GPU_ISOLATION_PROBE_DEST" 0755
 install_same_or_fail "$GPU_MAPPING_PYTHON_SOURCE" "$GPU_MAPPING_PYTHON_DEST" 0640
 
 render_unit \
@@ -316,6 +318,24 @@ if [[ "$ROOT" == "/" ]]; then
       service_status=$?
       [[ "$service_status" == 3 ]] || die "cannot determine Worker service state"
     fi
+
+    visible="$(IFS=,; printf '%s' "${GPU_UUIDS[*]}")"
+    set +e
+    ASTRUMWEAVER_GPU_DEVICE_MAP_COMMAND="$DEVICE_MAP_HELPER_DEST" \
+    ASTRUMWEAVER_NVIDIA_SMI="$(command -v nvidia-smi)" \
+      "$GPU_ISOLATION_PROBE_DEST" \
+      "$expected_tmp" \
+      "$device_map_tmp" \
+      "$CONFIG_DEST" \
+      "$visible"
+    isolation_probe_rc=$?
+    set -e
+    if [[ "$isolation_probe_rc" == 3 ]]; then
+      die "GPU subset isolation is not enforceable in this environment; narrow guest-visible GPU exposure externally"
+    fi
+    [[ "$isolation_probe_rc" == 0 ]] \
+      || die "GPU subset isolation capability probe failed"
+
     install_same_or_fail "$device_map_tmp" "$GPU_DEVICE_MAP_DEST" 0640
   else
     "$PREFLIGHT_DEST" "$GPU_UUID_DEST"
