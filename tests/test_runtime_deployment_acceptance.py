@@ -10,6 +10,7 @@ from astrumweaver.validation.runtime_deployment import (
     RuntimeDeploymentAcceptanceError,
     RuntimeDeploymentAcceptanceRunner,
     SystemdRuntimeDeploymentHost,
+    WorkerGpuContract,
     parse_systemd_show_properties,
     render_runtime_deployment_markdown,
     resolve_packaged_gpu_device_map,
@@ -114,9 +115,11 @@ def test_systemctl_show_properties_parse_effective_values() -> None:
         "Environment=OTHER=value\n"
         "EnvironmentFiles=/etc/astrumweaver/worker.env (ignore_errors=yes)\n"
         "UnsetEnvironment=\n"
-        "ExecStartPre={ path=/usr/local/libexec/astrumweaver/gpu-preflight ; "
-        "argv[]=/usr/local/libexec/astrumweaver/gpu-preflight "
-        "/etc/astrumweaver/gpu-uuids ; ignore_errors=no ; }\n"
+        "ExecStartPre={ path=/usr/local/libexec/astrumweaver/gpu-device-map ; "
+        "argv[]=/usr/local/libexec/astrumweaver/gpu-device-map "
+        "verify-isolated-access /etc/astrumweaver/gpu-uuids "
+        "/etc/astrumweaver/gpu-device-map /etc/astrumweaver/worker.toml ; "
+        "ignore_errors=no ; }\n"
         "Requires=astrumweaver-worker-gpu-isolation-preflight.service\n"
         "After=network-online.target astrumweaver-worker-gpu-isolation-preflight.service\n"
     )
@@ -130,9 +133,11 @@ def test_systemctl_show_properties_parse_effective_values() -> None:
         ),
         "UnsetEnvironment": "",
         "ExecStartPre": (
-            "{ path=/usr/local/libexec/astrumweaver/gpu-preflight ; "
-            "argv[]=/usr/local/libexec/astrumweaver/gpu-preflight "
-            "/etc/astrumweaver/gpu-uuids ; ignore_errors=no ; }"
+            "{ path=/usr/local/libexec/astrumweaver/gpu-device-map ; "
+            "argv[]=/usr/local/libexec/astrumweaver/gpu-device-map "
+            "verify-isolated-access /etc/astrumweaver/gpu-uuids "
+            "/etc/astrumweaver/gpu-device-map /etc/astrumweaver/worker.toml ; "
+            "ignore_errors=no ; }"
         ),
         "Requires": "astrumweaver-worker-gpu-isolation-preflight.service",
         "After": (
@@ -243,6 +248,8 @@ class FakeHost:
         host_map: dict[str, str] | None = None,
         worker_uuids: tuple[str, ...] = ("GPU-selected",),
         gpu_preflight: bool = True,
+        preflight_mode: str = "isolated-access",
+        gpu_device_map: str = "/etc/astrumweaver/gpu-device-map",
         unit_properties: dict[str, str] | None = None,
         initially_active: bool = False,
         ready: bool = True,
@@ -256,6 +263,8 @@ class FakeHost:
         }
         self._worker_uuids = worker_uuids
         self._gpu_preflight = gpu_preflight
+        self._preflight_mode = preflight_mode
+        self._gpu_device_map = gpu_device_map
         self._unit_properties = unit_properties if unit_properties is not None else {
             "DevicePolicy": "closed",
             "DeviceAllow": "/dev/nvidia0 rw /dev/nvidiactl rw",
@@ -263,9 +272,11 @@ class FakeHost:
             "EnvironmentFiles": "",
             "UnsetEnvironment": "",
             "ExecStartPre": (
-                "{ path=/usr/local/libexec/astrumweaver/gpu-preflight ; "
-                "argv[]=/usr/local/libexec/astrumweaver/gpu-preflight "
-                "/etc/astrumweaver/gpu-uuids ; ignore_errors=no ; }"
+                "{ path=/usr/local/libexec/astrumweaver/gpu-device-map ; "
+                "argv[]=/usr/local/libexec/astrumweaver/gpu-device-map "
+                "verify-isolated-access /etc/astrumweaver/gpu-uuids "
+                "/etc/astrumweaver/gpu-device-map "
+                "/etc/astrumweaver/worker.toml ; ignore_errors=no ; }"
             ),
             "Requires": "astrumweaver-worker-gpu-isolation-preflight.service",
             "After": (
@@ -284,7 +295,12 @@ class FakeHost:
         return dict(self._host_map)
 
     def worker_gpu_contract(self):
-        return self._worker_uuids, self._gpu_preflight
+        return WorkerGpuContract(
+            gpu_uuids=self._worker_uuids,
+            preflight_enabled=self._gpu_preflight,
+            preflight_mode=self._preflight_mode,
+            gpu_device_map=self._gpu_device_map,
+        )
 
     def worker_unit_properties(self):
         return dict(self._unit_properties)
@@ -369,6 +385,10 @@ def test_runtime_deployment_acceptance_proves_isolated_subset_start() -> None:
     assert evidence.selected_gpu_count == 1
     assert evidence.host_gpu_superset == "PASS"
     assert evidence.selected_device_allow_exact == "PASS"
+    assert evidence.worker_gpu_preflight_enabled == "PASS"
+    assert evidence.preflight_mode == "isolated-access"
+    assert evidence.in_service_gpu_ownership_gate_present == "PASS"
+    assert evidence.isolation_enforcement == "PASS"
     assert evidence.worker_started_ready == "PASS"
     assert evidence.worker_registered == "PASS"
     assert host.actions == ["start", "stop"]
@@ -454,7 +474,7 @@ def test_runtime_deployment_requires_effective_gpu_preflight_executable() -> Non
 
     with pytest.raises(
         RuntimeDeploymentAcceptanceError,
-        match="lacks in-cgroup exact-set preflight",
+        match="lacks in-cgroup isolated-access preflight",
     ):
         make_runner(host).run()
 
@@ -495,24 +515,33 @@ def test_runtime_deployment_rejects_effective_unset_of_cuda_visibility(
 
 
 def test_runtime_deployment_accepts_reviewed_nixos_preflight_command() -> None:
-    preflight = (
+    verifier = (
         "/nix/store/"
         + "a" * 32
-        + "-astrumweaver-gpu-preflight/bin/astrumweaver-gpu-preflight"
+        + "-astrumweaver-gpu-device-map/bin/astrumweaver-gpu-device-map"
     )
     expected_uuids = "/nix/store/" + "b" * 32 + "-astrumweaver-gpu-uuids"
+    reviewed_map = "/nix/store/" + "c" * 32 + "-astrumweaver-gpu-device-map"
+    worker_config = "/nix/store/" + "d" * 32 + "-astrumweaver-worker.toml"
     host = FakeHost(
+        gpu_device_map=reviewed_map,
         unit_properties={
             "DevicePolicy": "closed",
             "DeviceAllow": "/dev/nvidia0 rw /dev/nvidiactl rw",
             "Environment": "CUDA_VISIBLE_DEVICES=GPU-selected",
+            "EnvironmentFiles": "",
+            "UnsetEnvironment": "",
             "ExecStartPre": (
-                f"{{ path={preflight} ; argv[]={preflight} {expected_uuids} ; "
-                "ignore_errors=no ; }"
+                f"{{ path={verifier} ; argv[]={verifier} "
+                f"verify-isolated-access {expected_uuids} {reviewed_map} "
+                f"{worker_config} ; ignore_errors=no ; }}"
             ),
             "Requires": "astrumweaver-worker-gpu-isolation-preflight.service",
-            "After": "network-online.target astrumweaver-worker-gpu-isolation-preflight.service",
-        }
+            "After": (
+                "network-online.target "
+                "astrumweaver-worker-gpu-isolation-preflight.service"
+            ),
+        },
     )
 
     assert make_runner(host).run().overall == "PASS"
@@ -530,12 +559,22 @@ def test_runtime_deployment_acceptance_requires_real_host_superset() -> None:
         make_runner(host).run()
 
 
+def test_runtime_deployment_acceptance_requires_isolated_access_mode() -> None:
+    host = FakeHost(preflight_mode="exact-visible", gpu_device_map="")
+
+    with pytest.raises(
+        RuntimeDeploymentAcceptanceError,
+        match="preflight mode is not isolated-access",
+    ):
+        make_runner(host).run()
+
+
 def test_runtime_deployment_acceptance_requires_exact_set_gate() -> None:
     host = FakeHost(gpu_preflight=False)
 
     with pytest.raises(
         RuntimeDeploymentAcceptanceError,
-        match="exact GPU preflight is disabled",
+        match="GPU ownership preflight is disabled",
     ):
         make_runner(host).run()
 
