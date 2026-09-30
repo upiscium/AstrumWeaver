@@ -3,37 +3,53 @@
 Issue #31 requires more than recording a selected GPU UUID set.
 
 A valid subset deployment must prove that a Worker started on a host with
-additional GPUs can access exactly its configured physical GPUs, while the
-existing exact-set startup gate remains meaningful.
+additional GPUs can access exactly its configured physical GPUs. AstrumWeaver
+uses an explicit GPU preflight mode rather than treating raw NVIDIA inventory
+visibility and effective device access as the same thing.
 
 ## Isolation contract
 
-For a GPU subset Worker, AstrumWeaver uses two independent checks:
+AstrumWeaver has two explicit Worker GPU preflight modes:
+
+```text
+exact-visible
+  raw nvidia-smi UUID set == Worker gpu_uuids
+
+isolated-access
+  reviewed UUID → /dev/nvidiaN map
+  + proposed systemd DevicePolicy/DeviceAllow
+  + ordered CUDA_VISIBLE_DEVICES
+  + selected physical devices open successfully
+  + every unselected visible physical device is denied
+```
+
+For a GPU subset Worker, the deployment path is:
 
 ```text
 host-visible GPU superset
         ↓
-UUID → /dev/nvidiaN mapping verification
+canonical UUID → /dev/nvidiaN mapping
         ↓
-systemd DevicePolicy=closed
-+ exact selected physical DeviceAllow entries
-+ required shared NVIDIA control/UVM nodes
+transient service with proposed DevicePolicy/DeviceAllow
+        ↓
+actual selected-open + unselected-denied access proof
+        ↓
+persist reviewed map + systemd isolation
         ↓
 Worker service cgroup
         ↓
-existing gpu-preflight / require_exact_gpu_set()
+verify-isolated-access ExecStartPre
+        ↓
+Worker daemon independently repeats isolated-access proof
         ↓
 ManagedRuntime start/readiness
         ↓
 Worker registration
 ```
 
-The host-level mapping verifier runs outside the restricted Worker cgroup.
-The existing exact-set preflight then runs inside the restricted Worker
-service cgroup.
-
-This separation is intentional. AstrumWeaver does not weaken
-`require_exact_gpu_set()` into accepting a host superset.
+A host where raw visibility is already exact continues to use
+`exact-visible`. AstrumWeaver never turns an `exact-visible` mismatch into
+an accepted superset merely because `CUDA_VISIBLE_DEVICES` is present.
 
 `CUDA_VISIBLE_DEVICES` is also set to the selected UUID sequence so CUDA
 enumeration preserves Worker GPU order, but it is not treated as the security
@@ -59,9 +75,12 @@ On a live host:
 - if the mapping or enforcement capability cannot be proven, setup fails closed
 - if the Worker is already active, stop it before applying GPU isolation; setup refuses to claim an isolation change on a running process
 
-A successful transient capability probe is only authorization to materialize the
-subset policy. Worker startup still needs an in-service ownership preflight;
-configuration text alone is never accepted as proof of isolation.
+A successful transient capability probe is only authorization to materialize
+the subset policy. The generated Worker contract uses
+`gpu_preflight_mode = "isolated-access"` and an explicit reviewed
+`gpu_device_map`. Worker startup repeats the effective access proof both in
+`ExecStartPre` and in the Worker daemon before registration/runtime startup.
+Configuration text alone is never accepted as proof of isolation.
 
 For staged `--root` installs there is no live GPU discovery. To stage an
 isolated subset, pass one reviewed `--gpu-device` mapping per selected UUID.
@@ -102,19 +121,24 @@ services.astrumweaver.worker = {
 
 The NixOS module creates a separate host-level mapping preflight service before
 the Worker service and applies `DevicePolicy=closed` to the Worker cgroup.
+When `gpuIsolation.enable = true`, the generated Worker configuration uses
+`gpu_preflight_mode = "isolated-access"`, records the immutable reviewed map,
+and uses the same effective-access verifier in `ExecStartPre`.
 
-The `deviceMap` keys must exactly match `gpuUuids`.
+The `deviceMap` keys must exactly match `gpuUuids`. A NixOS evaluation that
+contains a device policy is not, by itself, evidence that the surrounding
+container/VM actually enforces that policy.
 
 ## Real-host acceptance
 
-Run the acceptance only on an idle Worker service. The command intentionally
-requires the service to be inactive first, starts it, waits for local
-ready/registered state, and stops it again.
+There are two canonical outcomes for a host-visible GPU superset.
 
-The host must expose more GPUs than the selected Worker set.
-The checker reads the effective Worker properties from `systemctl show`, so
-later drop-ins that override the isolation settings are included in the
-acceptance decision.
+### Enforceable subset
+
+Run this only after the isolated Worker configuration has been installed and
+while the Worker service is inactive. The checker validates effective systemd
+properties, requires the in-service `isolated-access` gate, starts the Worker,
+waits for local ready/registered state, and stops it again.
 
 ```sh
 sudo astrumweaver-runtime-deployment-accept \
@@ -124,6 +148,31 @@ sudo astrumweaver-runtime-deployment-accept \
 ```
 
 For a NixOS deployment use `--deployment-path nixos`.
+
+### Isolation unavailable / fail closed
+
+When a VM/LXC exposes more GPUs than the Worker selects but its delegated
+device boundary cannot deny an unselected physical GPU, the correct result is
+not a partially isolated Worker. Keep the installed Worker inactive and pass a
+temporary candidate Worker configuration that declares
+`gpu_preflight_mode = "isolated-access"`:
+
+```sh
+sudo astrumweaver-runtime-deployment-accept \
+  --candidate-worker-config ./candidate-worker.toml \
+  --expect-isolation-unavailable \
+  --revision <reviewed-git-sha> \
+  --deployment-path systemd
+```
+
+This route never starts the candidate Worker. It requires a real host-visible
+superset, reruns the transient effective-access probe, and succeeds only when
+the probe returns the reviewed `ISOLATION_UNAVAILABLE` result. The resulting
+redacted evidence records `isolation_enforcement=UNAVAILABLE`,
+`worker_started=NO`, `fail_closed=PASS`, and `overall=PASS`.
+
+The operator must then narrow guest-visible GPU exposure at the
+VM/LXC/hypervisor boundary. AstrumWeaver does not mutate that infrastructure.
 
 The acceptance command invokes the packaged `astrumweaver-gpu-device-map`
 helper, which uses `nvidia-smi` for current visibility and the
@@ -164,18 +213,27 @@ It intentionally cannot contain:
 - Control URL
 - credentials
 
-A PASS proves:
+For an enforceable subset, a PASS proves:
 
 - the host really had a GPU superset
 - the Worker configuration matched the selected set
-- exact-set preflight was enabled
+- GPU ownership preflight was enabled in `isolated-access` mode
 - UUID/device mapping was valid
 - `DevicePolicy=closed` was active
 - the only physical `DeviceAllow` entries were the selected GPUs
 - CUDA visible-device order matched Worker order
-- the in-service exact-set gate remained present
+- the in-service isolated-access ownership gate remained present
+- effective device isolation allowed the Worker to start
 - the isolated Worker reached local ready + registered
 - the service stopped cleanly after acceptance
+
+For an unavailable subset, a PASS proves:
+
+- the host really had a GPU superset
+- the candidate contract requested isolated-access
+- the effective-access probe could not deny an unselected GPU
+- no candidate Worker was started
+- fail-closed behavior was preserved
 
 ## Current v0.x boundary
 
