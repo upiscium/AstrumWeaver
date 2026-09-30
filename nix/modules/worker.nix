@@ -605,7 +605,7 @@ in
           Type = "oneshot";
           RuntimeDirectory = "astrumweaver-worker-gpu-isolation";
           RuntimeDirectoryMode = "0755";
-          RemainAfterExit = true;
+          RuntimeDirectoryPreserve = true;
         };
       };
 
