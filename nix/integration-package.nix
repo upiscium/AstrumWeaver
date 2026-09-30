@@ -22,7 +22,7 @@ stdenvNoCC.mkDerivation {
     cp libexec/gpu-preflight "$assetRoot/libexec/"
     cp libexec/gpu-device-map "$assetRoot/libexec/"
     cp libexec/gpu-isolation-probe "$assetRoot/libexec/"
-    cp src/astrumweaver/validation/gpu_mapping.py "$assetRoot/libexec/"
+    cp src/astrumweaver/gpu_mapping.py "$assetRoot/libexec/"
     cp libexec/worker-gpu-uuids "$assetRoot/libexec/"
 
     substituteInPlace "$assetRoot/libexec/worker-gpu-uuids" \
