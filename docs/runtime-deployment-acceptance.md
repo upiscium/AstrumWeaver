@@ -15,13 +15,21 @@ host-visible GPU superset
         ↓
 UUID → /dev/nvidiaN mapping verification
         ↓
+transient DevicePolicy/DeviceAllow capability probe
+        ↓
+selected device opens
++ every unselected physical device is access-denied
+        ↓
 systemd DevicePolicy=closed
 + exact selected physical DeviceAllow entries
 + required shared NVIDIA control/UVM nodes
         ↓
+host-level current visible-map snapshot
+        ↓
 Worker service cgroup
         ↓
-existing gpu-preflight / require_exact_gpu_set()
+in-service physical-device access probe
++ daemon access probe
         ↓
 ManagedRuntime start/readiness
         ↓
@@ -32,8 +40,16 @@ The host-level mapping verifier runs outside the restricted Worker cgroup.
 The existing exact-set preflight then runs inside the restricted Worker
 service cgroup.
 
-This separation is intentional. AstrumWeaver does not weaken
-`require_exact_gpu_set()` into accepting a host superset.
+This separation is intentional. AstrumWeaver does not weaken the ordinary
+exact-visible preflight into accepting a host superset. A superset is accepted
+only when actual device access proves that every unselected physical GPU is
+denied inside the proposed Worker cgroup.
+
+Some delegated container environments expose effective-looking
+`DevicePolicy=closed` / `DeviceAllow` properties without enforcing those
+device opens. In that case AstrumWeaver fails closed and requires the VM/LXC/
+hypervisor boundary to narrow guest-visible GPU exposure. AstrumWeaver does
+not mutate that external boundary.
 
 `CUDA_VISIBLE_DEVICES` is also set to the selected UUID sequence so CUDA
 enumeration preserves Worker GPU order, but it is not treated as the security
@@ -53,8 +69,10 @@ The default is `auto`.
 On a live host:
 
 - when the host-visible set already equals the Worker set, ordinary exact-set preflight remains sufficient
-- when the host has extra GPUs, setup discovers the selected UUID/minor mapping and enables the systemd device-cgroup isolation drop-in
-- if the mapping cannot be proven, setup fails closed
+- when the host has extra GPUs, setup discovers the selected UUID/minor mapping and first runs a transient device-access capability probe
+- the probe must open every selected physical GPU and receive an access-denial error for every unselected physical GPU
+- only after that proof succeeds does setup materialize the systemd device-cgroup isolation drop-in
+- if mapping or enforcement cannot be proven, setup fails closed before claiming subset isolation
 - if the Worker is already active, stop it before applying GPU isolation; setup refuses to claim an isolation change on a running process
 
 For staged `--root` installs there is no live GPU discovery. To stage an
@@ -158,7 +176,7 @@ It intentionally cannot contain:
 - Control URL
 - credentials
 
-A PASS proves:
+A successful isolated-subset PASS proves:
 
 - the host really had a GPU superset
 - the Worker configuration matched the selected set
@@ -177,3 +195,29 @@ This contract targets whole physical NVIDIA GPUs.
 
 MIG device-instance isolation and NVIDIA capability-node policy are not claimed
 by this acceptance and require a separate compatibility contract.
+
+## Fail-closed acceptance
+
+A host-visible GPU superset may be unable to enforce a smaller Worker subset,
+especially inside a delegated container. The acceptance command runs the same
+transient physical-device access probe before requiring a temporary subset
+Worker configuration.
+
+When an unselected GPU remains openable, the command must not start the Worker.
+It emits redacted evidence with:
+
+```text
+Isolation enforcement = UNAVAILABLE
+Fail closed = PASS
+Worker started ready = NOT_RUN
+Worker registered = NOT_RUN
+Overall = PASS
+```
+
+Here `Overall = PASS` means the deployment contract behaved safely by
+refusing an unenforceable subset; it does not mean that subset isolation is
+available on that host.
+
+The supported operational response is to narrow the GPU set at an external
+VM/LXC/hypervisor device boundary, then use the ordinary exact-visible Worker
+contract.
