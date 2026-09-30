@@ -8,12 +8,18 @@ import importlib
 import inspect
 import subprocess
 from collections.abc import Mapping
+from enum import StrEnum
 from typing import Any
 
 from ..contracts import WorkerSpec
 from ..control.models import WorkerState
 from ..execution import JobExecutor, JobResult
 from .client import ClaimedJob, ControlClient, ControlTransportError
+
+
+class GpuPreflightMode(StrEnum):
+    EXACT_VISIBLE = "exact-visible"
+    ISOLATED_ACCESS = "isolated-access"
 
 
 def discover_nvidia_gpu_uuids(command: str = "nvidia-smi") -> tuple[str, ...]:
