@@ -238,9 +238,11 @@ fails runtime startup rather than triggering an unreviewed download.
 store and therefore must remain non-secret. Credentials stay in
 `environmentFile` or another protected secret mechanism.
 
-The exact-set GPU preflight remains authoritative. For a host-visible GPU
-superset, enable `gpuIsolation` and declare the exact UUID→`/dev/nvidiaN`
-mapping:
+The exact-visible GPU preflight remains authoritative when no subset isolation
+is configured. For a host-visible GPU superset, enable `gpuIsolation` and
+declare the exact UUID→`/dev/nvidiaN` mapping. The service then snapshots the
+current full mapping outside the Worker cgroup and proves selected-device access
+plus unselected-device denial inside the Worker cgroup:
 
 ```nix
 gpuIsolation = {
@@ -251,8 +253,11 @@ gpuIsolation = {
 
 The module verifies that mapping in a separate host-level oneshot service, then
 runs the Worker under `DevicePolicy=closed` with only the selected physical
-GPU nodes plus configured shared NVIDIA control/UVM nodes. The existing
-`gpu-preflight` still runs inside the restricted Worker cgroup.
+GPU nodes plus configured shared NVIDIA control/UVM nodes. Configuration text
+alone is not treated as proof: an in-service access probe must confirm that
+unselected physical GPU nodes are denied. If the container/host does not
+enforce that boundary, the Worker fails closed and GPU visibility must be
+narrowed externally.
 
 See [Runtime Deployment GPU Isolation Acceptance](runtime-deployment-acceptance.md)
 for the real-host acceptance contract.
