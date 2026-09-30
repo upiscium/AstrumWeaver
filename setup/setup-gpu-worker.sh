@@ -113,7 +113,8 @@ GPU_MAPPING_PYTHON_DEST="$LIBEXEC_DIR/gpu_mapping.py"
 UNIT_DEST="$UNIT_DIR/astrumweaver-worker.service"
 ISOLATION_UNIT_DEST="$UNIT_DIR/astrumweaver-worker-gpu-isolation-preflight.service"
 ISOLATION_DROPIN_DEST="$DROPIN_DIR/10-gpu-isolation.conf"
-LEGACY_GPU_DEVICE_MAP_SHA256='faa3836dbf190616d0c4ad32deaad1d3dda66ff1d903468095ab33edc6ea735a'
+LEGACY_GPU_DEVICE_MAP_V48_SHA256='faa3836dbf190616d0c4ad32deaad1d3dda66ff1d903468095ab33edc6ea735a'
+LEGACY_GPU_DEVICE_MAP_V59_SHA256='56ff3a2f18cb8d3c249e53ca01baf6adffbf18b5baf684e80483bf6735af4476'
 LEGACY_GPU_PREFLIGHT_SHA256='6a807fa50fc944193f98a32778ef37df98db8e6744546c99a2694bc492bfc236'
 runtime_arg=''
 if [[ -n "$RUNTIME_MANIFEST_SOURCE" ]]; then
@@ -190,8 +191,9 @@ normalize_reviewed_legacy_bash_script() {
 }
 
 install_reviewed_script_upgrade() {
-  local source="$1" destination="$2" mode="$3" legacy_sha256="${4:-}"
-  local normalized digest
+  local source="$1" destination="$2" mode="$3"
+  shift 3
+  local normalized digest legacy_sha256
   [[ -f "$source" ]] || die "source file does not exist: $source"
   reject_symlink_path "$destination"
 
@@ -219,16 +221,18 @@ install_reviewed_script_upgrade() {
     return 0
   fi
 
-  if [[ -n "$legacy_sha256" ]]; then
+  if (($# > 0)); then
     require_cmd sha256sum
     digest="$(sha256sum "$normalized")"
     digest="${digest%% *}"
-    if [[ "$digest" == "$legacy_sha256" ]]; then
-      rm -f "$normalized"
-      log "upgrading reviewed legacy helper: $destination"
-      install -D -m "$mode" "$source" "$destination"
-      return 0
-    fi
+    for legacy_sha256 in "$@"; do
+      if [[ "$digest" == "$legacy_sha256" ]]; then
+        rm -f "$normalized"
+        log "upgrading reviewed legacy helper: $destination"
+        install -D -m "$mode" "$source" "$destination"
+        return 0
+      fi
+    done
   fi
 
   rm -f "$normalized"
@@ -348,7 +352,7 @@ if [[ -n "$RUNTIME_MANIFEST_SOURCE" ]]; then
 fi
 install_same_or_fail "$expected_tmp" "$GPU_UUID_DEST" 0640
 install_reviewed_script_upgrade "$REPO_ROOT/libexec/gpu-preflight" "$PREFLIGHT_DEST" 0755 "$LEGACY_GPU_PREFLIGHT_SHA256"
-install_reviewed_script_upgrade "$REPO_ROOT/libexec/gpu-device-map" "$DEVICE_MAP_HELPER_DEST" 0755 "$LEGACY_GPU_DEVICE_MAP_SHA256"
+install_reviewed_script_upgrade "$REPO_ROOT/libexec/gpu-device-map" "$DEVICE_MAP_HELPER_DEST" 0755 "$LEGACY_GPU_DEVICE_MAP_V48_SHA256" "$LEGACY_GPU_DEVICE_MAP_V59_SHA256"
 install_reviewed_script_upgrade "$REPO_ROOT/libexec/gpu-isolation-probe" "$GPU_ISOLATION_PROBE_DEST" 0755
 install_same_or_fail "$GPU_MAPPING_PYTHON_SOURCE" "$GPU_MAPPING_PYTHON_DEST" 0640
 
