@@ -134,6 +134,23 @@ gpu.compute_capability.min
 
 GPU UUIDs are not copied into SetupHostSnapshot metadata.
 
+When the user selects fewer GPUs than the local NVIDIA inventory exposes, the
+generic-systemd first-run Worker config is rendered with:
+
+```toml
+gpu_preflight = true
+gpu_preflight_mode = "isolated-access"
+gpu_device_map = "/etc/astrumweaver/gpu-device-map"
+```
+
+Setup then performs the transient effective-access probe before the candidate
+Worker config is persisted. If an unselected physical GPU remains openable,
+the wizard fails closed and instructs the operator to narrow guest-visible GPU
+exposure at the VM/LXC/hypervisor boundary. It does not fall back to
+`CUDA_VISIBLE_DEVICES`-only isolation and does not silently expand the Worker
+GPU set.
+
+
 ## Execution demand editor
 
 The wizard collects provider-neutral model/execution facts:
