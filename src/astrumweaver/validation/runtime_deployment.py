@@ -967,7 +967,7 @@ def render_runtime_deployment_markdown(
                 evidence.service_stopped_after_acceptance,
             ),
             ("Overall", evidence.overall),
-    ]
+        ]
     rows = "\n".join(f"| {key} | {value} |" for key, value in fields)
     return (
         "# AstrumWeaver Runtime Deployment GPU Isolation Evidence\n\n"
