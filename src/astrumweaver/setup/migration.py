@@ -83,6 +83,116 @@ class InstalledWorkerUnit:
     execution_mode: str
 
 
+_REQUIRED_WORKER_KEYS = frozenset(
+    {
+        "id",
+        "class",
+        "control_url",
+        "capabilities",
+        "gpu_uuids",
+        "gpu_count",
+        "total_vram_mb",
+        "max_single_gpu_vram_mb",
+        "max_concurrency",
+        "gpu_preflight",
+        "health_host",
+        "health_port",
+    }
+)
+_OPTIONAL_WORKER_KEYS = frozenset({"labels", "accelerators"})
+_ACCELERATOR_KEYS = frozenset(
+    {"uuid", "memory_mb", "compute_capability", "device_class"}
+)
+
+
+def _validate_worker_shape(worker: dict[str, Any]) -> None:
+    keys = set(worker)
+    missing = _REQUIRED_WORKER_KEYS - keys
+    unknown = keys - _REQUIRED_WORKER_KEYS - _OPTIONAL_WORKER_KEYS
+    if missing:
+        raise RuntimeError(
+            "installed Worker TOML is missing canonical worker fields"
+        )
+    if unknown:
+        raise RuntimeError(
+            "installed Worker TOML contains unrecognized worker fields"
+        )
+
+    for name in ("id", "class", "control_url", "health_host"):
+        if not isinstance(worker.get(name), str):
+            raise RuntimeError(
+                f"installed Worker worker.{name} must be a string"
+            )
+    for name in (
+        "gpu_count",
+        "total_vram_mb",
+        "max_single_gpu_vram_mb",
+        "max_concurrency",
+        "health_port",
+    ):
+        value = worker.get(name)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise RuntimeError(
+                f"installed Worker worker.{name} must be an integer"
+            )
+    if not isinstance(worker.get("gpu_preflight"), bool):
+        raise RuntimeError(
+            "installed Worker worker.gpu_preflight must be boolean"
+        )
+    for name in ("capabilities", "gpu_uuids"):
+        value = worker.get(name)
+        if not isinstance(value, list) or not all(
+            isinstance(item, str) for item in value
+        ):
+            raise RuntimeError(
+                f"installed Worker worker.{name} must be a string array"
+            )
+
+    labels = worker.get("labels")
+    if labels is not None and (
+        not isinstance(labels, dict)
+        or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in labels.items()
+        )
+    ):
+        raise RuntimeError(
+            "installed Worker worker.labels must be a string table"
+        )
+
+    accelerators = worker.get("accelerators")
+    if accelerators is not None:
+        if not isinstance(accelerators, list):
+            raise RuntimeError(
+                "installed Worker worker.accelerators must be an array of tables"
+            )
+        for accelerator in accelerators:
+            if not isinstance(accelerator, dict):
+                raise RuntimeError(
+                    "installed Worker accelerator entry must be a table"
+                )
+            keys = set(accelerator)
+            if not {"uuid", "memory_mb"} <= keys or not keys <= _ACCELERATOR_KEYS:
+                raise RuntimeError(
+                    "installed Worker accelerator entry is not canonical"
+                )
+            if not isinstance(accelerator["uuid"], str):
+                raise RuntimeError(
+                    "installed Worker accelerator uuid must be a string"
+                )
+            memory_mb = accelerator["memory_mb"]
+            if isinstance(memory_mb, bool) or not isinstance(memory_mb, int):
+                raise RuntimeError(
+                    "installed Worker accelerator memory_mb must be an integer"
+                )
+            for name in ("compute_capability", "device_class"):
+                value = accelerator.get(name)
+                if value is not None and not isinstance(value, str):
+                    raise RuntimeError(
+                        f"installed Worker accelerator {name} must be a string"
+                    )
+
+
 def _worker_spec(worker: dict[str, Any]) -> WorkerSpec:
     gpu_uuids = tuple(str(item) for item in worker.get("gpu_uuids", ()))
     accelerators = tuple(
@@ -124,7 +234,11 @@ def parse_installed_worker_toml(text: str) -> InstalledWorkerContract:
     if not isinstance(parsed, dict):
         raise RuntimeError("installed Worker TOML must contain a table")
 
-    worker = dict(parsed.get("worker") or {})
+    raw_worker = parsed.get("worker")
+    if not isinstance(raw_worker, dict):
+        raise RuntimeError("installed Worker TOML lacks a canonical worker table")
+    worker = dict(raw_worker)
+    _validate_worker_shape(worker)
     for key in ("id", "class", "control_url"):
         if not str(worker.get(key) or "").strip():
             raise RuntimeError(
@@ -138,16 +252,14 @@ def parse_installed_worker_toml(text: str) -> InstalledWorkerContract:
             "installed Worker resource/accelerator contract is invalid"
         ) from exc
 
-    max_concurrency = int(worker.get("max_concurrency", 1))
+    max_concurrency = worker["max_concurrency"]
     if max_concurrency <= 0:
         raise RuntimeError("installed Worker max_concurrency must be positive")
-    gpu_preflight = worker.get("gpu_preflight", True)
-    if not isinstance(gpu_preflight, bool):
-        raise RuntimeError("installed Worker gpu_preflight must be boolean")
-    health_host = str(worker.get("health_host", "127.0.0.1")).strip()
+    gpu_preflight = worker["gpu_preflight"]
+    health_host = worker["health_host"].strip()
     if not health_host:
         raise RuntimeError("installed Worker health_host must not be blank")
-    health_port = int(worker.get("health_port", 9100))
+    health_port = worker["health_port"]
     if not 1 <= health_port <= 65535:
         raise RuntimeError("installed Worker health_port is invalid")
 
