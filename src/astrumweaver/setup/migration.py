@@ -353,6 +353,31 @@ def parse_installed_worker_unit(text: str) -> InstalledWorkerUnit:
     execution_mode = (
         "runtime" if match.group("runtime_arg") is not None else "smoke"
     )
+    runtime_arg = (
+        " --runtime-manifest /etc/astrumweaver/runtime-deployment.json"
+        if execution_mode == "runtime"
+        else ""
+    )
+    expected = (
+        _UNIT_PREFIX
+        + f"User={service_user}\n"
+        + f"Group={service_user}\n"
+        + "SupplementaryGroups=astrumweaver-config\n"
+        + "EnvironmentFile=-/etc/astrumweaver/worker.env\n"
+        + (
+            "ExecStartPre=+/usr/local/libexec/astrumweaver/gpu-preflight "
+            "/etc/astrumweaver/gpu-uuids\n"
+        )
+        + (
+            f"ExecStart={executable} --config "
+            f"/etc/astrumweaver/worker.toml{runtime_arg}\n"
+        )
+        + _UNIT_SUFFIX
+    )
+    if text != expected:
+        raise RuntimeError(
+            "installed Worker unit contains unrelated or reordered modifications"
+        )
     return InstalledWorkerUnit(
         service_user=service_user,
         executable=executable,
