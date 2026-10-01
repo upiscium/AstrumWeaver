@@ -275,6 +275,11 @@ This table is product intent, not hard-coded planner logic.
 
 Each concrete provider must prove its own compatibility rules through provider tests and the runtime acceptance matrix.
 
+The canonical public matrix is available in both forms:
+
+- [Runtime Compatibility Matrix](runtime-compatibility.md) — human-readable interpretation and validation boundaries.
+- [`acceptance/runtime-providers-v0.1.toml`](../acceptance/runtime-providers-v0.1.toml) — machine-readable claims and evidence references.
+
 ## Setup TUI relationship
 
 The interactive TUI (#30) is a frontend over these contracts.
