@@ -85,6 +85,8 @@ class SetupActionKind(StrEnum):
     DOWNLOAD_MODEL = "download_model"
     CONVERT_MODEL = "convert_model"
     PREFLIGHT = "preflight"
+    WORKER_STOP = "worker_stop"
+    RECONCILE_WORKER_EXECUTION = "reconcile_worker_execution"
     RUNTIME_START = "runtime_start"
     HEALTH_CHECK = "health_check"
     RUNTIME_STOP = "runtime_stop"
