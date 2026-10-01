@@ -9,6 +9,7 @@ import os
 import pwd
 import re
 import shutil
+import stat
 import subprocess
 import tomllib
 import urllib.error
@@ -16,6 +17,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Mapping
 
+from ..contracts import WorkerSpec
 from ..worker.runtime import require_exact_gpu_set
 from ..validation.runtime_deployment import (
     RuntimeDeploymentAcceptanceError,
@@ -29,6 +31,14 @@ from .contracts import (
     SetupActionKind,
     SetupActionState,
     thaw_json,
+)
+from .migration import (
+    DEFAULT_RUNTIME_MANIFEST,
+    InstalledWorkerContract,
+    parse_installed_worker_toml,
+    parse_installed_worker_unit,
+    render_runtime_worker_toml,
+    render_runtime_worker_unit,
 )
 
 
