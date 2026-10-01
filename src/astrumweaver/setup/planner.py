@@ -144,6 +144,11 @@ def build_runtime_setup_plan(
                 "provider_id": provider_id,
                 "configuration": dict(intent.configuration),
                 "runtime_deployment": deployment.to_dict(),
+                **(
+                    {"existing_worker_migration": True}
+                    if reconcile_existing_worker
+                    else {}
+                ),
             },
             requires_privilege=intent.requires_privilege,
             reversible=True,
