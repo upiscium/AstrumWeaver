@@ -53,21 +53,33 @@ Runtime SetupPlan, progress output, or public evidence.
 
 ## Runtime-only flow
 
-The previous Worker/runtime wizard remains available:
+Runtime-only setup remains available:
 
 ```sh
 sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-setup-tui \
   --mode runtime
 ```
 
-Its flow remains:
+On generic systemd, runtime-only mode is an **existing Worker migration**.
+The TUI reads the installed non-secret `/etc/astrumweaver/worker.toml` and
+canonical Worker unit, verifies their execution authority, and uses that
+installed contract as the immutable source for Worker identity, Control URL,
+GPU ownership/order, resource shape, accelerator facts, labels, concurrency,
+GPU preflight and health settings. It never reads `worker.env` or asks the
+operator to reconstruct those values.
+
+The supported source state for the first migration is the canonical smoke
+Worker (`debug.echo` + the built-in structured-echo executor). An already
+canonical RuntimeProvider Worker is accepted for idempotent reruns. Mixed,
+custom-executor, store-pinned, provider-switch, or otherwise unrecognized
+Worker/unit states fail closed before mutation.
+
+The generic-systemd flow is:
 
 ```text
-NVIDIA GPU discovery
+load + validate installed Worker contract
     ↓
-choose Worker GPU ownership
-    ↓
-Worker identity/class
+NVIDIA GPU discovery verifies preserved ownership facts
     ↓
 model + execution demand
     ↓
@@ -78,9 +90,18 @@ USER selects runtime
 optional provider-specific settings
     ↓
 deterministic SetupPlan
+  - runtime prerequisites/config
+  - stop existing Worker
+  - reconcile Worker config + unit execution authority
+  - runtime preflight
+  - restart + health
     ↓
 dry-run / exact plan confirmation / apply
 ```
+
+On NixOS, runtime mode remains a planning workflow over explicitly selected
+Worker/GPU facts; declarative `services.astrumweaver.worker.runtime` remains
+the normal mutation boundary.
 
 ## Runtime authority
 
@@ -118,13 +139,20 @@ providers that require architecture evidence return an advisory. `nvidia-smi`
 optional-field sentinels such as `N/A` are normalized to unknown evidence
 rather than passed into strict accelerator-fact validation.
 
-The user explicitly chooses which locally visible GPUs form the Worker. The
-resulting WorkerSpec preserves that UUID order and calculates:
+During first-run (and non-migrating planning flows), the user explicitly
+chooses which locally visible GPUs form the Worker. The resulting WorkerSpec
+preserves that UUID order and calculates:
 
 - GPU count
 - total VRAM
 - maximum single-device VRAM
 - minimum known compute capability
+
+During generic-systemd runtime migration, those values are not re-entered.
+Discovery instead verifies that every installed Worker UUID and preserved
+per-device/resource fact still matches the local host. Extra host GPUs are
+allowed only as host-superset facts; they are not silently added to Worker
+ownership.
 
 The compute capability is represented as the generic Worker label:
 
@@ -220,8 +248,9 @@ profile's `bin` directory is already on `PATH`, running without a driver:
 astrumweaver-setup-tui --mode runtime
 ```
 
-completes host/Worker/demand/runtime selection and produces the exact reviewed
-SetupPlan, then stops without mutation.
+loads and validates the installed Worker contract, completes demand/runtime
+selection and produces the exact reviewed SetupPlan, then stops without
+mutation. The protected Worker EnvironmentFile is not read.
 
 On an already-integrated generic systemd Worker host, the first-party driver
 can be connected with:
@@ -233,9 +262,12 @@ sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-setup-tui \
 ```
 
 The Worker service account, Worker TOML, protected token EnvironmentFile, and
-systemd unit must already exist. The runtime driver owns reviewed runtime
-package/config/model actions and starts the existing Worker service; it does not
-invent Control credentials or network identity.
+systemd unit must already exist. The runtime driver validates the installed
+non-secret Worker TOML/unit, owns reviewed runtime package/config/model actions,
+stops the smoke Worker, atomically reconciles Worker execution authority,
+reloads systemd, and restarts the same Worker. The token EnvironmentFile is
+preserved by reference and never read; Control credentials, network identity,
+Worker identity and GPU ownership are not invented or reconstructed.
 
 Provider package/model commands are opt-in argv maps supplied through protected
 deployment environment, for example a locally reviewed wrapper:
