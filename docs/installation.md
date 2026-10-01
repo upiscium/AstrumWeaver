@@ -369,13 +369,23 @@ review/digest and are written only through the protected environment-file path.
 The TUI does **not** provision PostgreSQL itself, install/replace NVIDIA host
 drivers, configure PCI passthrough, or mutate hypervisor configuration.
 
-For an already-installed Worker where you only want RuntimeProvider setup, use:
+For an already-installed generic-systemd Worker where you only want
+RuntimeProvider setup, use:
 
 ```sh
 sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-setup-tui \
   --mode runtime \
   --driver astrumweaver.setup.systemd:create_systemd_driver
 ```
+
+This mode migrates the installed canonical smoke Worker rather than asking you
+to re-enter Worker ID, Control URL, GPU ownership or resource facts. It reads
+the non-secret Worker TOML and canonical unit, verifies them against local GPU
+discovery, and preserves the protected `worker.env` only by reference; token
+values are never read. Mixed/custom execution authority or unrelated unit
+drift fails closed. The reviewed plan stops the smoke Worker before changing
+its execution authority, then restarts the same Worker under the selected
+RuntimeProvider.
 
 The manual commands below remain documented for troubleshooting,
 non-interactive deployment, and understanding exactly what the TUI wraps.
