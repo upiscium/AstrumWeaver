@@ -378,6 +378,69 @@ def test_worker_restart_stays_blocked_when_reconcile_daemon_reload_fails(
     assert not any(command[1:2] == ("start",) for command in calls)
 
 
+def test_worker_restart_stays_blocked_when_rollback_reload_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    staged_root = tmp_path / "staged"
+    worker_path, unit_path, manifest_path = _write_staged_worker(staged_root)
+    active = {"value": True}
+    fail_reload = {"value": False}
+    calls: list[tuple[str, ...]] = []
+
+    driver = SystemdSetupDriver(
+        root=Path("/"),
+        worker_config_path=worker_path,
+        worker_unit_path=unit_path,
+        runtime_manifest_path=manifest_path,
+    )
+    monkeypatch.setattr(driver, "_service_active", lambda: active["value"])
+
+    def fake_run(argv, *, check, **kwargs):
+        command = tuple(str(item) for item in argv)
+        calls.append(command)
+        if command[1:] == ("stop", "astrumweaver-worker.service"):
+            active["value"] = False
+            return subprocess.CompletedProcess(argv, 0)
+        if command[1:] == ("start", "astrumweaver-worker.service"):
+            active["value"] = True
+            return subprocess.CompletedProcess(argv, 0)
+        if command[1:] == ("daemon-reload",) and fail_reload["value"]:
+            raise subprocess.CalledProcessError(1, argv)
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr("astrumweaver.setup.systemd.subprocess.run", fake_run)
+
+    stop = SetupAction(
+        action_id="01-worker-stop",
+        kind=SetupActionKind.WORKER_STOP,
+        description="Stop Worker before migration",
+        payload={
+            "provider_id": "llama-cpp",
+            "source_execution": "smoke",
+            "desired_execution": "runtime",
+            "runtime_deployment": {"provider_id": "llama-cpp"},
+        },
+        requires_privilege=True,
+        reversible=True,
+    )
+
+    stop_receipt = driver.apply(stop)
+    reconcile_receipt = driver.apply(_reconcile_action())
+    assert reconcile_receipt.changed
+    assert not active["value"]
+
+    fail_reload["value"] = True
+    with pytest.raises(subprocess.CalledProcessError):
+        driver.rollback(_reconcile_action(), reconcile_receipt)
+
+    stop_rollback = driver.rollback(stop, stop_receipt)
+    assert not stop_rollback.changed
+    assert "restart refused" in stop_rollback.detail
+    assert not active["value"]
+    assert not any(command[1:2] == ("start",) for command in calls)
+
+
 def test_systemd_driver_reconcile_is_idempotent_and_reversible(
     tmp_path: Path,
 ) -> None:
