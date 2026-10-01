@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from astrumweaver import AcceleratorDevice, ResourceShape, WorkerSpec
 from astrumweaver.execution import JobExecutor, JobRequest, JobResult, ResidencyReport
 from astrumweaver.runtime import (
     CompatibilityReason,
@@ -37,6 +38,7 @@ from astrumweaver.setup import (
     discover_local_gpus,
 )
 from astrumweaver.runtime import ModelPreparationPolicy, RuntimeHostFacts
+from astrumweaver.setup.migration import InstalledWorkerContract
 from astrumweaver.setup.tui import (
     TuiRunStatus,
     build_worker_spec,
@@ -440,6 +442,70 @@ def test_planning_only_tui_shows_all_candidates_and_preserves_explicit_choice() 
     assert "[compatible] fake" in output
     assert "Planning-only mode" in output
     assert "No secret values" in output
+
+
+def test_systemd_runtime_tui_uses_installed_worker_without_reprompting_identity() -> None:
+    worker = WorkerSpec(
+        worker_id="legacy-single",
+        worker_class="gpu-single",
+        resources=ResourceShape(
+            gpu_count=1,
+            total_vram_mb=24576,
+            max_single_gpu_vram_mb=24576,
+        ),
+        gpu_uuids=("GPU-one",),
+        accelerators=(
+            AcceleratorDevice(
+                uuid="GPU-one",
+                memory_mb=24576,
+                compute_capability="8.6",
+            ),
+        ),
+        capabilities=frozenset({"debug.echo"}),
+    )
+    installed = InstalledWorkerContract(
+        spec=worker,
+        control_url="https://control.example",
+        max_concurrency=1,
+        gpu_preflight=True,
+        health_host="127.0.0.1",
+        health_port=9100,
+        execution_mode="smoke",
+    )
+    io = ScriptedIO(
+        [
+            "org/model",
+            "fake",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "fake",
+        ]
+    )
+
+    result = run_setup_tui(
+        io=io,
+        snapshot=systemd_snapshot(),
+        gpus=one_gpu(),
+        catalog=RuntimeCatalog((FakeProvider(),)),
+        driver=None,
+        existing_worker=installed,
+        reconcile_existing_worker=True,
+    )
+
+    assert result.status is TuiRunStatus.PLANNED
+    assert not any("GPU selection" in prompt for prompt in io.prompts)
+    assert not any("Worker ID" in prompt for prompt in io.prompts)
+    assert not any("Worker class" in prompt for prompt in io.prompts)
+    output = "\n".join(io.output)
+    assert "Existing Worker: legacy-single" in output
+    assert "GPU ownership: preserved" in output
+    assert "Worker token: preserved by reference; value not read" in output
+    assert "runtime/fake" in output
 
 
 def test_tui_requires_exact_plan_confirmation_and_streams_apply_progress() -> None:
