@@ -1089,13 +1089,31 @@ class SystemdSetupDriver:
                     changed=False,
                     detail="staged root has no live Worker service to restore",
                 )
+            try:
+                restored = self.load_installed_worker_contract()
+            except RuntimeError:
+                return ActionReceipt(
+                    changed=False,
+                    detail=(
+                        "Worker left stopped because rollback did not restore "
+                        "a recognizable execution contract"
+                    ),
+                )
+            if restored.execution_mode != "smoke":
+                return ActionReceipt(
+                    changed=False,
+                    detail=(
+                        "Worker left stopped because smoke execution authority "
+                        "was not restored"
+                    ),
+                )
             subprocess.run(
                 [self.systemctl, "start", self.service_name],
                 check=True,
             )
             return ActionReceipt(
                 changed=True,
-                detail="restored previously active Worker service",
+                detail="restored previously active smoke Worker service",
             )
 
         if action.kind is SetupActionKind.RUNTIME_START:
