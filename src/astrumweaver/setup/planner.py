@@ -201,7 +201,12 @@ def build_runtime_setup_plan(
         builder.add(
             SetupActionKind.WORKER_STOP,
             "Stop the existing Worker before changing execution authority",
-            payload={"provider_id": provider_id},
+            payload={
+                "provider_id": provider_id,
+                "source_execution": "smoke",
+                "desired_execution": "runtime",
+                "runtime_deployment": deployment.to_dict(),
+            },
             requires_privilege=True,
             reversible=True,
         )
@@ -214,6 +219,7 @@ def build_runtime_setup_plan(
                 "desired_execution": "runtime",
                 "capabilities": ["llm.chat", "text.generate"],
                 "runtime_manifest": "/etc/astrumweaver/runtime-deployment.json",
+                "runtime_deployment": deployment.to_dict(),
                 "startup_timeout_seconds": 600,
                 "shutdown_timeout_seconds": 60,
             },
