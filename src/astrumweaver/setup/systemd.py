@@ -302,11 +302,70 @@ class SystemdSetupDriver:
             )
         return provider_id
 
+    def _expected_runtime_deployment_text(
+        self,
+        action: SetupAction,
+    ) -> str:
+        deployment = action.payload.get("runtime_deployment")
+        if not isinstance(deployment, Mapping):
+            raise RuntimeError(
+                "Worker migration action lacks the reviewed runtime deployment"
+            )
+        return _canonical_json(deployment)
+
+    def _runtime_manifest_matches(self, action: SetupAction) -> bool:
+        expected = self._expected_runtime_deployment_text(action)
+        path = self._target(self.runtime_manifest_path)
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        if not isinstance(value, dict):
+            return False
+        return _canonical_json(value) == expected
+
+    def _inspect_worker_stop(
+        self,
+        action: SetupAction,
+    ) -> ActionInspection:
+        try:
+            contract = self.load_installed_worker_contract()
+            self._expected_runtime_deployment_text(action)
+        except RuntimeError as exc:
+            return ActionInspection(SetupActionState.BLOCKED, str(exc))
+
+        if contract.execution_mode == "runtime":
+            if not self._runtime_manifest_matches(action):
+                return ActionInspection(
+                    SetupActionState.BLOCKED,
+                    "installed runtime deployment differs from the reviewed desired state",
+                )
+            return ActionInspection(
+                SetupActionState.SATISFIED,
+                "already-migrated Worker needs no execution-authority stop",
+            )
+
+        if self.root != Path("/"):
+            return ActionInspection(
+                SetupActionState.SATISFIED,
+                "staged root has no live Worker service to stop",
+            )
+        return ActionInspection(
+            SetupActionState.NEEDS_APPLY
+            if self._service_active()
+            else SetupActionState.SATISFIED,
+            "existing smoke Worker must be stopped before execution reconciliation",
+        )
+
     def _inspect_worker_execution(
         self,
         action: SetupAction,
     ) -> ActionInspection:
         provider_id = str(action.payload.get("provider_id") or "").strip()
+        try:
+            self._expected_runtime_deployment_text(action)
+        except RuntimeError as exc:
+            return ActionInspection(SetupActionState.BLOCKED, str(exc))
         if not provider_id:
             return ActionInspection(
                 SetupActionState.BLOCKED,
@@ -351,9 +410,14 @@ class SystemdSetupDriver:
                 SetupActionState.BLOCKED,
                 "installed runtime provider differs from the reviewed provider",
             )
+        if not self._runtime_manifest_matches(action):
+            return ActionInspection(
+                SetupActionState.BLOCKED,
+                "installed runtime deployment differs from the reviewed desired state",
+            )
         return ActionInspection(
             SetupActionState.SATISFIED,
-            "Worker config and unit already own the reviewed RuntimeProvider",
+            "Worker config and unit already own the exact reviewed RuntimeProvider state",
         )
 
     def _validate_render_migration_source(
@@ -370,12 +434,22 @@ class SystemdSetupDriver:
         if contract.execution_mode == "runtime":
             try:
                 current_provider = self._runtime_manifest_provider_id()
+                targets = self._render_targets(action)
             except RuntimeError as exc:
                 return ActionInspection(SetupActionState.BLOCKED, str(exc))
             if current_provider != provider_id:
                 return ActionInspection(
                     SetupActionState.BLOCKED,
                     "installed runtime provider differs from the reviewed provider",
+                )
+            if any(
+                not path.is_file()
+                or path.read_text(encoding="utf-8") != content
+                for path, content in targets
+            ):
+                return ActionInspection(
+                    SetupActionState.BLOCKED,
+                    "already-migrated Worker differs from the reviewed desired runtime state",
                 )
         return None
 
@@ -700,17 +774,7 @@ class SystemdSetupDriver:
             )
 
         if kind is SetupActionKind.WORKER_STOP:
-            if self.root != Path("/"):
-                return ActionInspection(
-                    SetupActionState.SATISFIED,
-                    "staged root has no live Worker service to stop",
-                )
-            return ActionInspection(
-                SetupActionState.NEEDS_APPLY
-                if self._service_active()
-                else SetupActionState.SATISFIED,
-                "existing Worker must be stopped before execution reconciliation",
-            )
+            return self._inspect_worker_stop(action)
 
         if kind is SetupActionKind.RECONCILE_WORKER_EXECUTION:
             return self._inspect_worker_execution(action)
@@ -854,15 +918,12 @@ class SystemdSetupDriver:
             )
 
         if kind is SetupActionKind.WORKER_STOP:
-            if self.root != Path("/"):
-                return ActionReceipt(
-                    changed=False,
-                    detail="staged root has no live Worker service to stop",
-                )
-            if not self._service_active():
-                return ActionReceipt(
-                    changed=False,
-                    detail="existing Worker is already stopped",
+            inspection = self._inspect_worker_stop(action)
+            if inspection.state is SetupActionState.SATISFIED:
+                return ActionReceipt(changed=False, detail=inspection.detail)
+            if inspection.state is SetupActionState.BLOCKED:
+                raise RuntimeError(
+                    inspection.detail or "Worker stop is blocked"
                 )
             subprocess.run(
                 [self.systemctl, "stop", self.service_name],
