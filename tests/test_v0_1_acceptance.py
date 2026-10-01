@@ -31,6 +31,7 @@ EXPECTED_CHECKS = {
     "nixos-module-deployment",
     "versioned-control-worker-transport",
     "borrowable-worker-handoff",
+    "runtime-provider-compatibility-matrix",
 }
 
 PRIVATE_IPV4 = re.compile(
