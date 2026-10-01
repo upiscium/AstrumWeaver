@@ -130,6 +130,10 @@ class SystemdSetupDriver:
         }
         self.service_user = service_user
         self.service_group = service_group
+        # Live Worker restart is allowed only while the systemd manager is
+        # known to reflect the on-disk execution authority. A failed
+        # daemon-reload during migration/rollback makes restart fail closed.
+        self._worker_restart_safe = True
 
     def _target(self, path: Path) -> Path:
         if self.root == Path("/"):
@@ -972,6 +976,8 @@ class SystemdSetupDriver:
 
             worker_changed = worker_previous != worker_desired
             unit_changed = unit_previous != unit_desired
+            if self.root == Path("/") and (worker_changed or unit_changed):
+                self._worker_restart_safe = False
             try:
                 if worker_changed:
                     self._replace_preserving_metadata(
@@ -988,6 +994,8 @@ class SystemdSetupDriver:
                         [self.systemctl, "daemon-reload"],
                         check=True,
                     )
+                if self.root == Path("/"):
+                    self._worker_restart_safe = True
             except Exception:
                 try:
                     if worker_changed and worker_path.is_file():
@@ -1003,10 +1011,15 @@ class SystemdSetupDriver:
                     if self.root == Path("/") and unit_changed:
                         subprocess.run(
                             [self.systemctl, "daemon-reload"],
-                            check=False,
+                            check=True,
                         )
-                finally:
-                    raise
+                except Exception:
+                    if self.root == Path("/"):
+                        self._worker_restart_safe = False
+                else:
+                    if self.root == Path("/"):
+                        self._worker_restart_safe = True
+                raise
 
             return ActionReceipt(
                 changed=worker_changed or unit_changed,
@@ -1122,11 +1135,13 @@ class SystemdSetupDriver:
                 raise RuntimeError(
                     "Worker execution rollback receipt is incomplete"
                 )
-            if self.root == Path("/") and self._service_active():
-                subprocess.run(
-                    [self.systemctl, "stop", self.service_name],
-                    check=True,
-                )
+            if self.root == Path("/"):
+                self._worker_restart_safe = False
+                if self._service_active():
+                    subprocess.run(
+                        [self.systemctl, "stop", self.service_name],
+                        check=True,
+                    )
             self._replace_preserving_metadata(
                 self.worker_config_path,
                 worker_previous,
@@ -1140,6 +1155,7 @@ class SystemdSetupDriver:
                     [self.systemctl, "daemon-reload"],
                     check=True,
                 )
+                self._worker_restart_safe = True
             return ActionReceipt(
                 changed=True,
                 detail="restored previous Worker execution configuration",
@@ -1155,6 +1171,14 @@ class SystemdSetupDriver:
                 return ActionReceipt(
                     changed=False,
                     detail="staged root has no live Worker service to restore",
+                )
+            if not self._worker_restart_safe:
+                return ActionReceipt(
+                    changed=False,
+                    detail=(
+                        "Worker restart refused because systemd execution "
+                        "authority reload was not proven safe"
+                    ),
                 )
             try:
                 restored = self.load_installed_worker_contract()
