@@ -270,6 +270,10 @@ class SystemdSetupDriver:
         )
         contract = parse_installed_worker_toml(worker_text)
         unit = parse_installed_worker_unit(unit_text)
+        if unit.service_user != self.service_user:
+            raise RuntimeError(
+                "installed Worker unit service identity differs from setup authority"
+            )
         if contract.execution_mode != unit.execution_mode:
             raise RuntimeError(
                 "installed Worker config and unit use mixed execution authority"
@@ -687,8 +691,8 @@ class SystemdSetupDriver:
 
             if not self._target(self.runtime_manifest_path).is_file():
                 return ActionInspection(
-                    SetupActionState.BLOCKED,
-                    "runtime deployment manifest is missing",
+                    SetupActionState.NEEDS_APPLY,
+                    "runtime deployment manifest will be materialized by the reviewed plan",
                 )
             return ActionInspection(
                 SetupActionState.SATISFIED,
