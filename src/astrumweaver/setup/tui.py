@@ -52,7 +52,9 @@ from .contracts import (
     thaw_json,
 )
 from .discovery import DiscoveredGpu, discover_local_gpus, discover_local_host
+from .migration import DEFAULT_RUNTIME_MANIFEST, InstalledWorkerContract
 from .planner import build_runtime_setup_plan
+from .systemd import SystemdSetupDriver, create_systemd_driver
 from .first_run import (
     ControlBootstrapSpec,
     control_url_for_bind_host,
@@ -675,6 +677,7 @@ def plan_runtime_for_worker(
     snapshot: SetupHostSnapshot,
     worker: WorkerSpec,
     catalog: RuntimeCatalog | None = None,
+    reconcile_existing_worker: bool = False,
 ) -> RuntimeTuiPlan | None:
     catalog = catalog or default_runtime_catalog()
     demand = _prompt_demand(io, worker)
@@ -725,6 +728,7 @@ def plan_runtime_for_worker(
         context=context,
         selection=selection,
         snapshot=snapshot,
+        reconcile_existing_worker=reconcile_existing_worker,
     )
     return RuntimeTuiPlan(provider_id=provider_id, plan=plan)
 
@@ -790,6 +794,55 @@ def apply_runtime_tui_plan(
     )
 
 
+def _verify_installed_worker_gpus(
+    worker: WorkerSpec,
+    discovered: tuple[DiscoveredGpu, ...],
+) -> None:
+    by_uuid = {gpu.uuid: gpu for gpu in discovered}
+    if len(by_uuid) != len(discovered):
+        raise RuntimeError("local GPU discovery returned duplicate UUIDs")
+
+    selected: list[DiscoveredGpu] = []
+    for index, uuid in enumerate(worker.gpu_uuids):
+        gpu = by_uuid.get(uuid)
+        if gpu is None:
+            raise RuntimeError(
+                "installed Worker GPU ownership is not present on this host"
+            )
+        selected.append(gpu)
+        if worker.accelerators:
+            expected = worker.accelerators[index]
+            if gpu.memory_mb != expected.memory_mb:
+                raise RuntimeError(
+                    "installed Worker per-device VRAM no longer matches discovery"
+                )
+            if (
+                expected.compute_capability is not None
+                and gpu.compute_capability != expected.compute_capability
+            ):
+                raise RuntimeError(
+                    "installed Worker compute capability no longer matches discovery"
+                )
+            if (
+                expected.device_class is not None
+                and gpu.device_class != expected.device_class
+            ):
+                raise RuntimeError(
+                    "installed Worker device class no longer matches discovery"
+                )
+
+    total_vram = sum(gpu.memory_mb for gpu in selected)
+    max_vram = max((gpu.memory_mb for gpu in selected), default=0)
+    if total_vram != worker.resources.total_vram_mb:
+        raise RuntimeError(
+            "installed Worker total VRAM no longer matches local GPU discovery"
+        )
+    if max_vram != worker.resources.max_single_gpu_vram_mb:
+        raise RuntimeError(
+            "installed Worker maximum single-GPU VRAM no longer matches discovery"
+        )
+
+
 def run_setup_tui(
     *,
     io: TuiIO,
@@ -797,6 +850,8 @@ def run_setup_tui(
     gpus: tuple[DiscoveredGpu, ...],
     catalog: RuntimeCatalog | None = None,
     driver: SetupActionDriver | None = None,
+    existing_worker: InstalledWorkerContract | None = None,
+    reconcile_existing_worker: bool = False,
 ) -> TuiRunResult:
     catalog = catalog or default_runtime_catalog()
     io.clear()
@@ -809,16 +864,42 @@ def run_setup_tui(
         f"{snapshot.deployment_path.value}"
     )
 
-    selected_gpus = _select_gpus(io, gpus)
-    worker = _prompt_worker(io, selected_gpus)
+    if existing_worker is None:
+        if reconcile_existing_worker:
+            raise ValueError(
+                "existing Worker reconciliation requires an installed Worker contract"
+            )
+        selected_gpus = _select_gpus(io, gpus)
+        worker = _prompt_worker(io, selected_gpus)
+    else:
+        if not reconcile_existing_worker:
+            raise ValueError(
+                "installed Worker contract requires explicit reconciliation mode"
+            )
+        _verify_installed_worker_gpus(existing_worker.spec, gpus)
+        worker = existing_worker.spec
+        io.write("")
+        io.write(f"Existing Worker: {worker.worker_id}")
+        io.write("Execution transition: smoke/debug.echo -> runtime/selected-provider")
+        io.write("GPU ownership: preserved from installed Worker contract")
+        io.write("Control URL: preserved from installed Worker contract")
+        io.write("Worker token: preserved by reference; value not read")
+        io.write(f"Runtime manifest: {DEFAULT_RUNTIME_MANIFEST}")
+
     runtime_plan = plan_runtime_for_worker(
         io=io,
         snapshot=snapshot,
         worker=worker,
         catalog=catalog,
+        reconcile_existing_worker=reconcile_existing_worker,
     )
     if runtime_plan is None:
         return TuiRunResult(status=TuiRunStatus.CANCELLED)
+    if existing_worker is not None:
+        io.write(
+            "Reviewed execution transition: "
+            f"smoke/debug.echo -> runtime/{runtime_plan.provider_id}"
+        )
     return apply_runtime_tui_plan(
         io=io,
         runtime_plan=runtime_plan,
