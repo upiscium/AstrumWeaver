@@ -860,6 +860,12 @@ class SystemdSetupDriver:
             )
 
         if kind is SetupActionKind.RENDER_CONFIG:
+            migration_block = self._validate_render_migration_source(action)
+            if migration_block is not None:
+                raise RuntimeError(
+                    migration_block.detail
+                    or "runtime configuration migration is blocked"
+                )
             rollback: dict[str, Any] = {"files": []}
             changed = False
             for path, content in self._render_targets(action):
