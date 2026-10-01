@@ -188,6 +188,28 @@ def test_worker_toml_migration_preserves_installed_contract() -> None:
     assert parsed["runtime"]["manifest"] == DEFAULT_RUNTIME_MANIFEST
 
 
+def test_worker_migration_accepts_documented_optional_defaults() -> None:
+    source = _smoke_toml().replace("gpu_preflight = true\n", "", 1)
+    source = source.replace(
+        "health_port = 9100\n",
+        (
+            "health_port = 9100\n"
+            "poll_interval_seconds = 1.0\n"
+            "heartbeat_interval_seconds = 5.0\n"
+        ),
+        1,
+    )
+
+    before = parse_installed_worker_toml(source)
+    rendered = render_runtime_worker_toml(source)
+    after = parse_installed_worker_toml(rendered)
+
+    assert before.gpu_preflight is True
+    assert after.gpu_preflight is True
+    assert "poll_interval_seconds = 1.0" in rendered
+    assert "heartbeat_interval_seconds = 5.0" in rendered
+
+
 def test_worker_unit_migration_preserves_stable_executable() -> None:
     source = _worker_unit()
     before = parse_installed_worker_unit(source)
