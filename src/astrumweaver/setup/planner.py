@@ -14,6 +14,7 @@ from ..runtime import (
     resolve_runtime,
 )
 from .contracts import (
+    DeploymentPath,
     SetupAction,
     SetupActionKind,
     SetupHostSnapshot,
@@ -72,6 +73,7 @@ def build_runtime_setup_plan(
     context: RuntimeCompatibilityContext,
     selection: RuntimeSelection,
     snapshot: SetupHostSnapshot,
+    reconcile_existing_worker: bool = False,
 ) -> SetupPlan:
     """Build an activation plan after the user has made a runtime choice."""
 
@@ -184,6 +186,34 @@ def build_runtime_setup_plan(
     else:  # pragma: no cover
         raise SetupPlanningError(
             f"unsupported model preparation policy: {intent.model_preparation}"
+        )
+
+    if reconcile_existing_worker:
+        if snapshot.deployment_path is not DeploymentPath.SYSTEMD:
+            raise SetupPlanningError(
+                "existing Worker execution reconciliation is systemd-only"
+            )
+        builder.add(
+            SetupActionKind.WORKER_STOP,
+            "Stop the existing Worker before changing execution authority",
+            payload={"provider_id": provider_id},
+            requires_privilege=True,
+            reversible=True,
+        )
+        builder.add(
+            SetupActionKind.RECONCILE_WORKER_EXECUTION,
+            "Reconcile smoke Worker execution to RuntimeProvider execution",
+            payload={
+                "provider_id": provider_id,
+                "source_execution": "smoke",
+                "desired_execution": "runtime",
+                "capabilities": ["llm.chat", "text.generate"],
+                "runtime_manifest": "/etc/astrumweaver/runtime-deployment.json",
+                "startup_timeout_seconds": 600,
+                "shutdown_timeout_seconds": 60,
+            },
+            requires_privilege=True,
+            reversible=True,
         )
 
     builder.add(
