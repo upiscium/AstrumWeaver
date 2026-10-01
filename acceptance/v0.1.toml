@@ -86,3 +86,15 @@ evidence = [
   "tests/test_borrowable_worker.py::test_drain_timeout_never_forces_worker_stop",
   "tests/test_borrowable_worker.py::test_astrumweaver_transition_checks_identity_then_starts_and_waits_ready"
 ]
+
+[[check]]
+id = "runtime-provider-compatibility-matrix"
+description = "All first-class RuntimeProviders publish auditable compatibility claims, preserve explicit selection, fail closed on unsupported cases, and keep runtime-specific logic out of Control."
+evidence = [
+  "tests/test_runtime_provider_acceptance.py::test_runtime_provider_matrix_has_exact_first_class_provider_set",
+  "tests/test_runtime_provider_acceptance.py::test_each_provider_has_one_compatible_contract_and_reviewable_setup_plan",
+  "tests/test_runtime_provider_acceptance.py::test_each_provider_rejects_an_unlisted_model_format_without_substitution",
+  "tests/test_runtime_provider_acceptance.py::test_vllm_homogeneous_claim_requires_auditable_per_device_facts",
+  "tests/test_runtime_provider_acceptance.py::test_only_llama_cpp_claims_validated_heterogeneous_multi_gpu",
+  "tests/test_runtime_provider_acceptance.py::test_control_plane_contains_no_first_class_provider_branches"
+]
