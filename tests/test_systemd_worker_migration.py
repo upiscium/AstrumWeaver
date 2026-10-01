@@ -133,6 +133,7 @@ def _reconcile_action() -> SetupAction:
             "desired_execution": "runtime",
             "capabilities": ["llm.chat", "text.generate"],
             "runtime_manifest": DEFAULT_RUNTIME_MANIFEST,
+            "runtime_deployment": {"provider_id": "llama-cpp"},
             "startup_timeout_seconds": 600,
             "shutdown_timeout_seconds": 60,
         },
