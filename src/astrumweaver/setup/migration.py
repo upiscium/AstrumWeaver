@@ -93,13 +93,23 @@ _REQUIRED_WORKER_KEYS = frozenset(
         "gpu_count",
         "total_vram_mb",
         "max_single_gpu_vram_mb",
-        "max_concurrency",
-        "gpu_preflight",
-        "health_host",
-        "health_port",
     }
 )
-_OPTIONAL_WORKER_KEYS = frozenset({"labels", "accelerators"})
+_OPTIONAL_WORKER_KEYS = frozenset(
+    {
+        "labels",
+        "accelerators",
+        "max_concurrency",
+        "gpu_preflight",
+        "nvidia_smi_command",
+        "request_timeout_seconds",
+        "poll_interval_seconds",
+        "heartbeat_interval_seconds",
+        "health_host",
+        "health_port",
+        "shutdown_grace_seconds",
+    }
+)
 _ACCELERATOR_KEYS = frozenset(
     {"uuid", "memory_mb", "compute_capability", "device_class"}
 )
@@ -118,8 +128,14 @@ def _validate_worker_shape(worker: dict[str, Any]) -> None:
             "installed Worker TOML contains unrecognized worker fields"
         )
 
-    for name in ("id", "class", "control_url", "health_host"):
+    for name in ("id", "class", "control_url"):
         if not isinstance(worker.get(name), str):
+            raise RuntimeError(
+                f"installed Worker worker.{name} must be a string"
+            )
+    for name in ("health_host", "nvidia_smi_command"):
+        value = worker.get(name)
+        if value is not None and not isinstance(value, str):
             raise RuntimeError(
                 f"installed Worker worker.{name} must be a string"
             )
@@ -127,18 +143,38 @@ def _validate_worker_shape(worker: dict[str, Any]) -> None:
         "gpu_count",
         "total_vram_mb",
         "max_single_gpu_vram_mb",
-        "max_concurrency",
-        "health_port",
     ):
         value = worker.get(name)
         if isinstance(value, bool) or not isinstance(value, int):
             raise RuntimeError(
                 f"installed Worker worker.{name} must be an integer"
             )
-    if not isinstance(worker.get("gpu_preflight"), bool):
+    for name in ("max_concurrency", "health_port"):
+        value = worker.get(name)
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int)
+        ):
+            raise RuntimeError(
+                f"installed Worker worker.{name} must be an integer"
+            )
+    gpu_preflight = worker.get("gpu_preflight")
+    if gpu_preflight is not None and not isinstance(gpu_preflight, bool):
         raise RuntimeError(
             "installed Worker worker.gpu_preflight must be boolean"
         )
+    for name in (
+        "request_timeout_seconds",
+        "poll_interval_seconds",
+        "heartbeat_interval_seconds",
+        "shutdown_grace_seconds",
+    ):
+        value = worker.get(name)
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, (int, float))
+        ):
+            raise RuntimeError(
+                f"installed Worker worker.{name} must be numeric"
+            )
     for name in ("capabilities", "gpu_uuids"):
         value = worker.get(name)
         if not isinstance(value, list) or not all(
@@ -252,14 +288,14 @@ def parse_installed_worker_toml(text: str) -> InstalledWorkerContract:
             "installed Worker resource/accelerator contract is invalid"
         ) from exc
 
-    max_concurrency = worker["max_concurrency"]
+    max_concurrency = int(worker.get("max_concurrency", 1))
     if max_concurrency <= 0:
         raise RuntimeError("installed Worker max_concurrency must be positive")
-    gpu_preflight = worker["gpu_preflight"]
-    health_host = worker["health_host"].strip()
+    gpu_preflight = worker.get("gpu_preflight", True)
+    health_host = str(worker.get("health_host", "127.0.0.1")).strip()
     if not health_host:
         raise RuntimeError("installed Worker health_host must not be blank")
-    health_port = worker["health_port"]
+    health_port = int(worker.get("health_port", 9100))
     if not 1 <= health_port <= 65535:
         raise RuntimeError("installed Worker health_port is invalid")
 
