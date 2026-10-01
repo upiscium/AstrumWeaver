@@ -77,6 +77,9 @@ class SystemdSetupDriver:
         *,
         root: Path = Path("/"),
         worker_config_path: Path = Path("/etc/astrumweaver/worker.toml"),
+        worker_unit_path: Path = Path(
+            "/etc/systemd/system/astrumweaver-worker.service"
+        ),
         runtime_manifest_path: Path = Path(
             "/etc/astrumweaver/runtime-deployment.json"
         ),
@@ -102,6 +105,7 @@ class SystemdSetupDriver:
     ) -> None:
         self.root = root
         self.worker_config_path = worker_config_path
+        self.worker_unit_path = worker_unit_path
         self.runtime_manifest_path = runtime_manifest_path
         self.gpu_uuid_file_path = gpu_uuid_file_path
         self.gpu_device_map_path = gpu_device_map_path
