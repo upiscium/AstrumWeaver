@@ -849,6 +849,105 @@ class SystemdSetupDriver:
                 },
             )
 
+        if kind is SetupActionKind.WORKER_STOP:
+            if self.root != Path("/"):
+                return ActionReceipt(
+                    changed=False,
+                    detail="staged root has no live Worker service to stop",
+                )
+            if not self._service_active():
+                return ActionReceipt(
+                    changed=False,
+                    detail="existing Worker is already stopped",
+                )
+            subprocess.run(
+                [self.systemctl, "stop", self.service_name],
+                check=True,
+            )
+            return ActionReceipt(
+                changed=True,
+                detail="stopped existing Worker before execution reconciliation",
+                rollback_data={"was_active": True},
+            )
+
+        if kind is SetupActionKind.RECONCILE_WORKER_EXECUTION:
+            inspection = self._inspect_worker_execution(action)
+            if inspection.state is SetupActionState.SATISFIED:
+                return ActionReceipt(
+                    changed=False,
+                    detail=inspection.detail,
+                )
+            if inspection.state is SetupActionState.BLOCKED:
+                raise RuntimeError(
+                    inspection.detail or "Worker execution reconciliation is blocked"
+                )
+            if self.root == Path("/") and self._service_active():
+                raise RuntimeError(
+                    "Worker service is still active; refusing to change execution authority"
+                )
+
+            worker_path = self._target(self.worker_config_path)
+            unit_path = self._target(self.worker_unit_path)
+            worker_previous = self._read_required_text(
+                self.worker_config_path,
+                "Worker config",
+            )
+            unit_previous = self._read_required_text(
+                self.worker_unit_path,
+                "Worker unit",
+            )
+            worker_desired = render_runtime_worker_toml(worker_previous)
+            unit_desired = render_runtime_worker_unit(unit_previous)
+
+            worker_changed = worker_previous != worker_desired
+            unit_changed = unit_previous != unit_desired
+            try:
+                if worker_changed:
+                    self._replace_preserving_metadata(
+                        self.worker_config_path,
+                        worker_desired,
+                    )
+                if unit_changed:
+                    self._replace_preserving_metadata(
+                        self.worker_unit_path,
+                        unit_desired,
+                    )
+                if self.root == Path("/") and unit_changed:
+                    subprocess.run(
+                        [self.systemctl, "daemon-reload"],
+                        check=True,
+                    )
+            except Exception:
+                try:
+                    if worker_changed and worker_path.is_file():
+                        self._replace_preserving_metadata(
+                            self.worker_config_path,
+                            worker_previous,
+                        )
+                    if unit_changed and unit_path.is_file():
+                        self._replace_preserving_metadata(
+                            self.worker_unit_path,
+                            unit_previous,
+                        )
+                    if self.root == Path("/") and unit_changed:
+                        subprocess.run(
+                            [self.systemctl, "daemon-reload"],
+                            check=False,
+                        )
+                finally:
+                    raise
+
+            return ActionReceipt(
+                changed=worker_changed or unit_changed,
+                detail=(
+                    "reconciled Worker config and unit to reviewed runtime execution"
+                ),
+                rollback_data={
+                    "worker_previous": worker_previous,
+                    "unit_previous": unit_previous,
+                },
+            )
+
         if kind is SetupActionKind.RUNTIME_START:
             subprocess.run(
                 [self.systemctl, "enable", "--now", self.service_name],
@@ -943,6 +1042,58 @@ class SystemdSetupDriver:
                 detail="restored previous runtime configuration",
             )
 
+        if action.kind is SetupActionKind.RECONCILE_WORKER_EXECUTION:
+            worker_previous = receipt.rollback_data.get("worker_previous")
+            unit_previous = receipt.rollback_data.get("unit_previous")
+            if not isinstance(worker_previous, str) or not isinstance(
+                unit_previous, str
+            ):
+                raise RuntimeError(
+                    "Worker execution rollback receipt is incomplete"
+                )
+            if self.root == Path("/") and self._service_active():
+                subprocess.run(
+                    [self.systemctl, "stop", self.service_name],
+                    check=True,
+                )
+            self._replace_preserving_metadata(
+                self.worker_config_path,
+                worker_previous,
+            )
+            self._replace_preserving_metadata(
+                self.worker_unit_path,
+                unit_previous,
+            )
+            if self.root == Path("/"):
+                subprocess.run(
+                    [self.systemctl, "daemon-reload"],
+                    check=True,
+                )
+            return ActionReceipt(
+                changed=True,
+                detail="restored previous Worker execution configuration",
+            )
+
+        if action.kind is SetupActionKind.WORKER_STOP:
+            if not bool(receipt.rollback_data.get("was_active")):
+                return ActionReceipt(
+                    changed=False,
+                    detail="Worker was already stopped before migration",
+                )
+            if self.root != Path("/"):
+                return ActionReceipt(
+                    changed=False,
+                    detail="staged root has no live Worker service to restore",
+                )
+            subprocess.run(
+                [self.systemctl, "start", self.service_name],
+                check=True,
+            )
+            return ActionReceipt(
+                changed=True,
+                detail="restored previously active Worker service",
+            )
+
         if action.kind is SetupActionKind.RUNTIME_START:
             subprocess.run(
                 [self.systemctl, "stop", self.service_name],
@@ -991,6 +1142,12 @@ def create_systemd_driver() -> SystemdSetupDriver:
             os.environ.get(
                 "ASTRUMWEAVER_WORKER_CONFIG",
                 "/etc/astrumweaver/worker.toml",
+            )
+        ),
+        worker_unit_path=Path(
+            os.environ.get(
+                "ASTRUMWEAVER_WORKER_UNIT",
+                "/etc/systemd/system/astrumweaver-worker.service",
             )
         ),
         runtime_manifest_path=Path(
