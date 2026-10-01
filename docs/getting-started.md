@@ -266,9 +266,14 @@ sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-setup-tui \
   --driver astrumweaver.setup.systemd:create_systemd_driver
 ```
 
-The TUI shows compatibility results, asks you to explicitly choose a provider,
-builds a deterministic SetupPlan, shows the exact digest, performs a dry run,
-and applies only explicitly authorized actions.
+For an already-installed generic-systemd Worker, the TUI first loads the
+canonical non-secret Worker TOML/unit and verifies the preserved GPU ownership
+against local discovery. It does not read `worker.env` or ask you to re-enter
+Worker identity, Control URL or GPU ownership. It then shows compatibility
+results, asks you to explicitly choose a provider, builds a deterministic
+SetupPlan, shows the exact digest, performs a dry run, stops the smoke Worker
+before execution-authority migration, and applies only explicitly authorized
+actions. Unknown/mixed installed execution state fails closed.
 
 Package/model installation commands are not guessed automatically. See
 [Interactive Worker/runtime Setup TUI](setup-tui.md) for the required
