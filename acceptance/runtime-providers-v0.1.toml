@@ -1,0 +1,197 @@
+matrix_version = "v0.1"
+scope = "astrumweaver-provider-contract"
+description = "Public compatibility claims for first-class AstrumWeaver RuntimeProviders. Validated means covered by automated AstrumWeaver contract tests, not universal upstream hardware/model certification."
+support_status_values = ["validated", "supported_unvalidated", "unsupported"]
+integration_status_values = ["integrated", "not_integrated"]
+multi_gpu_hardware_values = ["heterogeneous_validated", "homogeneous_required", "supported_unvalidated", "unsupported"]
+
+[[provider]]
+provider_id = "ollama"
+display_name = "Ollama"
+capabilities = ["llm.chat", "text.generate"]
+model_formats = ["ollama"]
+single_gpu = "validated"
+multi_gpu = "validated"
+dense = "validated"
+moe = "supported_unvalidated"
+vram_only = "validated"
+prefer_vram = "validated"
+cpu_gpu_hybrid = "validated"
+cpu_offload_mode = "automatic"
+multi_gpu_hardware = "supported_unvalidated"
+process_lifecycle = "validated"
+cancellation = "validated"
+residency_reporting = "validated"
+nixos_integration = "integrated"
+systemd_integration = "integrated"
+notes = [
+  "Ollama owns CPU/GPU placement; cpu_gpu_hybrid is advisory rather than an explicit layer split.",
+  "Multi-GPU spread is validated, but heterogeneous hardware compatibility is not certified by AstrumWeaver."
+]
+evidence = [
+  "tests/test_ollama_provider.py::test_ollama_provider_rejects_non_ollama_model_format",
+  "tests/test_ollama_provider.py::test_ollama_vram_only_requires_size_and_rechecks_runtime",
+  "tests/test_ollama_provider.py::test_ollama_multi_gpu_uses_explicit_spread_even_if_model_fits_one_device",
+  "tests/test_ollama_provider.py::test_ollama_cpu_gpu_hybrid_is_automatic_and_advisory",
+  "tests/test_ollama_provider.py::test_ollama_setup_intent_builds_shared_reviewable_setup_plan",
+  "tests/test_ollama_provider.py::test_ollama_executor_cancel_aborts_inflight_request",
+  "tests/test_ollama_provider.py::test_ollama_residency_maps_api_ps_size_vram",
+  "tests/test_ollama_provider.py::test_managed_runtime_starts_loads_verifies_and_stops_owned_server",
+  "tests/test_ollama_provider.py::test_managed_runtime_release_unloads_and_closes_once",
+  "flake.nix#checks.x86_64-linux.runtime-module-eval",
+  "tests/test_systemd_runtime_setup.py::test_systemd_driver_renders_reviewed_runtime_manifest_under_staged_root"
+]
+
+[[provider]]
+provider_id = "llama-cpp"
+display_name = "llama.cpp"
+capabilities = ["llm.chat", "text.generate"]
+model_formats = ["gguf"]
+single_gpu = "validated"
+multi_gpu = "validated"
+dense = "validated"
+moe = "validated"
+vram_only = "validated"
+prefer_vram = "validated"
+cpu_gpu_hybrid = "validated"
+cpu_offload_mode = "explicit_or_auto"
+multi_gpu_hardware = "heterogeneous_validated"
+process_lifecycle = "validated"
+cancellation = "validated"
+residency_reporting = "validated"
+nixos_integration = "integrated"
+systemd_integration = "integrated"
+notes = [
+  "Heterogeneous multi-GPU validation uses per-device Worker accelerator facts and llama.cpp auto-fit/layer split semantics.",
+  "split_mode=tensor remains an upstream-experimental advisory path."
+]
+evidence = [
+  "tests/test_llama_cpp_provider.py::test_llama_cpp_provider_rejects_non_gguf",
+  "tests/test_llama_cpp_provider.py::test_heterogeneous_multi_gpu_defaults_to_layer_auto_fit",
+  "tests/test_llama_cpp_provider.py::test_dense_model_accepts_explicit_cpu_ffn_offload",
+  "tests/test_llama_cpp_provider.py::test_moe_model_accepts_cpu_moe_offload",
+  "tests/test_llama_cpp_provider.py::test_vram_only_requires_size_and_forces_all_layers_without_fit",
+  "tests/test_llama_cpp_provider.py::test_cpu_gpu_hybrid_uses_auto_fit_and_advisory",
+  "tests/test_llama_cpp_provider.py::test_setup_intent_uses_reference_only_gguf_and_builds_setup_plan",
+  "tests/test_llama_cpp_provider.py::test_executor_cancellation_aborts_inflight_request",
+  "tests/test_llama_cpp_provider.py::test_residency_reports_policy_without_inventing_memory_bytes",
+  "tests/test_llama_cpp_provider.py::test_managed_runtime_starts_checks_alias_and_stops",
+  "tests/test_llama_cpp_provider.py::test_managed_runtime_release_closes_api_once",
+  "flake.nix#checks.x86_64-linux.runtime-module-eval",
+  "tests/test_systemd_runtime_setup.py::test_systemd_driver_renders_reviewed_runtime_manifest_under_staged_root"
+]
+
+[[provider]]
+provider_id = "vllm"
+display_name = "vLLM"
+capabilities = ["llm.chat", "text.generate"]
+model_formats = ["hf", "huggingface", "safetensors", "vllm"]
+single_gpu = "validated"
+multi_gpu = "validated"
+dense = "validated"
+moe = "validated"
+vram_only = "validated"
+prefer_vram = "validated"
+cpu_gpu_hybrid = "validated"
+cpu_offload_mode = "explicit"
+multi_gpu_hardware = "homogeneous_required"
+process_lifecycle = "validated"
+cancellation = "validated"
+residency_reporting = "validated"
+nixos_integration = "integrated"
+systemd_integration = "integrated"
+notes = [
+  "Multi-GPU v0.x requires equal per-device VRAM plus the same known compute capability and device class.",
+  "cpu_gpu_hybrid requires explicit cpu_offload_gb and is interconnect-sensitive."
+]
+evidence = [
+  "tests/test_vllm_provider.py::test_vllm_provider_rejects_unsupported_model_format",
+  "tests/test_vllm_provider.py::test_homogeneous_multi_gpu_derives_full_worker_tensor_parallel",
+  "tests/test_vllm_provider.py::test_multi_gpu_requires_per_device_accelerator_facts",
+  "tests/test_vllm_provider.py::test_multi_gpu_rejects_mixed_device_class_even_with_equal_vram",
+  "tests/test_vllm_provider.py::test_multi_gpu_rejects_heterogeneous_vram_capacity",
+  "tests/test_vllm_provider.py::test_moe_multi_gpu_enables_expert_parallel_by_default",
+  "tests/test_vllm_provider.py::test_vram_only_requires_size_and_disallows_cpu_offload",
+  "tests/test_vllm_provider.py::test_cpu_gpu_hybrid_accepts_explicit_offload_with_advisory",
+  "tests/test_vllm_provider.py::test_remote_model_ref_requests_reviewed_download_setup_plan",
+  "tests/test_vllm_provider.py::test_executor_cancellation_aborts_inflight_request",
+  "tests/test_vllm_provider.py::test_residency_reports_policy_without_inventing_memory_bytes",
+  "tests/test_vllm_provider.py::test_managed_runtime_starts_checks_alias_and_stops",
+  "tests/test_vllm_provider.py::test_managed_runtime_release_closes_api_once",
+  "flake.nix#checks.x86_64-linux.runtime-module-eval",
+  "tests/test_systemd_runtime_setup.py::test_systemd_driver_renders_reviewed_runtime_manifest_under_staged_root"
+]
+
+[[provider]]
+provider_id = "freetoken"
+display_name = "FreeToken"
+capabilities = ["llm.chat", "text.generate"]
+model_formats = ["ftw", "hf", "huggingface", "safetensors"]
+single_gpu = "validated"
+multi_gpu = "unsupported"
+dense = "unsupported"
+moe = "validated"
+vram_only = "unsupported"
+prefer_vram = "validated"
+cpu_gpu_hybrid = "validated"
+cpu_offload_mode = "moe_policy"
+multi_gpu_hardware = "unsupported"
+process_lifecycle = "validated"
+cancellation = "validated"
+residency_reporting = "validated"
+nixos_integration = "integrated"
+systemd_integration = "integrated"
+notes = [
+  "AstrumWeaver v0.x intentionally scopes FreeToken to single-GPU MoE/offload workloads.",
+  "Dense-model rejection is an AstrumWeaver provider scope decision, not an upstream FreeToken capability claim."
+]
+evidence = [
+  "tests/test_freetoken_provider.py::test_moe_single_gpu_hybrid_is_compatible",
+  "tests/test_freetoken_provider.py::test_dense_is_rejected_as_astrumweaver_scope_not_upstream_limit",
+  "tests/test_freetoken_provider.py::test_multi_gpu_worker_is_rejected_instead_of_partial_use",
+  "tests/test_freetoken_provider.py::test_vram_only_is_explicitly_outside_v0_provider_scope",
+  "tests/test_freetoken_provider.py::test_explicit_selection_is_preserved_and_setup_plan_is_deterministic",
+  "tests/test_freetoken_provider.py::test_executor_cancellation_aborts_inflight_request",
+  "tests/test_freetoken_provider.py::test_residency_uses_measured_vram_when_stats_reports_it",
+  "tests/test_freetoken_provider.py::test_managed_runtime_starts_checks_alias_and_stops",
+  "tests/test_freetoken_provider.py::test_managed_runtime_release_closes_api_once",
+  "flake.nix#checks.x86_64-linux.runtime-module-eval",
+  "tests/test_systemd_runtime_setup.py::test_systemd_driver_renders_reviewed_runtime_manifest_under_staged_root"
+]
+
+[[provider]]
+provider_id = "exllamav3"
+display_name = "ExLlamaV3"
+capabilities = ["llm.chat", "text.generate"]
+model_formats = ["exl3", "exllamav3"]
+single_gpu = "validated"
+multi_gpu = "validated"
+dense = "validated"
+moe = "supported_unvalidated"
+vram_only = "validated"
+prefer_vram = "validated"
+cpu_gpu_hybrid = "unsupported"
+cpu_offload_mode = "unsupported"
+multi_gpu_hardware = "supported_unvalidated"
+process_lifecycle = "validated"
+cancellation = "validated"
+residency_reporting = "validated"
+nixos_integration = "integrated"
+systemd_integration = "integrated"
+notes = [
+  "Current Linux package path targets x86_64 and provider compatibility requires NVIDIA compute capability 8.0 or newer when capability evidence is known.",
+  "Multi-GPU autosplit/tensor-parallel behavior is validated, but heterogeneous hardware compatibility is not certified by AstrumWeaver."
+]
+evidence = [
+  "tests/test_exllamav3_provider.py::test_exl3_single_gpu_prefer_vram_is_compatible",
+  "tests/test_exllamav3_provider.py::test_exl3_vram_only_requires_model_size_evidence",
+  "tests/test_exllamav3_provider.py::test_cpu_gpu_hybrid_is_outside_provider_scope",
+  "tests/test_exllamav3_provider.py::test_pascal_compute_capability_is_rejected",
+  "tests/test_exllamav3_provider.py::test_multi_gpu_autosplit_uses_all_owned_devices",
+  "tests/test_exllamav3_provider.py::test_setup_plan_preserves_explicit_exllamav3_choice",
+  "tests/test_exllamav3_provider.py::test_executor_chat_metrics_model_binding_and_cancel",
+  "tests/test_exllamav3_provider.py::test_residency_reports_policy_without_inventing_memory_bytes",
+  "tests/test_exllamav3_provider.py::test_managed_runtime_lifecycle_and_external_collision",
+  "flake.nix#checks.x86_64-linux.runtime-module-eval",
+  "tests/test_systemd_runtime_setup.py::test_systemd_driver_renders_reviewed_runtime_manifest_under_staged_root"
+]
