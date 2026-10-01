@@ -1428,8 +1428,9 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("first-run", "runtime"),
         default="first-run",
         help=(
-            "first-run configures Control/Worker bootstrap; runtime preserves "
-            "the existing Worker/RuntimeProvider-only wizard"
+            "first-run configures Control/Worker bootstrap; runtime migrates "
+            "an installed generic-systemd smoke Worker or plans a runtime on "
+            "other deployment paths"
         ),
     )
     parser.add_argument(
@@ -1503,12 +1504,35 @@ def main(argv: list[str] | None = None) -> int:
         io = ConsoleIO(clear_screen=not args.no_clear)
         if args.mode == "runtime":
             driver = _load_driver(args.driver) if args.driver else None
-            result = run_setup_tui(
-                io=io,
-                snapshot=snapshot,
-                gpus=gpus,
-                driver=driver,
-            )
+            if snapshot.deployment_path is DeploymentPath.SYSTEMD:
+                if driver is not None and not isinstance(
+                    driver, SystemdSetupDriver
+                ):
+                    raise TypeError(
+                        "generic-systemd runtime migration requires "
+                        "SystemdSetupDriver"
+                    )
+                loader = (
+                    driver
+                    if isinstance(driver, SystemdSetupDriver)
+                    else create_systemd_driver()
+                )
+                existing_worker = loader.load_installed_worker_contract()
+                result = run_setup_tui(
+                    io=io,
+                    snapshot=snapshot,
+                    gpus=gpus,
+                    driver=driver,
+                    existing_worker=existing_worker,
+                    reconcile_existing_worker=True,
+                )
+            else:
+                result = run_setup_tui(
+                    io=io,
+                    snapshot=snapshot,
+                    gpus=gpus,
+                    driver=driver,
+                )
         else:
             if args.driver:
                 raise ValueError(
