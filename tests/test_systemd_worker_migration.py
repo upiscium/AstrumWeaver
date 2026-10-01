@@ -206,6 +206,11 @@ def test_worker_unit_migration_preserves_stable_executable() -> None:
     (
         _smoke_toml() + "\n[unrelated]\nvalue = true\n",
         _smoke_toml().replace(
+            "health_port = 9100\n",
+            'health_port = 9100\nunknown_field = "drift"\n',
+            1,
+        ),
+        _smoke_toml().replace(
             "astrumweaver.executors.structured_echo:create_executor",
             "example.custom:create_executor",
         ),
@@ -224,6 +229,62 @@ def test_worker_migration_rejects_modified_unit() -> None:
 
     with pytest.raises(RuntimeError):
         parse_installed_worker_unit(modified)
+
+
+def test_loading_installed_worker_never_reads_worker_env(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    _write_staged_worker(root)
+    env_path = root / "etc/astrumweaver/worker.env"
+    env_path.symlink_to(root / "definitely-missing-secret")
+
+    contract = SystemdSetupDriver(root=root).load_installed_worker_contract()
+
+    assert contract.spec.worker_id == "legacy-single"
+    assert contract.execution_mode == "smoke"
+
+
+def test_already_runtime_worker_is_noop_only_for_exact_deployment(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    worker_path, unit_path, manifest_path = _write_staged_worker(root)
+    worker_path.write_text(
+        render_runtime_worker_toml(_smoke_toml()),
+        encoding="utf-8",
+    )
+    unit_path.write_text(_worker_unit(runtime=True), encoding="utf-8")
+
+    driver = SystemdSetupDriver(root=root)
+    reconcile = _reconcile_action()
+    stop = SetupAction(
+        action_id="01-worker-stop",
+        kind=SetupActionKind.WORKER_STOP,
+        description="Stop Worker before migration",
+        payload={
+            "provider_id": "llama-cpp",
+            "source_execution": "smoke",
+            "desired_execution": "runtime",
+            "runtime_deployment": {"provider_id": "llama-cpp"},
+        },
+        requires_privilege=True,
+        reversible=True,
+    )
+
+    assert driver.inspect(stop).state is SetupActionState.SATISFIED
+    assert driver.inspect(reconcile).state is SetupActionState.SATISFIED
+
+    manifest_path.write_text(
+        json.dumps(
+            {"provider_id": "llama-cpp", "unexpected": "drift"}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert driver.inspect(stop).state is SetupActionState.BLOCKED
+    assert driver.inspect(reconcile).state is SetupActionState.BLOCKED
 
 
 def test_systemd_driver_reconcile_is_idempotent_and_reversible(
