@@ -11,6 +11,7 @@ import re
 import shutil
 import stat
 import subprocess
+import tempfile
 import tomllib
 import urllib.error
 import urllib.request
@@ -219,6 +220,161 @@ class SystemdSetupDriver:
             os.chown(temporary, 0, gid)
         os.replace(temporary, path)
 
+    def _read_required_text(self, path: Path, label: str) -> str:
+        target = self._target(path)
+        try:
+            metadata = target.lstat()
+        except OSError as exc:
+            raise RuntimeError(f"{label} is unavailable: {target}") from exc
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise RuntimeError(f"{label} must be a regular non-symlink file")
+        try:
+            return target.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise RuntimeError(f"{label} is unreadable: {target}") from exc
+
+    def _replace_preserving_metadata(self, path: Path, content: str) -> None:
+        target = self._target(path)
+        try:
+            metadata = target.lstat()
+        except OSError as exc:
+            raise RuntimeError(f"managed file is unavailable: {target}") from exc
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise RuntimeError("managed file must be a regular non-symlink file")
+
+        fd, raw_temporary = tempfile.mkstemp(
+            prefix=f".{target.name}.migration.",
+            dir=str(target.parent),
+        )
+        temporary = Path(raw_temporary)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(temporary, stat.S_IMODE(metadata.st_mode))
+            if hasattr(os, "geteuid") and os.geteuid() == 0:
+                os.chown(temporary, metadata.st_uid, metadata.st_gid)
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def load_installed_worker_contract(self) -> InstalledWorkerContract:
+        worker_text = self._read_required_text(
+            self.worker_config_path,
+            "Worker config",
+        )
+        unit_text = self._read_required_text(
+            self.worker_unit_path,
+            "Worker unit",
+        )
+        contract = parse_installed_worker_toml(worker_text)
+        unit = parse_installed_worker_unit(unit_text)
+        if contract.execution_mode != unit.execution_mode:
+            raise RuntimeError(
+                "installed Worker config and unit use mixed execution authority"
+            )
+        return contract
+
+    def load_installed_worker_spec(self) -> WorkerSpec:
+        return self.load_installed_worker_contract().spec
+
+    def _runtime_manifest_provider_id(self) -> str:
+        path = self._target(self.runtime_manifest_path)
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                "runtime deployment manifest is unavailable or invalid"
+            ) from exc
+        if not isinstance(value, dict):
+            raise RuntimeError(
+                "runtime deployment manifest must contain an object"
+            )
+        provider_id = str(value.get("provider_id") or "").strip()
+        if not provider_id:
+            raise RuntimeError(
+                "runtime deployment manifest lacks provider identity"
+            )
+        return provider_id
+
+    def _inspect_worker_execution(
+        self,
+        action: SetupAction,
+    ) -> ActionInspection:
+        provider_id = str(action.payload.get("provider_id") or "").strip()
+        if not provider_id:
+            return ActionInspection(
+                SetupActionState.BLOCKED,
+                "Worker execution reconciliation lacks provider identity",
+            )
+        if action.payload.get("source_execution") != "smoke":
+            return ActionInspection(
+                SetupActionState.BLOCKED,
+                "Worker execution source contract is not the reviewed smoke state",
+            )
+        if action.payload.get("desired_execution") != "runtime":
+            return ActionInspection(
+                SetupActionState.BLOCKED,
+                "Worker execution target contract is not runtime execution",
+            )
+        if (
+            str(action.payload.get("runtime_manifest") or "").strip()
+            != DEFAULT_RUNTIME_MANIFEST
+        ):
+            return ActionInspection(
+                SetupActionState.BLOCKED,
+                "Worker execution target uses a non-canonical runtime manifest",
+            )
+
+        try:
+            contract = self.load_installed_worker_contract()
+        except RuntimeError as exc:
+            return ActionInspection(SetupActionState.BLOCKED, str(exc))
+
+        if contract.execution_mode == "smoke":
+            return ActionInspection(
+                SetupActionState.NEEDS_APPLY,
+                "canonical smoke Worker requires reviewed runtime reconciliation",
+            )
+
+        try:
+            manifest_provider = self._runtime_manifest_provider_id()
+        except RuntimeError as exc:
+            return ActionInspection(SetupActionState.BLOCKED, str(exc))
+        if manifest_provider != provider_id:
+            return ActionInspection(
+                SetupActionState.BLOCKED,
+                "installed runtime provider differs from the reviewed provider",
+            )
+        return ActionInspection(
+            SetupActionState.SATISFIED,
+            "Worker config and unit already own the reviewed RuntimeProvider",
+        )
+
+    def _validate_render_migration_source(
+        self,
+        action: SetupAction,
+    ) -> ActionInspection | None:
+        if not bool(action.payload.get("existing_worker_migration")):
+            return None
+        provider_id = str(action.payload.get("provider_id") or "").strip()
+        try:
+            contract = self.load_installed_worker_contract()
+        except RuntimeError as exc:
+            return ActionInspection(SetupActionState.BLOCKED, str(exc))
+        if contract.execution_mode == "runtime":
+            try:
+                current_provider = self._runtime_manifest_provider_id()
+            except RuntimeError as exc:
+                return ActionInspection(SetupActionState.BLOCKED, str(exc))
+            if current_provider != provider_id:
+                return ActionInspection(
+                    SetupActionState.BLOCKED,
+                    "installed runtime provider differs from the reviewed provider",
+                )
+        return None
+
     def _read_worker_gpu_uuids(self) -> tuple[str, ...]:
         path = self._target(self.worker_config_path)
         try:
@@ -426,6 +582,9 @@ class SystemdSetupDriver:
             )
 
         if kind is SetupActionKind.RENDER_CONFIG:
+            migration_block = self._validate_render_migration_source(action)
+            if migration_block is not None:
+                return migration_block
             try:
                 targets = self._render_targets(action)
             except RuntimeError as exc:
@@ -535,6 +694,22 @@ class SystemdSetupDriver:
                 SetupActionState.SATISFIED,
                 "runtime preflight passed; " + visibility_detail,
             )
+
+        if kind is SetupActionKind.WORKER_STOP:
+            if self.root != Path("/"):
+                return ActionInspection(
+                    SetupActionState.SATISFIED,
+                    "staged root has no live Worker service to stop",
+                )
+            return ActionInspection(
+                SetupActionState.NEEDS_APPLY
+                if self._service_active()
+                else SetupActionState.SATISFIED,
+                "existing Worker must be stopped before execution reconciliation",
+            )
+
+        if kind is SetupActionKind.RECONCILE_WORKER_EXECUTION:
+            return self._inspect_worker_execution(action)
 
         if kind is SetupActionKind.RUNTIME_START:
             if self.root != Path("/"):
