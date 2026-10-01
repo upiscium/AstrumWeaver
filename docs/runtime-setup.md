@@ -109,6 +109,8 @@ Initial action kinds include:
 - verify model reference
 - download model
 - convert model
+- stop an existing Worker before execution-authority migration
+- reconcile canonical smoke Worker execution to RuntimeProvider execution
 - runtime preflight
 - runtime start
 - health check
@@ -243,6 +245,15 @@ rollback(action, receipt) -> ActionReceipt
 ```
 
 The generic systemd implementation is `SystemdSetupDriver`. It materializes reviewed runtime manifests/configuration and delegates package/model mutation only to explicit operator-configured argv commands. It never guesses a package manager or hidden installer.
+
+For runtime-only migration of an installed generic-systemd Worker, the driver
+also owns two explicit actions: stopping the existing Worker and reconciling
+the canonical smoke Worker TOML/unit to RuntimeProvider execution. The source
+Worker TOML and unit are parsed fail-closed; custom/mixed execution authority,
+unrelated unit modifications, store-pinned daemon paths, and implicit provider
+switches are rejected. The protected `worker.env` file is not read. Reversible
+receipts keep previous non-secret Worker TOML/unit text process-local so a
+later failure can restore the smoke Worker and its prior active state.
 
 If the host-visible GPU set is larger than the Worker set,
 `SystemdSetupDriver` accepts the preflight only when the existing Worker host
