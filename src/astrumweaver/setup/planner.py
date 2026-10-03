@@ -147,7 +147,7 @@ def build_runtime_setup_plan(
                 "provider_id": provider_id,
                 "soname": "libcuda.so.1",
                 "bridge_directory": (
-                    "/var/lib/astrumweaver/runtime/nvidia-driver"
+                    "/etc/astrumweaver/runtime/nvidia-driver"
                 ),
             },
             requires_privilege=True,
