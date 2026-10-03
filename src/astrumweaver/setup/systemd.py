@@ -271,6 +271,20 @@ class SystemdSetupDriver:
                 SetupActionState.BLOCKED,
                 "NVIDIA driver bridge directory is not a regular directory",
             )
+        if bridge_dir.is_dir():
+            metadata = bridge_dir.stat()
+            if stat.S_IMODE(metadata.st_mode) != 0o755:
+                return ActionInspection(
+                    SetupActionState.BLOCKED,
+                    "NVIDIA driver bridge directory mode is not canonical",
+                )
+            if self.root == Path("/") and (
+                metadata.st_uid != 0 or metadata.st_gid != 0
+            ):
+                return ActionInspection(
+                    SetupActionState.BLOCKED,
+                    "NVIDIA driver bridge directory ownership is not canonical",
+                )
 
         if target.is_symlink():
             current = os.readlink(target)
@@ -1019,9 +1033,8 @@ class SystemdSetupDriver:
             created_dir = not bridge_dir.exists()
             if created_dir:
                 bridge_dir.mkdir(mode=0o755)
-            os.chmod(bridge_dir, 0o755)
-            if self.root == Path("/"):
-                os.chown(bridge_dir, 0, 0)
+                if self.root == Path("/"):
+                    os.chown(bridge_dir, 0, 0)
 
             previous_target = (
                 os.readlink(target) if target.is_symlink() else None
