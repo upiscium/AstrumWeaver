@@ -105,6 +105,7 @@ Initial action kinds include:
 
 - ensure directory
 - ensure package
+- ensure a narrow NVIDIA CUDA driver bridge on generic-systemd GPU hosts
 - render configuration
 - verify model reference
 - download model
@@ -257,7 +258,12 @@ regular library, and places only that SONAME behind the canonical
 does not add a general FHS library directory such as
 `/usr/lib/x86_64-linux-gnu`, because doing so could override the Nix closure's
 glibc, OpenSSL, or other ordinary runtime libraries. Missing or unrecognized
-driver-library state fails closed before runtime start.
+driver-library state fails closed before runtime start. The bridge directory is
+root-owned and read-only to the Worker; a pre-existing non-canonical directory
+or unmanaged target is rejected rather than normalized in place. The exact
+pre-#72 canonical runtime unit, which had the runtime manifest argument but no
+driver bridge environment, is the only legacy runtime-unit shape accepted for
+reviewed bridge-only upgrade.
 
 For runtime-only migration of an installed generic-systemd Worker, the driver
 also owns two explicit actions: stopping the existing Worker and reconciling
