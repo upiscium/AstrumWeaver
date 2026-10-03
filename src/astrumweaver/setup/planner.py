@@ -221,7 +221,7 @@ def build_runtime_setup_plan(
             "Stop the existing Worker before changing execution authority",
             payload={
                 "provider_id": provider_id,
-                "source_execution": "smoke",
+                "source_execution": "canonical_smoke_or_runtime",
                 "desired_execution": "runtime",
                 "runtime_deployment": deployment.to_dict(),
             },
@@ -230,10 +230,10 @@ def build_runtime_setup_plan(
         )
         builder.add(
             SetupActionKind.RECONCILE_WORKER_EXECUTION,
-            "Reconcile smoke Worker execution to RuntimeProvider execution",
+            "Reconcile installed Worker execution to RuntimeProvider execution",
             payload={
                 "provider_id": provider_id,
-                "source_execution": "smoke",
+                "source_execution": "canonical_smoke_or_runtime",
                 "desired_execution": "runtime",
                 "capabilities": ["llm.chat", "text.generate"],
                 "runtime_manifest": "/etc/astrumweaver/runtime-deployment.json",
