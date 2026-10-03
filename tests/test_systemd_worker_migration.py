@@ -85,6 +85,7 @@ def _worker_unit(
         "astrumweaver-worker"
     ),
     runtime: bool = False,
+    driver_bridge: bool = True,
 ) -> str:
     runtime_arg = (
         " --runtime-manifest /etc/astrumweaver/runtime-deployment.json"
@@ -93,7 +94,7 @@ def _worker_unit(
     )
     runtime_env = (
         f"Environment=LD_LIBRARY_PATH={NVIDIA_DRIVER_BRIDGE_DIRECTORY}\n"
-        if runtime
+        if runtime and driver_bridge
         else ""
     )
     return f"""[Unit]
@@ -226,6 +227,29 @@ def test_worker_unit_migration_preserves_stable_executable() -> None:
 
     assert before.execution_mode == "smoke"
     assert after.execution_mode == "runtime"
+    assert after.nvidia_driver_bridge
+    assert after.executable == before.executable
+    assert rendered.count("--runtime-manifest") == 1
+    assert (
+        rendered.count(
+            f"Environment=LD_LIBRARY_PATH={NVIDIA_DRIVER_BRIDGE_DIRECTORY}"
+        )
+        == 1
+    )
+
+
+def test_prior_runtime_unit_upgrades_only_driver_bridge() -> None:
+    source = _worker_unit(runtime=True, driver_bridge=False)
+    before = parse_installed_worker_unit(source)
+
+    assert before.execution_mode == "runtime"
+    assert not before.nvidia_driver_bridge
+
+    rendered = render_runtime_worker_unit(source)
+    after = parse_installed_worker_unit(rendered)
+
+    assert after.execution_mode == "runtime"
+    assert after.nvidia_driver_bridge
     assert after.executable == before.executable
     assert rendered.count("--runtime-manifest") == 1
     assert (
