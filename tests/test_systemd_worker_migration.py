@@ -137,7 +137,7 @@ def _reconcile_action() -> SetupAction:
         description="Migrate smoke Worker to runtime execution",
         payload={
             "provider_id": "llama-cpp",
-            "source_execution": "smoke",
+            "source_execution": "canonical_smoke_or_runtime",
             "desired_execution": "runtime",
             "capabilities": ["llm.chat", "text.generate"],
             "runtime_manifest": DEFAULT_RUNTIME_MANIFEST,
@@ -323,7 +323,7 @@ def test_already_runtime_worker_is_noop_only_for_exact_deployment(
         description="Stop Worker before migration",
         payload={
             "provider_id": "llama-cpp",
-            "source_execution": "smoke",
+            "source_execution": "canonical_smoke_or_runtime",
             "desired_execution": "runtime",
             "runtime_deployment": {"provider_id": "llama-cpp"},
         },
@@ -419,7 +419,7 @@ def test_worker_restart_stays_blocked_when_reconcile_daemon_reload_fails(
         description="Stop Worker before migration",
         payload={
             "provider_id": "llama-cpp",
-            "source_execution": "smoke",
+            "source_execution": "canonical_smoke_or_runtime",
             "desired_execution": "runtime",
             "runtime_deployment": {"provider_id": "llama-cpp"},
         },
@@ -487,7 +487,7 @@ def test_worker_restart_stays_blocked_when_rollback_reload_fails(
         description="Stop Worker before migration",
         payload={
             "provider_id": "llama-cpp",
-            "source_execution": "smoke",
+            "source_execution": "canonical_smoke_or_runtime",
             "desired_execution": "runtime",
             "runtime_deployment": {"provider_id": "llama-cpp"},
         },
