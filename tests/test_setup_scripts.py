@@ -760,7 +760,7 @@ def test_worker_setup_stages_runtime_manifest_and_wires_service(
     )
     assert (
         "Environment=LD_LIBRARY_PATH="
-        "/var/lib/astrumweaver/runtime/nvidia-driver"
+        "/etc/astrumweaver/runtime/nvidia-driver"
     ) in unit
     assert_no_trailing_whitespace(unit)
 
