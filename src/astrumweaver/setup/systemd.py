@@ -37,6 +37,7 @@ from .migration import (
     DEFAULT_RUNTIME_MANIFEST,
     NVIDIA_DRIVER_BRIDGE_DIRECTORY,
     InstalledWorkerContract,
+    InstalledWorkerUnit,
     parse_installed_worker_toml,
     parse_installed_worker_unit,
     render_runtime_worker_toml,
@@ -410,21 +411,27 @@ class SystemdSetupDriver:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def load_installed_worker_contract(self) -> InstalledWorkerContract:
-        worker_text = self._read_required_text(
-            self.worker_config_path,
-            "Worker config",
-        )
+    def _load_installed_worker_unit(
+        self,
+    ) -> tuple[str, InstalledWorkerUnit]:
         unit_text = self._read_required_text(
             self.worker_unit_path,
             "Worker unit",
         )
-        contract = parse_installed_worker_toml(worker_text)
         unit = parse_installed_worker_unit(unit_text)
         if unit.service_user != self.service_user:
             raise RuntimeError(
                 "installed Worker unit service identity differs from setup authority"
             )
+        return unit_text, unit
+
+    def load_installed_worker_contract(self) -> InstalledWorkerContract:
+        worker_text = self._read_required_text(
+            self.worker_config_path,
+            "Worker config",
+        )
+        unit_text, unit = self._load_installed_worker_unit()
+        contract = parse_installed_worker_toml(worker_text)
         if contract.execution_mode != unit.execution_mode:
             raise RuntimeError(
                 "installed Worker config and unit use mixed execution authority"
@@ -491,9 +498,25 @@ class SystemdSetupDriver:
                     SetupActionState.BLOCKED,
                     "installed runtime deployment differs from the reviewed desired state",
                 )
+            try:
+                _unit_text, unit = self._load_installed_worker_unit()
+            except RuntimeError as exc:
+                return ActionInspection(SetupActionState.BLOCKED, str(exc))
+            if unit.nvidia_driver_bridge:
+                return ActionInspection(
+                    SetupActionState.SATISFIED,
+                    "current runtime Worker needs no execution-authority stop",
+                )
+            if self.root != Path("/"):
+                return ActionInspection(
+                    SetupActionState.SATISFIED,
+                    "staged root has no live Worker service to stop",
+                )
             return ActionInspection(
-                SetupActionState.SATISFIED,
-                "already-migrated Worker needs no execution-authority stop",
+                SetupActionState.NEEDS_APPLY
+                if self._service_active()
+                else SetupActionState.SATISFIED,
+                "prior runtime Worker must be stopped before driver-bridge reconciliation",
             )
 
         if self.root != Path("/"):
@@ -522,10 +545,13 @@ class SystemdSetupDriver:
                 SetupActionState.BLOCKED,
                 "Worker execution reconciliation lacks provider identity",
             )
-        if action.payload.get("source_execution") != "smoke":
+        if (
+            action.payload.get("source_execution")
+            != "canonical_smoke_or_runtime"
+        ):
             return ActionInspection(
                 SetupActionState.BLOCKED,
-                "Worker execution source contract is not the reviewed smoke state",
+                "Worker execution source contract is not the reviewed canonical state",
             )
         if action.payload.get("desired_execution") != "runtime":
             return ActionInspection(
@@ -565,6 +591,16 @@ class SystemdSetupDriver:
             return ActionInspection(
                 SetupActionState.BLOCKED,
                 "installed runtime deployment differs from the reviewed desired state",
+            )
+        try:
+            unit_text, _unit = self._load_installed_worker_unit()
+            desired_unit = render_runtime_worker_unit(unit_text)
+        except RuntimeError as exc:
+            return ActionInspection(SetupActionState.BLOCKED, str(exc))
+        if unit_text != desired_unit:
+            return ActionInspection(
+                SetupActionState.NEEDS_APPLY,
+                "prior canonical runtime Worker requires reviewed driver-bridge reconciliation",
             )
         return ActionInspection(
             SetupActionState.SATISFIED,
