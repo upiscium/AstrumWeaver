@@ -252,7 +252,7 @@ a NixOS-specific driver RUNPATH for `/run/opengl-driver/lib`; that path is not
 assumed to exist on non-NixOS systems. The driver discovers the host's
 `libcuda.so.1` through the dynamic-linker cache, validates it as a readable
 regular library, and places only that SONAME behind the canonical
-`/var/lib/astrumweaver/runtime/nvidia-driver` bridge. Runtime Worker units set
+`/etc/astrumweaver/runtime/nvidia-driver` bridge. Runtime Worker units set
 `LD_LIBRARY_PATH` to that narrow directory only. AstrumWeaver deliberately
 does not add a general FHS library directory such as
 `/usr/lib/x86_64-linux-gnu`, because doing so could override the Nix closure's
