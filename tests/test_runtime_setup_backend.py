@@ -217,6 +217,45 @@ def test_setup_plan_is_deterministic_serializable_and_secret_safe() -> None:
     assert round_trip.to_dict() == first.to_dict()
 
 
+def test_systemd_gpu_plan_includes_reviewed_nvidia_driver_bridge() -> None:
+    systemd_snapshot = SetupHostSnapshot(
+        runtime_host=context().host,
+        deployment_path=DeploymentPath.SYSTEMD,
+        os_id="ubuntu",
+        os_version="24.04",
+        service_manager="systemd",
+        package_manager="apt",
+        available_commands=frozenset(
+            {"nix", "systemctl", "nvidia-smi", "ldconfig"}
+        ),
+        privilege_mode=PrivilegeMode.SUDO,
+    )
+
+    plan = build_runtime_setup_plan(
+        catalog=RuntimeCatalog([FakeProvider()]),
+        context=context(),
+        selection=RuntimeSelection(
+            mode=RuntimeSelectionMode.EXPLICIT,
+            provider_id="fake",
+        ),
+        snapshot=systemd_snapshot,
+    )
+
+    bridges = [
+        action
+        for action in plan.actions
+        if action.kind
+        is SetupActionKind.ENSURE_NVIDIA_DRIVER_BRIDGE
+    ]
+    assert len(bridges) == 1
+    assert bridges[0].payload["soname"] == "libcuda.so.1"
+    assert bridges[0].payload["bridge_directory"] == (
+        "/var/lib/astrumweaver/runtime/nvidia-driver"
+    )
+    assert bridges[0].requires_privilege
+    assert bridges[0].reversible
+
+
 def test_setup_requires_explicit_runtime_choice() -> None:
     with pytest.raises(SetupPlanningError, match="explicit user-selected"):
         build_runtime_setup_plan(
