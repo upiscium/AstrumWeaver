@@ -36,7 +36,6 @@ from .contracts import (
 )
 from .migration import (
     DEFAULT_RUNTIME_MANIFEST,
-    DEFAULT_RUNTIME_STARTUP_TIMEOUT_SECONDS,
     NVIDIA_DRIVER_BRIDGE_DIRECTORY,
     InstalledWorkerContract,
     InstalledWorkerUnit,
