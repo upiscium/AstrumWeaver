@@ -15,6 +15,12 @@ RUNTIME_CAPABILITIES = frozenset({"llm.chat", "text.generate"})
 DEFAULT_RUNTIME_MANIFEST = "/etc/astrumweaver/runtime-deployment.json"
 DEFAULT_RUNTIME_STARTUP_TIMEOUT_SECONDS = 600
 DEFAULT_RUNTIME_SHUTDOWN_TIMEOUT_SECONDS = 60
+NVIDIA_DRIVER_BRIDGE_DIRECTORY = (
+    "/var/lib/astrumweaver/runtime/nvidia-driver"
+)
+_RUNTIME_DRIVER_ENV_LINE = (
+    f"Environment=LD_LIBRARY_PATH={NVIDIA_DRIVER_BRIDGE_DIRECTORY}"
+)
 
 _SMOKE_SUFFIX = (
     "\n[executor]\n"
@@ -455,6 +461,9 @@ def parse_installed_worker_unit(text: str) -> InstalledWorkerUnit:
         if line.startswith("SupplementaryGroups=")
     ]
     env_lines = [line for line in lines if line.startswith("EnvironmentFile=")]
+    runtime_env_lines = [
+        line for line in lines if line.startswith("Environment=")
+    ]
     preflight_lines = [line for line in lines if line.startswith("ExecStartPre=")]
     exec_lines = [line for line in lines if line.startswith("ExecStart=")]
     if not (
@@ -501,6 +510,15 @@ def parse_installed_worker_unit(text: str) -> InstalledWorkerUnit:
     execution_mode = (
         "runtime" if match.group("runtime_arg") is not None else "smoke"
     )
+    expected_runtime_env = (
+        [_RUNTIME_DRIVER_ENV_LINE]
+        if execution_mode == "runtime"
+        else []
+    )
+    if runtime_env_lines != expected_runtime_env:
+        raise RuntimeError(
+            "installed Worker unit runtime driver environment is not canonical"
+        )
     runtime_arg = (
         " --runtime-manifest /etc/astrumweaver/runtime-deployment.json"
         if execution_mode == "runtime"
@@ -512,6 +530,11 @@ def parse_installed_worker_unit(text: str) -> InstalledWorkerUnit:
         + f"Group={service_user}\n"
         + "SupplementaryGroups=astrumweaver-config\n"
         + "EnvironmentFile=-/etc/astrumweaver/worker.env\n"
+        + (
+            _RUNTIME_DRIVER_ENV_LINE + "\n"
+            if execution_mode == "runtime"
+            else ""
+        )
         + (
             "ExecStartPre=+/usr/local/libexec/astrumweaver/gpu-preflight "
             "/etc/astrumweaver/gpu-uuids\n"
@@ -547,7 +570,19 @@ def render_runtime_worker_unit(text: str) -> str:
     )
     if text.count(old) != 1:
         raise RuntimeError("canonical Worker ExecStart is ambiguous")
-    rendered = text.replace(old, new, 1)
+    environment_anchor = (
+        "EnvironmentFile=-/etc/astrumweaver/worker.env\n"
+    )
+    if text.count(environment_anchor) != 1:
+        raise RuntimeError(
+            "canonical Worker EnvironmentFile directive is ambiguous"
+        )
+    rendered = text.replace(
+        environment_anchor,
+        environment_anchor + _RUNTIME_DRIVER_ENV_LINE + "\n",
+        1,
+    )
+    rendered = rendered.replace(old, new, 1)
     migrated = parse_installed_worker_unit(rendered)
     if migrated.execution_mode != "runtime":
         raise RuntimeError("rendered Worker unit is invalid")
@@ -558,6 +593,7 @@ def render_runtime_worker_unit(text: str) -> str:
 
 __all__ = [
     "DEFAULT_RUNTIME_MANIFEST",
+    "NVIDIA_DRIVER_BRIDGE_DIRECTORY",
     "InstalledWorkerContract",
     "InstalledWorkerUnit",
     "RUNTIME_CAPABILITIES",
