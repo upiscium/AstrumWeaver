@@ -35,7 +35,9 @@ from .contracts import (
 )
 from .migration import (
     DEFAULT_RUNTIME_MANIFEST,
+    NVIDIA_DRIVER_BRIDGE_DIRECTORY,
     InstalledWorkerContract,
+    InstalledWorkerUnit,
     parse_installed_worker_toml,
     parse_installed_worker_unit,
     render_runtime_worker_toml,
@@ -50,6 +52,8 @@ _PROVIDER_EXECUTABLES: Mapping[str, str] = {
     "freetoken": "ft",
 }
 _GPU_DEVICE_PATH_RE = re.compile(r"^/dev/nvidia[0-9]+$")
+_NVIDIA_DRIVER_SONAME = "libcuda.so.1"
+_NVIDIA_DRIVER_BRIDGE_DIR = Path(NVIDIA_DRIVER_BRIDGE_DIRECTORY)
 
 
 def _canonical_json(value: Any) -> str:
@@ -97,6 +101,8 @@ class SystemdSetupDriver:
         service_name: str = "astrumweaver-worker.service",
         systemctl: str = "systemctl",
         nvidia_smi: str = "nvidia-smi",
+        ldconfig: str = "ldconfig",
+        nvidia_driver_library: Path | None = None,
         ready_url: str = "http://127.0.0.1:9100/ready",
         installers: Mapping[str, tuple[str, ...]] | None = None,
         downloaders: Mapping[str, tuple[str, ...]] | None = None,
@@ -115,6 +121,8 @@ class SystemdSetupDriver:
         self.service_name = service_name
         self.systemctl = systemctl
         self.nvidia_smi = nvidia_smi
+        self.ldconfig = ldconfig
+        self.nvidia_driver_library = nvidia_driver_library
         self.ready_url = ready_url
         self.installers = {
             str(key): tuple(str(item) for item in value)
@@ -158,6 +166,146 @@ class SystemdSetupDriver:
                 f"/var/lib/astrumweaver/runtime/{provider_id}/"
                 f"packages/{digest}.installed"
             )
+        )
+
+    def _discover_nvidia_driver_library(self) -> Path:
+        if self.nvidia_driver_library is not None:
+            candidate = self.nvidia_driver_library
+        else:
+            if self.root != Path("/"):
+                raise RuntimeError(
+                    "staged NVIDIA driver bridge requires an explicit "
+                    "host driver-library path"
+                )
+            try:
+                completed = subprocess.run(
+                    [self.ldconfig, "-p"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+            except OSError as exc:
+                raise RuntimeError(
+                    "cannot execute ldconfig to discover libcuda.so.1"
+                ) from exc
+            if completed.returncode != 0:
+                raise RuntimeError(
+                    "ldconfig failed while discovering libcuda.so.1"
+                )
+
+            candidate = None
+            for raw_line in completed.stdout.splitlines():
+                line = raw_line.strip()
+                if not line.startswith(_NVIDIA_DRIVER_SONAME + " "):
+                    continue
+                _, separator, raw_path = line.rpartition("=>")
+                if not separator:
+                    continue
+                value = raw_path.strip()
+                if value:
+                    candidate = Path(value)
+                    break
+            if candidate is None:
+                raise RuntimeError(
+                    "host NVIDIA CUDA driver library libcuda.so.1 is unavailable"
+                )
+
+        if not candidate.is_absolute():
+            raise RuntimeError(
+                "host NVIDIA CUDA driver-library path must be absolute"
+            )
+        try:
+            metadata = candidate.lstat()
+            resolved = candidate.resolve(strict=True)
+            resolved_metadata = resolved.stat()
+        except OSError as exc:
+            raise RuntimeError(
+                "host NVIDIA CUDA driver library is unavailable"
+            ) from exc
+        if not (
+            stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+        ) or not stat.S_ISREG(resolved_metadata.st_mode):
+            raise RuntimeError(
+                "host NVIDIA CUDA driver library is not a regular file"
+            )
+        if not os.access(resolved, os.R_OK):
+            raise RuntimeError(
+                "host NVIDIA CUDA driver library is not readable"
+            )
+        return candidate
+
+    def _nvidia_driver_bridge_paths(
+        self,
+        action: SetupAction,
+    ) -> tuple[Path, Path]:
+        soname = str(action.payload.get("soname") or "").strip()
+        bridge_directory = str(
+            action.payload.get("bridge_directory") or ""
+        ).strip()
+        if soname != _NVIDIA_DRIVER_SONAME:
+            raise RuntimeError(
+                "NVIDIA driver bridge must use the reviewed libcuda.so.1 soname"
+            )
+        if bridge_directory != str(_NVIDIA_DRIVER_BRIDGE_DIR):
+            raise RuntimeError(
+                "NVIDIA driver bridge directory is not canonical"
+            )
+        source = self._discover_nvidia_driver_library()
+        bridge_dir = self._target(_NVIDIA_DRIVER_BRIDGE_DIR)
+        return source, bridge_dir / _NVIDIA_DRIVER_SONAME
+
+    def _inspect_nvidia_driver_bridge(
+        self,
+        action: SetupAction,
+    ) -> ActionInspection:
+        try:
+            source, target = self._nvidia_driver_bridge_paths(action)
+        except RuntimeError as exc:
+            return ActionInspection(SetupActionState.BLOCKED, str(exc))
+
+        bridge_dir = target.parent
+        if bridge_dir.is_symlink() or (
+            bridge_dir.exists() and not bridge_dir.is_dir()
+        ):
+            return ActionInspection(
+                SetupActionState.BLOCKED,
+                "NVIDIA driver bridge directory is not a regular directory",
+            )
+        if bridge_dir.is_dir():
+            metadata = bridge_dir.stat()
+            if stat.S_IMODE(metadata.st_mode) != 0o755:
+                return ActionInspection(
+                    SetupActionState.BLOCKED,
+                    "NVIDIA driver bridge directory mode is not canonical",
+                )
+            if self.root == Path("/") and (
+                metadata.st_uid != 0 or metadata.st_gid != 0
+            ):
+                return ActionInspection(
+                    SetupActionState.BLOCKED,
+                    "NVIDIA driver bridge directory ownership is not canonical",
+                )
+
+        if target.is_symlink():
+            current = os.readlink(target)
+            if current == str(source):
+                return ActionInspection(
+                    SetupActionState.SATISFIED,
+                    "narrow libcuda.so.1 driver bridge is installed",
+                )
+            return ActionInspection(
+                SetupActionState.NEEDS_APPLY,
+                "NVIDIA driver bridge points at a stale host driver path",
+            )
+        if target.exists():
+            return ActionInspection(
+                SetupActionState.BLOCKED,
+                "NVIDIA driver bridge target is not a managed symlink",
+            )
+        return ActionInspection(
+            SetupActionState.NEEDS_APPLY,
+            "host libcuda.so.1 requires a narrow runtime driver bridge",
         )
 
     def _provider_executable_available(
@@ -263,21 +411,27 @@ class SystemdSetupDriver:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def load_installed_worker_contract(self) -> InstalledWorkerContract:
-        worker_text = self._read_required_text(
-            self.worker_config_path,
-            "Worker config",
-        )
+    def _load_installed_worker_unit(
+        self,
+    ) -> tuple[str, InstalledWorkerUnit]:
         unit_text = self._read_required_text(
             self.worker_unit_path,
             "Worker unit",
         )
-        contract = parse_installed_worker_toml(worker_text)
         unit = parse_installed_worker_unit(unit_text)
         if unit.service_user != self.service_user:
             raise RuntimeError(
                 "installed Worker unit service identity differs from setup authority"
             )
+        return unit_text, unit
+
+    def load_installed_worker_contract(self) -> InstalledWorkerContract:
+        worker_text = self._read_required_text(
+            self.worker_config_path,
+            "Worker config",
+        )
+        unit_text, unit = self._load_installed_worker_unit()
+        contract = parse_installed_worker_toml(worker_text)
         if contract.execution_mode != unit.execution_mode:
             raise RuntimeError(
                 "installed Worker config and unit use mixed execution authority"
@@ -332,6 +486,19 @@ class SystemdSetupDriver:
         self,
         action: SetupAction,
     ) -> ActionInspection:
+        if (
+            action.payload.get("source_execution")
+            != "canonical_smoke_or_runtime"
+        ):
+            return ActionInspection(
+                SetupActionState.BLOCKED,
+                "Worker stop source contract is not the reviewed canonical state",
+            )
+        if action.payload.get("desired_execution") != "runtime":
+            return ActionInspection(
+                SetupActionState.BLOCKED,
+                "Worker stop target contract is not runtime execution",
+            )
         try:
             contract = self.load_installed_worker_contract()
             self._expected_runtime_deployment_text(action)
@@ -344,9 +511,25 @@ class SystemdSetupDriver:
                     SetupActionState.BLOCKED,
                     "installed runtime deployment differs from the reviewed desired state",
                 )
+            try:
+                _unit_text, unit = self._load_installed_worker_unit()
+            except RuntimeError as exc:
+                return ActionInspection(SetupActionState.BLOCKED, str(exc))
+            if unit.nvidia_driver_bridge:
+                return ActionInspection(
+                    SetupActionState.SATISFIED,
+                    "current runtime Worker needs no execution-authority stop",
+                )
+            if self.root != Path("/"):
+                return ActionInspection(
+                    SetupActionState.SATISFIED,
+                    "staged root has no live Worker service to stop",
+                )
             return ActionInspection(
-                SetupActionState.SATISFIED,
-                "already-migrated Worker needs no execution-authority stop",
+                SetupActionState.NEEDS_APPLY
+                if self._service_active()
+                else SetupActionState.SATISFIED,
+                "prior runtime Worker must be stopped before driver-bridge reconciliation",
             )
 
         if self.root != Path("/"):
@@ -375,10 +558,13 @@ class SystemdSetupDriver:
                 SetupActionState.BLOCKED,
                 "Worker execution reconciliation lacks provider identity",
             )
-        if action.payload.get("source_execution") != "smoke":
+        if (
+            action.payload.get("source_execution")
+            != "canonical_smoke_or_runtime"
+        ):
             return ActionInspection(
                 SetupActionState.BLOCKED,
-                "Worker execution source contract is not the reviewed smoke state",
+                "Worker execution source contract is not the reviewed canonical state",
             )
         if action.payload.get("desired_execution") != "runtime":
             return ActionInspection(
@@ -418,6 +604,16 @@ class SystemdSetupDriver:
             return ActionInspection(
                 SetupActionState.BLOCKED,
                 "installed runtime deployment differs from the reviewed desired state",
+            )
+        try:
+            unit_text, _unit = self._load_installed_worker_unit()
+            desired_unit = render_runtime_worker_unit(unit_text)
+        except RuntimeError as exc:
+            return ActionInspection(SetupActionState.BLOCKED, str(exc))
+        if unit_text != desired_unit:
+            return ActionInspection(
+                SetupActionState.NEEDS_APPLY,
+                "prior canonical runtime Worker requires reviewed driver-bridge reconciliation",
             )
         return ActionInspection(
             SetupActionState.SATISFIED,
@@ -663,6 +859,9 @@ class SystemdSetupDriver:
                 "runtime package requires explicit installer",
             )
 
+        if kind is SetupActionKind.ENSURE_NVIDIA_DRIVER_BRIDGE:
+            return self._inspect_nvidia_driver_bridge(action)
+
         if kind is SetupActionKind.RENDER_CONFIG:
             migration_block = self._validate_render_migration_source(action)
             if migration_block is not None:
@@ -861,6 +1060,63 @@ class SystemdSetupDriver:
                 changed=True,
                 detail="runtime package installer completed",
                 evidence={"package_reference": package_reference},
+            )
+
+        if kind is SetupActionKind.ENSURE_NVIDIA_DRIVER_BRIDGE:
+            inspection = self._inspect_nvidia_driver_bridge(action)
+            if inspection.state is SetupActionState.SATISFIED:
+                return ActionReceipt(changed=False, detail=inspection.detail)
+            if inspection.state is SetupActionState.BLOCKED:
+                raise RuntimeError(
+                    inspection.detail or "NVIDIA driver bridge is blocked"
+                )
+
+            source, target = self._nvidia_driver_bridge_paths(action)
+            bridge_dir = target.parent
+            parent = bridge_dir.parent
+            if not parent.is_dir() or parent.is_symlink():
+                raise RuntimeError(
+                    "runtime configuration directory is unavailable for NVIDIA driver bridge"
+                )
+
+            created_dir = not bridge_dir.exists()
+            if created_dir:
+                bridge_dir.mkdir(mode=0o755)
+                os.chmod(bridge_dir, 0o755)
+                if self.root == Path("/"):
+                    os.chown(bridge_dir, 0, 0)
+
+            previous_target = (
+                os.readlink(target) if target.is_symlink() else None
+            )
+            if target.exists() and not target.is_symlink():
+                raise RuntimeError(
+                    "NVIDIA driver bridge target is not a managed symlink"
+                )
+
+            temporary = bridge_dir / (
+                "." + _NVIDIA_DRIVER_SONAME + ".tmp"
+            )
+            if temporary.exists() or temporary.is_symlink():
+                raise RuntimeError(
+                    "temporary NVIDIA driver bridge path already exists"
+                )
+            try:
+                os.symlink(str(source), temporary)
+                os.replace(temporary, target)
+            finally:
+                temporary.unlink(missing_ok=True)
+
+            return ActionReceipt(
+                changed=True,
+                detail="installed narrow host libcuda.so.1 runtime bridge",
+                rollback_data={
+                    "target": str(target),
+                    "installed_target": str(source),
+                    "previous_target": previous_target,
+                    "created_dir": created_dir,
+                },
+                evidence={"soname": _NVIDIA_DRIVER_SONAME},
             )
 
         if kind is SetupActionKind.RENDER_CONFIG:
@@ -1108,6 +1364,52 @@ class SystemdSetupDriver:
                     detail="removed empty created directory",
                 )
 
+        if action.kind is SetupActionKind.ENSURE_NVIDIA_DRIVER_BRIDGE:
+            target = Path(str(receipt.rollback_data.get("target") or ""))
+            installed_target = str(
+                receipt.rollback_data.get("installed_target") or ""
+            )
+            previous_target = receipt.rollback_data.get("previous_target")
+            created_dir = bool(
+                receipt.rollback_data.get("created_dir")
+            )
+            if (
+                not target.is_symlink()
+                or os.readlink(target) != installed_target
+            ):
+                raise RuntimeError(
+                    "NVIDIA driver bridge changed after apply; refusing rollback"
+                )
+            if previous_target is None:
+                target.unlink()
+            elif isinstance(previous_target, str) and previous_target:
+                temporary = target.parent / (
+                    "." + _NVIDIA_DRIVER_SONAME + ".rollback"
+                )
+                if temporary.exists() or temporary.is_symlink():
+                    raise RuntimeError(
+                        "temporary NVIDIA driver rollback path already exists"
+                    )
+                try:
+                    os.symlink(previous_target, temporary)
+                    os.replace(temporary, target)
+                finally:
+                    temporary.unlink(missing_ok=True)
+            else:
+                raise RuntimeError(
+                    "NVIDIA driver bridge rollback receipt is invalid"
+                )
+
+            if created_dir and target.parent.is_dir():
+                try:
+                    target.parent.rmdir()
+                except OSError:
+                    pass
+            return ActionReceipt(
+                changed=True,
+                detail="restored previous NVIDIA driver bridge state",
+            )
+
         if action.kind is SetupActionKind.RENDER_CONFIG:
             changed = False
             for item in reversed(
@@ -1302,6 +1604,18 @@ def create_systemd_driver() -> SystemdSetupDriver:
         nvidia_smi=os.environ.get(
             "ASTRUMWEAVER_NVIDIA_SMI",
             "nvidia-smi",
+        ),
+        ldconfig=os.environ.get(
+            "ASTRUMWEAVER_LDCONFIG",
+            "ldconfig",
+        ),
+        nvidia_driver_library=(
+            Path(value)
+            if (value := os.environ.get(
+                "ASTRUMWEAVER_NVIDIA_DRIVER_LIBRARY",
+                "",
+            ).strip())
+            else None
         ),
         ready_url=os.environ.get(
             "ASTRUMWEAVER_WORKER_READY_URL",

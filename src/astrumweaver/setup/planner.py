@@ -136,6 +136,24 @@ def build_runtime_setup_plan(
             requires_network=True,
         )
 
+    if (
+        snapshot.deployment_path is DeploymentPath.SYSTEMD
+        and context.worker.resources.gpu_count > 0
+    ):
+        builder.add(
+            SetupActionKind.ENSURE_NVIDIA_DRIVER_BRIDGE,
+            "Ensure the host NVIDIA CUDA driver bridge is available",
+            payload={
+                "provider_id": provider_id,
+                "soname": "libcuda.so.1",
+                "bridge_directory": (
+                    "/etc/astrumweaver/runtime/nvidia-driver"
+                ),
+            },
+            requires_privilege=True,
+            reversible=True,
+        )
+
     if intent.configuration:
         builder.add(
             SetupActionKind.RENDER_CONFIG,
@@ -203,7 +221,7 @@ def build_runtime_setup_plan(
             "Stop the existing Worker before changing execution authority",
             payload={
                 "provider_id": provider_id,
-                "source_execution": "smoke",
+                "source_execution": "canonical_smoke_or_runtime",
                 "desired_execution": "runtime",
                 "runtime_deployment": deployment.to_dict(),
             },
@@ -212,10 +230,10 @@ def build_runtime_setup_plan(
         )
         builder.add(
             SetupActionKind.RECONCILE_WORKER_EXECUTION,
-            "Reconcile smoke Worker execution to RuntimeProvider execution",
+            "Reconcile installed Worker execution to RuntimeProvider execution",
             payload={
                 "provider_id": provider_id,
-                "source_execution": "smoke",
+                "source_execution": "canonical_smoke_or_runtime",
                 "desired_execution": "runtime",
                 "capabilities": ["llm.chat", "text.generate"],
                 "runtime_manifest": "/etc/astrumweaver/runtime-deployment.json",

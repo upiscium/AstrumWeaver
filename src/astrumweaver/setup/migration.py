@@ -15,6 +15,12 @@ RUNTIME_CAPABILITIES = frozenset({"llm.chat", "text.generate"})
 DEFAULT_RUNTIME_MANIFEST = "/etc/astrumweaver/runtime-deployment.json"
 DEFAULT_RUNTIME_STARTUP_TIMEOUT_SECONDS = 600
 DEFAULT_RUNTIME_SHUTDOWN_TIMEOUT_SECONDS = 60
+NVIDIA_DRIVER_BRIDGE_DIRECTORY = (
+    "/etc/astrumweaver/runtime/nvidia-driver"
+)
+_RUNTIME_DRIVER_ENV_LINE = (
+    f"Environment=LD_LIBRARY_PATH={NVIDIA_DRIVER_BRIDGE_DIRECTORY}"
+)
 
 _SMOKE_SUFFIX = (
     "\n[executor]\n"
@@ -81,6 +87,7 @@ class InstalledWorkerUnit:
     service_user: str
     executable: str
     execution_mode: str
+    nvidia_driver_bridge: bool = False
 
 
 _REQUIRED_WORKER_KEYS = frozenset(
@@ -455,6 +462,9 @@ def parse_installed_worker_unit(text: str) -> InstalledWorkerUnit:
         if line.startswith("SupplementaryGroups=")
     ]
     env_lines = [line for line in lines if line.startswith("EnvironmentFile=")]
+    runtime_env_lines = [
+        line for line in lines if line.startswith("Environment=")
+    ]
     preflight_lines = [line for line in lines if line.startswith("ExecStartPre=")]
     exec_lines = [line for line in lines if line.startswith("ExecStart=")]
     if not (
@@ -501,6 +511,18 @@ def parse_installed_worker_unit(text: str) -> InstalledWorkerUnit:
     execution_mode = (
         "runtime" if match.group("runtime_arg") is not None else "smoke"
     )
+    if execution_mode == "runtime":
+        if runtime_env_lines not in ([], [_RUNTIME_DRIVER_ENV_LINE]):
+            raise RuntimeError(
+                "installed Worker unit runtime driver environment is not canonical"
+            )
+        nvidia_driver_bridge = bool(runtime_env_lines)
+    else:
+        if runtime_env_lines:
+            raise RuntimeError(
+                "smoke Worker unit must not define a runtime driver environment"
+            )
+        nvidia_driver_bridge = False
     runtime_arg = (
         " --runtime-manifest /etc/astrumweaver/runtime-deployment.json"
         if execution_mode == "runtime"
@@ -512,6 +534,11 @@ def parse_installed_worker_unit(text: str) -> InstalledWorkerUnit:
         + f"Group={service_user}\n"
         + "SupplementaryGroups=astrumweaver-config\n"
         + "EnvironmentFile=-/etc/astrumweaver/worker.env\n"
+        + (
+            _RUNTIME_DRIVER_ENV_LINE + "\n"
+            if nvidia_driver_bridge
+            else ""
+        )
         + (
             "ExecStartPre=+/usr/local/libexec/astrumweaver/gpu-preflight "
             "/etc/astrumweaver/gpu-uuids\n"
@@ -530,12 +557,13 @@ def parse_installed_worker_unit(text: str) -> InstalledWorkerUnit:
         service_user=service_user,
         executable=executable,
         execution_mode=execution_mode,
+        nvidia_driver_bridge=nvidia_driver_bridge,
     )
 
 
 def render_runtime_worker_unit(text: str) -> str:
     unit = parse_installed_worker_unit(text)
-    if unit.execution_mode == "runtime":
+    if unit.execution_mode == "runtime" and unit.nvidia_driver_bridge:
         return text
     old = (
         f"ExecStart={unit.executable} --config "
@@ -545,11 +573,27 @@ def render_runtime_worker_unit(text: str) -> str:
         " --runtime-manifest "
         "/etc/astrumweaver/runtime-deployment.json"
     )
-    if text.count(old) != 1:
+    if unit.execution_mode == "smoke" and text.count(old) != 1:
         raise RuntimeError("canonical Worker ExecStart is ambiguous")
-    rendered = text.replace(old, new, 1)
+    environment_anchor = (
+        "EnvironmentFile=-/etc/astrumweaver/worker.env\n"
+    )
+    if text.count(environment_anchor) != 1:
+        raise RuntimeError(
+            "canonical Worker EnvironmentFile directive is ambiguous"
+        )
+    rendered = text.replace(
+        environment_anchor,
+        environment_anchor + _RUNTIME_DRIVER_ENV_LINE + "\n",
+        1,
+    )
+    if unit.execution_mode == "smoke":
+        rendered = rendered.replace(old, new, 1)
     migrated = parse_installed_worker_unit(rendered)
-    if migrated.execution_mode != "runtime":
+    if (
+        migrated.execution_mode != "runtime"
+        or not migrated.nvidia_driver_bridge
+    ):
         raise RuntimeError("rendered Worker unit is invalid")
     if migrated.executable != unit.executable:
         raise RuntimeError("Worker executable path changed during migration")
@@ -558,6 +602,7 @@ def render_runtime_worker_unit(text: str) -> str:
 
 __all__ = [
     "DEFAULT_RUNTIME_MANIFEST",
+    "NVIDIA_DRIVER_BRIDGE_DIRECTORY",
     "InstalledWorkerContract",
     "InstalledWorkerUnit",
     "RUNTIME_CAPABILITIES",

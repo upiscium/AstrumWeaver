@@ -105,6 +105,7 @@ Initial action kinds include:
 
 - ensure directory
 - ensure package
+- ensure a narrow NVIDIA CUDA driver bridge on generic-systemd GPU hosts
 - render configuration
 - verify model reference
 - download model
@@ -245,6 +246,24 @@ rollback(action, receipt) -> ActionReceipt
 ```
 
 The generic systemd implementation is `SystemdSetupDriver`. It materializes reviewed runtime manifests/configuration and delegates package/model mutation only to explicit operator-configured argv commands. It never guesses a package manager or hidden installer.
+
+For NVIDIA GPU Workers on generic-systemd hosts, the setup plan also contains an
+explicit `ensure_nvidia_driver_bridge` action. Nix CUDA packages normally carry
+a NixOS-specific driver RUNPATH for `/run/opengl-driver/lib`; that path is not
+assumed to exist on non-NixOS systems. The driver discovers the host's
+`libcuda.so.1` through the dynamic-linker cache, validates it as a readable
+regular library, and places only that SONAME behind the canonical
+`/etc/astrumweaver/runtime/nvidia-driver` bridge. Runtime Worker units set
+`LD_LIBRARY_PATH` to that narrow directory only. AstrumWeaver deliberately
+does not add a general FHS library directory such as
+`/usr/lib/x86_64-linux-gnu`, because doing so could override the Nix closure's
+glibc, OpenSSL, or other ordinary runtime libraries. Missing or unrecognized
+driver-library state fails closed before runtime start. The bridge directory is
+root-owned and read-only to the Worker; a pre-existing non-canonical directory
+or unmanaged target is rejected rather than normalized in place. The exact
+pre-#72 canonical runtime unit, which had the runtime manifest argument but no
+driver bridge environment, is the only legacy runtime-unit shape accepted for
+reviewed bridge-only upgrade.
 
 For runtime-only migration of an installed generic-systemd Worker, the driver
 also owns two explicit actions: stopping the existing Worker and reconciling

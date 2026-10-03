@@ -221,7 +221,8 @@ pkgs.testers.runNixOSTest {
         for property in [
             "DevicePolicy=closed",
             "DeviceAllow=/dev/nvidia0 rw",
-            "Environment=CUDA_VISIBLE_DEVICES=GPU-permission-test",
+            "CUDA_VISIBLE_DEVICES=GPU-permission-test",
+            "LD_LIBRARY_PATH=/etc/astrumweaver/runtime/nvidia-driver",
             "EnvironmentFiles=/etc/astrumweaver/worker.env",
             "UnsetEnvironment=",
             "gpu-preflight",

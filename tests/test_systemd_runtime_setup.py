@@ -160,6 +160,84 @@ def test_systemd_driver_runs_only_explicit_package_installer(
     assert driver.inspect(install).state is SetupActionState.SATISFIED
 
 
+def test_systemd_driver_materializes_narrow_nvidia_driver_bridge(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    runtime_state = root / "etc/astrumweaver/runtime"
+    runtime_state.mkdir(parents=True)
+
+    host_driver = tmp_path / "host/libcuda.so.1"
+    host_driver.parent.mkdir()
+    host_driver.write_bytes(b"host-driver")
+
+    driver = SystemdSetupDriver(
+        root=root,
+        nvidia_driver_library=host_driver,
+    )
+    bridge = action(
+        SetupActionKind.ENSURE_NVIDIA_DRIVER_BRIDGE,
+        payload={
+            "provider_id": "llama-cpp",
+            "soname": "libcuda.so.1",
+            "bridge_directory": (
+                "/etc/astrumweaver/runtime/nvidia-driver"
+            ),
+        },
+    )
+
+    assert driver.inspect(bridge).state is SetupActionState.NEEDS_APPLY
+    receipt = driver.apply(bridge)
+
+    target = (
+        runtime_state / "nvidia-driver/libcuda.so.1"
+    )
+    assert receipt.changed
+    assert target.is_symlink()
+    assert target.readlink() == host_driver
+    assert target.parent.stat().st_mode & 0o777 == 0o755
+    assert driver.inspect(bridge).state is SetupActionState.SATISFIED
+
+    rollback = driver.rollback(bridge, receipt)
+
+    assert rollback.changed
+    assert not target.exists()
+    assert not target.is_symlink()
+
+
+def test_systemd_driver_blocks_unmanaged_nvidia_bridge_target(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    bridge_dir = root / "etc/astrumweaver/runtime/nvidia-driver"
+    bridge_dir.mkdir(parents=True)
+    (bridge_dir / "libcuda.so.1").write_bytes(b"operator-file")
+
+    host_driver = tmp_path / "host/libcuda.so.1"
+    host_driver.parent.mkdir()
+    host_driver.write_bytes(b"host-driver")
+
+    driver = SystemdSetupDriver(
+        root=root,
+        nvidia_driver_library=host_driver,
+    )
+    bridge = action(
+        SetupActionKind.ENSURE_NVIDIA_DRIVER_BRIDGE,
+        payload={
+            "provider_id": "llama-cpp",
+            "soname": "libcuda.so.1",
+            "bridge_directory": (
+                "/etc/astrumweaver/runtime/nvidia-driver"
+            ),
+        },
+    )
+
+    inspection = driver.inspect(bridge)
+
+    assert inspection.state is SetupActionState.BLOCKED
+    assert "not a managed symlink" in inspection.detail
+
+
 def test_exllamav3_packages_are_not_satisfied_by_python_alone(
     tmp_path: Path,
 ) -> None:

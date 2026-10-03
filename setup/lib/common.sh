@@ -151,7 +151,20 @@ validate_legacy_shared_state_path() {
 }
 render_unit_content() {
   local template="$1" executable="$2" user="$3" runtime_arg="${4:-}"
-  sed -e "s|@EXECUTABLE@|$executable|g" -e "s|@USER@|$user|g" -e "s|@RUNTIME_ARG@|$runtime_arg|g" "$template"
+  if [[ -n "$runtime_arg" ]]; then
+    sed \
+      -e "s|@EXECUTABLE@|$executable|g" \
+      -e "s|@USER@|$user|g" \
+      -e "s|@RUNTIME_ARG@|$runtime_arg|g" \
+      -e '/^EnvironmentFile=-\/etc\/astrumweaver\/worker.env$/a Environment=LD_LIBRARY_PATH=/etc/astrumweaver/runtime/nvidia-driver' \
+      "$template"
+    return
+  fi
+  sed \
+    -e "s|@EXECUTABLE@|$executable|g" \
+    -e "s|@USER@|$user|g" \
+    -e "s|@RUNTIME_ARG@|$runtime_arg|g" \
+    "$template"
 }
 validate_unit_template() {
   local template="$1" destination="$2" executable="$3" user="$4" runtime_arg="$5" role="$6" expected_state="$7" temporary

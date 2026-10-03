@@ -269,6 +269,7 @@ def test_worker_setup_stages_exact_gpu_identity_and_is_idempotent(tmp_path: Path
         "ExecStart=/usr/local/bin/astrumweaver-worker "
         "--config /etc/astrumweaver/worker.toml"
     )
+    assert "Environment=LD_LIBRARY_PATH=" not in unit
     assert_no_trailing_whitespace(unit)
 
 
@@ -757,6 +758,10 @@ def test_worker_setup_stages_runtime_manifest_and_wires_service(
         "--config /etc/astrumweaver/worker.toml "
         "--runtime-manifest /etc/astrumweaver/runtime-deployment.json"
     )
+    assert (
+        "Environment=LD_LIBRARY_PATH="
+        "/etc/astrumweaver/runtime/nvidia-driver"
+    ) in unit
     assert_no_trailing_whitespace(unit)
 
 

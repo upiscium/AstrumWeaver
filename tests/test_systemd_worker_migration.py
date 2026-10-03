@@ -38,6 +38,7 @@ from astrumweaver.setup.first_run import (
 )
 from astrumweaver.setup.migration import (
     DEFAULT_RUNTIME_MANIFEST,
+    NVIDIA_DRIVER_BRIDGE_DIRECTORY,
     parse_installed_worker_toml,
     parse_installed_worker_unit,
     render_runtime_worker_toml,
@@ -84,10 +85,16 @@ def _worker_unit(
         "astrumweaver-worker"
     ),
     runtime: bool = False,
+    driver_bridge: bool = True,
 ) -> str:
     runtime_arg = (
         " --runtime-manifest /etc/astrumweaver/runtime-deployment.json"
         if runtime
+        else ""
+    )
+    runtime_env = (
+        f"Environment=LD_LIBRARY_PATH={NVIDIA_DRIVER_BRIDGE_DIRECTORY}\n"
+        if runtime and driver_bridge
         else ""
     )
     return f"""[Unit]
@@ -101,7 +108,7 @@ User=astrumweaver
 Group=astrumweaver
 SupplementaryGroups=astrumweaver-config
 EnvironmentFile=-/etc/astrumweaver/worker.env
-ExecStartPre=+/usr/local/libexec/astrumweaver/gpu-preflight /etc/astrumweaver/gpu-uuids
+{runtime_env}ExecStartPre=+/usr/local/libexec/astrumweaver/gpu-preflight /etc/astrumweaver/gpu-uuids
 ExecStart={executable} --config /etc/astrumweaver/worker.toml{runtime_arg}
 Restart=on-failure
 RestartSec=5s
@@ -130,7 +137,7 @@ def _reconcile_action() -> SetupAction:
         description="Migrate smoke Worker to runtime execution",
         payload={
             "provider_id": "llama-cpp",
-            "source_execution": "smoke",
+            "source_execution": "canonical_smoke_or_runtime",
             "desired_execution": "runtime",
             "capabilities": ["llm.chat", "text.generate"],
             "runtime_manifest": DEFAULT_RUNTIME_MANIFEST,
@@ -220,8 +227,37 @@ def test_worker_unit_migration_preserves_stable_executable() -> None:
 
     assert before.execution_mode == "smoke"
     assert after.execution_mode == "runtime"
+    assert after.nvidia_driver_bridge
     assert after.executable == before.executable
     assert rendered.count("--runtime-manifest") == 1
+    assert (
+        rendered.count(
+            f"Environment=LD_LIBRARY_PATH={NVIDIA_DRIVER_BRIDGE_DIRECTORY}"
+        )
+        == 1
+    )
+
+
+def test_prior_runtime_unit_upgrades_only_driver_bridge() -> None:
+    source = _worker_unit(runtime=True, driver_bridge=False)
+    before = parse_installed_worker_unit(source)
+
+    assert before.execution_mode == "runtime"
+    assert not before.nvidia_driver_bridge
+
+    rendered = render_runtime_worker_unit(source)
+    after = parse_installed_worker_unit(rendered)
+
+    assert after.execution_mode == "runtime"
+    assert after.nvidia_driver_bridge
+    assert after.executable == before.executable
+    assert rendered.count("--runtime-manifest") == 1
+    assert (
+        rendered.count(
+            f"Environment=LD_LIBRARY_PATH={NVIDIA_DRIVER_BRIDGE_DIRECTORY}"
+        )
+        == 1
+    )
 
 
 @pytest.mark.parametrize(
@@ -287,7 +323,7 @@ def test_already_runtime_worker_is_noop_only_for_exact_deployment(
         description="Stop Worker before migration",
         payload={
             "provider_id": "llama-cpp",
-            "source_execution": "smoke",
+            "source_execution": "canonical_smoke_or_runtime",
             "desired_execution": "runtime",
             "runtime_deployment": {"provider_id": "llama-cpp"},
         },
@@ -309,6 +345,83 @@ def test_already_runtime_worker_is_noop_only_for_exact_deployment(
     assert driver.inspect(stop).state is SetupActionState.BLOCKED
     assert driver.inspect(reconcile).state is SetupActionState.BLOCKED
 
+
+
+def test_active_prior_runtime_requires_stop_before_bridge_upgrade(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    staged_root = tmp_path / "staged"
+    worker_path, unit_path, manifest_path = _write_staged_worker(staged_root)
+    worker_path.write_text(
+        render_runtime_worker_toml(_smoke_toml()),
+        encoding="utf-8",
+    )
+    unit_path.write_text(
+        _worker_unit(runtime=True, driver_bridge=False),
+        encoding="utf-8",
+    )
+
+    driver = SystemdSetupDriver(
+        root=Path("/"),
+        worker_config_path=worker_path,
+        worker_unit_path=unit_path,
+        runtime_manifest_path=manifest_path,
+    )
+    monkeypatch.setattr(driver, "_service_active", lambda: True)
+
+    stop = SetupAction(
+        action_id="01-worker-stop",
+        kind=SetupActionKind.WORKER_STOP,
+        description="Stop Worker before migration",
+        payload={
+            "provider_id": "llama-cpp",
+            "source_execution": "canonical_smoke_or_runtime",
+            "desired_execution": "runtime",
+            "runtime_deployment": {"provider_id": "llama-cpp"},
+        },
+        requires_privilege=True,
+        reversible=True,
+    )
+
+    inspection = driver.inspect(stop)
+
+    assert inspection.state is SetupActionState.NEEDS_APPLY
+    assert "driver-bridge reconciliation" in inspection.detail
+
+
+def test_prior_runtime_unit_bridge_upgrade_is_reversible(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    worker_path, unit_path, _manifest_path = _write_staged_worker(root)
+    worker_path.write_text(
+        render_runtime_worker_toml(_smoke_toml()),
+        encoding="utf-8",
+    )
+    legacy_unit = _worker_unit(runtime=True, driver_bridge=False)
+    unit_path.write_text(legacy_unit, encoding="utf-8")
+
+    driver = SystemdSetupDriver(root=root)
+    reconcile = _reconcile_action()
+
+    assert driver.inspect(reconcile).state is SetupActionState.NEEDS_APPLY
+
+    receipt = driver.apply(reconcile)
+
+    migrated_unit = unit_path.read_text(encoding="utf-8")
+    assert receipt.changed
+    assert (
+        f"Environment=LD_LIBRARY_PATH={NVIDIA_DRIVER_BRIDGE_DIRECTORY}"
+        in migrated_unit
+    )
+    assert migrated_unit.count("--runtime-manifest") == 1
+    assert driver.inspect(reconcile).state is SetupActionState.SATISFIED
+
+    rollback = driver.rollback(reconcile, receipt)
+
+    assert rollback.changed
+    assert unit_path.read_text(encoding="utf-8") == legacy_unit
 
 
 def test_worker_restart_stays_blocked_when_reconcile_daemon_reload_fails(
@@ -349,7 +462,7 @@ def test_worker_restart_stays_blocked_when_reconcile_daemon_reload_fails(
         description="Stop Worker before migration",
         payload={
             "provider_id": "llama-cpp",
-            "source_execution": "smoke",
+            "source_execution": "canonical_smoke_or_runtime",
             "desired_execution": "runtime",
             "runtime_deployment": {"provider_id": "llama-cpp"},
         },
@@ -417,7 +530,7 @@ def test_worker_restart_stays_blocked_when_rollback_reload_fails(
         description="Stop Worker before migration",
         payload={
             "provider_id": "llama-cpp",
-            "source_execution": "smoke",
+            "source_execution": "canonical_smoke_or_runtime",
             "desired_execution": "runtime",
             "runtime_deployment": {"provider_id": "llama-cpp"},
         },
