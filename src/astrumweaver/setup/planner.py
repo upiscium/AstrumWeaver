@@ -136,6 +136,24 @@ def build_runtime_setup_plan(
             requires_network=True,
         )
 
+    if (
+        snapshot.deployment_path is DeploymentPath.SYSTEMD
+        and context.worker.resources.gpu_count > 0
+    ):
+        builder.add(
+            SetupActionKind.ENSURE_NVIDIA_DRIVER_BRIDGE,
+            "Ensure the host NVIDIA CUDA driver bridge is available",
+            payload={
+                "provider_id": provider_id,
+                "soname": "libcuda.so.1",
+                "bridge_directory": (
+                    "/var/lib/astrumweaver/runtime/nvidia-driver"
+                ),
+            },
+            requires_privilege=True,
+            reversible=True,
+        )
+
     if intent.configuration:
         builder.add(
             SetupActionKind.RENDER_CONFIG,
