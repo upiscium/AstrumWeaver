@@ -250,7 +250,7 @@ def test_systemd_gpu_plan_includes_reviewed_nvidia_driver_bridge() -> None:
     assert len(bridges) == 1
     assert bridges[0].payload["soname"] == "libcuda.so.1"
     assert bridges[0].payload["bridge_directory"] == (
-        "/var/lib/astrumweaver/runtime/nvidia-driver"
+        "/etc/astrumweaver/runtime/nvidia-driver"
     )
     assert bridges[0].requires_privilege
     assert bridges[0].reversible
