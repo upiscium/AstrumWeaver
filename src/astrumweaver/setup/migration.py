@@ -16,7 +16,7 @@ DEFAULT_RUNTIME_MANIFEST = "/etc/astrumweaver/runtime-deployment.json"
 DEFAULT_RUNTIME_STARTUP_TIMEOUT_SECONDS = 600
 DEFAULT_RUNTIME_SHUTDOWN_TIMEOUT_SECONDS = 60
 NVIDIA_DRIVER_BRIDGE_DIRECTORY = (
-    "/var/lib/astrumweaver/runtime/nvidia-driver"
+    "/etc/astrumweaver/runtime/nvidia-driver"
 )
 _RUNTIME_DRIVER_ENV_LINE = (
     f"Environment=LD_LIBRARY_PATH={NVIDIA_DRIVER_BRIDGE_DIRECTORY}"
