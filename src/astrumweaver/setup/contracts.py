@@ -80,6 +80,7 @@ class SetupPlanGoal(StrEnum):
 class SetupActionKind(StrEnum):
     ENSURE_DIRECTORY = "ensure_directory"
     ENSURE_PACKAGE = "ensure_package"
+    ENSURE_NVIDIA_DRIVER_BRIDGE = "ensure_nvidia_driver_bridge"
     RENDER_CONFIG = "render_config"
     VERIFY_MODEL_REFERENCE = "verify_model_reference"
     DOWNLOAD_MODEL = "download_model"
