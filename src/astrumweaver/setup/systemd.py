@@ -486,6 +486,19 @@ class SystemdSetupDriver:
         self,
         action: SetupAction,
     ) -> ActionInspection:
+        if (
+            action.payload.get("source_execution")
+            != "canonical_smoke_or_runtime"
+        ):
+            return ActionInspection(
+                SetupActionState.BLOCKED,
+                "Worker stop source contract is not the reviewed canonical state",
+            )
+        if action.payload.get("desired_execution") != "runtime":
+            return ActionInspection(
+                SetupActionState.BLOCKED,
+                "Worker stop target contract is not runtime execution",
+            )
         try:
             contract = self.load_installed_worker_contract()
             self._expected_runtime_deployment_text(action)
