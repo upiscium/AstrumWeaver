@@ -35,6 +35,7 @@ from .contracts import (
 )
 from .migration import (
     DEFAULT_RUNTIME_MANIFEST,
+    NVIDIA_DRIVER_BRIDGE_DIRECTORY,
     InstalledWorkerContract,
     parse_installed_worker_toml,
     parse_installed_worker_unit,
@@ -51,9 +52,7 @@ _PROVIDER_EXECUTABLES: Mapping[str, str] = {
 }
 _GPU_DEVICE_PATH_RE = re.compile(r"^/dev/nvidia[0-9]+$")
 _NVIDIA_DRIVER_SONAME = "libcuda.so.1"
-_NVIDIA_DRIVER_BRIDGE_DIR = Path(
-    "/var/lib/astrumweaver/runtime/nvidia-driver"
-)
+_NVIDIA_DRIVER_BRIDGE_DIR = Path(NVIDIA_DRIVER_BRIDGE_DIRECTORY)
 
 
 def _canonical_json(value: Any) -> str:
