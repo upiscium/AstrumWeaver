@@ -878,9 +878,17 @@ def run_setup_tui(
             )
         _verify_installed_worker_gpus(existing_worker.spec, gpus)
         worker = existing_worker.spec
+        source_execution = (
+            "smoke/debug.echo"
+            if existing_worker.execution_mode == "smoke"
+            else "runtime/current-provider"
+        )
         io.write("")
         io.write(f"Existing Worker: {worker.worker_id}")
-        io.write("Execution transition: smoke/debug.echo -> runtime/selected-provider")
+        io.write(
+            "Execution transition: "
+            f"{source_execution} -> runtime/selected-provider"
+        )
         io.write("GPU ownership: preserved from installed Worker contract")
         io.write("Control URL: preserved from installed Worker contract")
         io.write("Worker token: preserved by reference; value not read")
@@ -896,9 +904,14 @@ def run_setup_tui(
     if runtime_plan is None:
         return TuiRunResult(status=TuiRunStatus.CANCELLED)
     if existing_worker is not None:
+        source_execution = (
+            "smoke/debug.echo"
+            if existing_worker.execution_mode == "smoke"
+            else "runtime/current-provider"
+        )
         io.write(
             "Reviewed execution transition: "
-            f"smoke/debug.echo -> runtime/{runtime_plan.provider_id}"
+            f"{source_execution} -> runtime/{runtime_plan.provider_id}"
         )
     return apply_runtime_tui_plan(
         io=io,
