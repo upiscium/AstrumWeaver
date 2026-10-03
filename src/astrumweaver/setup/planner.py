@@ -21,6 +21,7 @@ from .contracts import (
     SetupPlan,
     SetupPlanGoal,
 )
+from .migration import DEFAULT_RUNTIME_STARTUP_TIMEOUT_SECONDS
 
 
 class SetupPlanningError(RuntimeError):
@@ -265,7 +266,10 @@ def build_runtime_setup_plan(
     builder.add(
         SetupActionKind.HEALTH_CHECK,
         "Verify the selected runtime is ready",
-        payload={"provider_id": provider_id},
+        payload={
+            "provider_id": provider_id,
+            "timeout_seconds": DEFAULT_RUNTIME_STARTUP_TIMEOUT_SECONDS,
+        },
     )
 
     return SetupPlan(

@@ -207,6 +207,14 @@ Before each mutation, the apply engine repeats `driver.inspect(action)`.
 
 If already satisfied, the action is skipped.
 
+Runtime activation readiness is also review-bound. On generic systemd, the
+`health_check` action carries its startup timeout in the SetupPlan digest.
+Dry-run performs only an immediate readiness inspection; apply polls the local
+Worker `/ready` endpoint until it succeeds, systemd reaches a terminal failed
+state, or the reviewed deadline expires. The Worker `/ready` endpoint is
+authoritative for this gate because it becomes ready only after the selected
+RuntimeProvider is ready and the Worker has registered with Control.
+
 This makes repeated application convergent when a deployment driver correctly implements inspect/apply semantics.
 
 The apply result contains structured per-action:

@@ -12,6 +12,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import time
 import tomllib
 import urllib.error
 import urllib.request
@@ -104,6 +105,7 @@ class SystemdSetupDriver:
         ldconfig: str = "ldconfig",
         nvidia_driver_library: Path | None = None,
         ready_url: str = "http://127.0.0.1:9100/ready",
+        ready_poll_interval_seconds: float = 0.25,
         installers: Mapping[str, tuple[str, ...]] | None = None,
         downloaders: Mapping[str, tuple[str, ...]] | None = None,
         converters: Mapping[str, tuple[str, ...]] | None = None,
@@ -124,6 +126,9 @@ class SystemdSetupDriver:
         self.ldconfig = ldconfig
         self.nvidia_driver_library = nvidia_driver_library
         self.ready_url = ready_url
+        if ready_poll_interval_seconds <= 0:
+            raise ValueError("ready_poll_interval_seconds must be positive")
+        self.ready_poll_interval_seconds = ready_poll_interval_seconds
         self.installers = {
             str(key): tuple(str(item) for item in value)
             for key, value in dict(installers or {}).items()
@@ -781,6 +786,48 @@ class SystemdSetupDriver:
             return False
         return isinstance(body, dict) and body.get("ready") is True
 
+    def _service_failed(self) -> bool:
+        if self.root != Path("/"):
+            return False
+        try:
+            completed = subprocess.run(
+                [self.systemctl, "is-failed", "--quiet", self.service_name],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError:
+            return False
+        return completed.returncode == 0
+
+    @staticmethod
+    def _health_timeout_seconds(action: SetupAction) -> float:
+        value = action.payload.get("timeout_seconds")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise RuntimeError(
+                "health check lacks an explicit reviewed startup timeout"
+            )
+        timeout_seconds = float(value)
+        if timeout_seconds <= 0:
+            raise RuntimeError(
+                "health check startup timeout must be positive"
+            )
+        return timeout_seconds
+
+    def _wait_ready(self, *, timeout_seconds: float) -> bool:
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            if self._ready():
+                return True
+            if self._service_failed():
+                return False
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(
+                min(self.ready_poll_interval_seconds, remaining)
+            )
+
     def _render_targets(
         self,
         action: SetupAction,
@@ -996,11 +1043,21 @@ class SystemdSetupDriver:
             )
 
         if kind is SetupActionKind.HEALTH_CHECK:
+            try:
+                timeout_seconds = self._health_timeout_seconds(action)
+            except RuntimeError as exc:
+                return ActionInspection(
+                    SetupActionState.BLOCKED,
+                    str(exc),
+                )
             return ActionInspection(
                 SetupActionState.SATISFIED
                 if self._ready()
                 else SetupActionState.NEEDS_APPLY,
-                "Worker readiness includes RuntimeProvider readiness",
+                (
+                    "Worker readiness includes RuntimeProvider readiness; "
+                    f"apply may wait up to {timeout_seconds:g} seconds"
+                ),
             )
 
         if kind in {
@@ -1300,9 +1357,15 @@ class SystemdSetupDriver:
             )
 
         if kind is SetupActionKind.HEALTH_CHECK:
-            if not self._ready():
+            timeout_seconds = self._health_timeout_seconds(action)
+            if not self._wait_ready(timeout_seconds=timeout_seconds):
+                if self._service_failed():
+                    raise RuntimeError(
+                        "Worker service entered failed state before readiness"
+                    )
                 raise RuntimeError(
-                    "Worker/RuntimeProvider readiness endpoint is not ready"
+                    "Worker/RuntimeProvider readiness endpoint did not become "
+                    "ready before the reviewed startup timeout"
                 )
             return ActionReceipt(
                 changed=False,
@@ -1620,6 +1683,12 @@ def create_systemd_driver() -> SystemdSetupDriver:
         ready_url=os.environ.get(
             "ASTRUMWEAVER_WORKER_READY_URL",
             "http://127.0.0.1:9100/ready",
+        ),
+        ready_poll_interval_seconds=float(
+            os.environ.get(
+                "ASTRUMWEAVER_WORKER_READY_POLL_INTERVAL_SECONDS",
+                "0.25",
+            )
         ),
         installers=_argv_map_from_env(
             "ASTRUMWEAVER_RUNTIME_INSTALLERS_JSON"
