@@ -156,7 +156,7 @@ render_unit_content() {
       -e "s|@EXECUTABLE@|$executable|g" \
       -e "s|@USER@|$user|g" \
       -e "s|@RUNTIME_ARG@|$runtime_arg|g" \
-      -e '/^EnvironmentFile=-\/etc\/astrumweaver\/worker.env$/a Environment=LD_LIBRARY_PATH=/var/lib/astrumweaver/runtime/nvidia-driver' \
+      -e '/^EnvironmentFile=-\/etc\/astrumweaver\/worker.env$/a Environment=LD_LIBRARY_PATH=/etc/astrumweaver/runtime/nvidia-driver' \
       "$template"
     return
   fi
