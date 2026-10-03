@@ -1013,16 +1013,15 @@ class SystemdSetupDriver:
             parent = bridge_dir.parent
             if not parent.is_dir() or parent.is_symlink():
                 raise RuntimeError(
-                    "runtime state directory is unavailable for NVIDIA driver bridge"
+                    "runtime configuration directory is unavailable for NVIDIA driver bridge"
                 )
 
             created_dir = not bridge_dir.exists()
             if created_dir:
-                bridge_dir.mkdir(mode=0o750)
-            os.chmod(bridge_dir, 0o750)
+                bridge_dir.mkdir(mode=0o755)
+            os.chmod(bridge_dir, 0o755)
             if self.root == Path("/"):
-                uid, gid = self._service_ids()
-                os.chown(bridge_dir, uid, gid)
+                os.chown(bridge_dir, 0, 0)
 
             previous_target = (
                 os.readlink(target) if target.is_symlink() else None
