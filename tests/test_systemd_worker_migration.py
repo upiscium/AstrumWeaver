@@ -347,6 +347,40 @@ def test_already_runtime_worker_is_noop_only_for_exact_deployment(
 
 
 
+def test_prior_runtime_unit_bridge_upgrade_is_reversible(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    worker_path, unit_path, _manifest_path = _write_staged_worker(root)
+    worker_path.write_text(
+        render_runtime_worker_toml(_smoke_toml()),
+        encoding="utf-8",
+    )
+    legacy_unit = _worker_unit(runtime=True, driver_bridge=False)
+    unit_path.write_text(legacy_unit, encoding="utf-8")
+
+    driver = SystemdSetupDriver(root=root)
+    reconcile = _reconcile_action()
+
+    assert driver.inspect(reconcile).state is SetupActionState.NEEDS_APPLY
+
+    receipt = driver.apply(reconcile)
+
+    migrated_unit = unit_path.read_text(encoding="utf-8")
+    assert receipt.changed
+    assert (
+        f"Environment=LD_LIBRARY_PATH={NVIDIA_DRIVER_BRIDGE_DIRECTORY}"
+        in migrated_unit
+    )
+    assert migrated_unit.count("--runtime-manifest") == 1
+    assert driver.inspect(reconcile).state is SetupActionState.SATISFIED
+
+    rollback = driver.rollback(reconcile, receipt)
+
+    assert rollback.changed
+    assert unit_path.read_text(encoding="utf-8") == legacy_unit
+
+
 def test_worker_restart_stays_blocked_when_reconcile_daemon_reload_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
