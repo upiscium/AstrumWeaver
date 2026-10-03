@@ -274,6 +274,75 @@ def test_systemd_model_download_requires_explicit_preparer(
     assert "explicit reviewed model command" in inspection.detail
 
 
+def test_systemd_health_check_waits_for_reviewed_readiness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver = SystemdSetupDriver(
+        root=Path("/"),
+        ready_poll_interval_seconds=0.01,
+    )
+    states = iter((False, False, True))
+    monkeypatch.setattr(driver, "_ready", lambda: next(states))
+    monkeypatch.setattr(driver, "_service_failed", lambda: False)
+    sleeps: list[float] = []
+    monkeypatch.setattr(
+        "astrumweaver.setup.systemd.time.sleep",
+        lambda seconds: sleeps.append(seconds),
+    )
+    health = action(
+        SetupActionKind.HEALTH_CHECK,
+        payload={
+            "provider_id": "llama-cpp",
+            "timeout_seconds": 600,
+        },
+    )
+
+    inspection = driver.inspect(health)
+
+    assert inspection.state is SetupActionState.NEEDS_APPLY
+    assert sleeps == []
+
+    receipt = driver.apply(health)
+
+    assert not receipt.changed
+    assert "ready" in receipt.detail
+    assert sleeps
+
+
+def test_systemd_health_check_fails_early_on_terminal_service_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver = SystemdSetupDriver(root=Path("/"))
+    monkeypatch.setattr(driver, "_ready", lambda: False)
+    monkeypatch.setattr(driver, "_service_failed", lambda: True)
+    health = action(
+        SetupActionKind.HEALTH_CHECK,
+        payload={
+            "provider_id": "llama-cpp",
+            "timeout_seconds": 600,
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="entered failed state"):
+        driver.apply(health)
+
+
+def test_systemd_health_check_requires_reviewed_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver = SystemdSetupDriver(root=Path("/"))
+    monkeypatch.setattr(driver, "_ready", lambda: False)
+    health = action(
+        SetupActionKind.HEALTH_CHECK,
+        payload={"provider_id": "llama-cpp"},
+    )
+
+    inspection = driver.inspect(health)
+
+    assert inspection.state is SetupActionState.BLOCKED
+    assert "explicit reviewed startup timeout" in inspection.detail
+
+
 def test_systemd_gpu_preflight_accepts_exact_set_and_rejects_unisolated_superset(
     tmp_path: Path,
 ) -> None:
