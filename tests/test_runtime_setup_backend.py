@@ -197,6 +197,14 @@ def test_setup_plan_is_deterministic_serializable_and_secret_safe() -> None:
     assert first.requires_network
     assert first.requires_confirmation
 
+    health_actions = [
+        action
+        for action in first.actions
+        if action.kind is SetupActionKind.HEALTH_CHECK
+    ]
+    assert len(health_actions) == 1
+    assert health_actions[0].payload["timeout_seconds"] == 600
+
     package_actions = [
         action
         for action in first.actions
