@@ -1033,6 +1033,7 @@ class SystemdSetupDriver:
             created_dir = not bridge_dir.exists()
             if created_dir:
                 bridge_dir.mkdir(mode=0o755)
+                os.chmod(bridge_dir, 0o755)
                 if self.root == Path("/"):
                     os.chown(bridge_dir, 0, 0)
 
