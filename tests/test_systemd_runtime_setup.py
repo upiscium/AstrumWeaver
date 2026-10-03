@@ -327,6 +327,36 @@ def test_systemd_health_check_fails_early_on_terminal_service_failure(
         driver.apply(health)
 
 
+def test_systemd_health_check_stops_at_reviewed_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver = SystemdSetupDriver(
+        root=Path("/"),
+        ready_poll_interval_seconds=0.25,
+    )
+    monkeypatch.setattr(driver, "_ready", lambda: False)
+    monkeypatch.setattr(driver, "_service_failed", lambda: False)
+    times = iter((0.0, 0.5, 1.1, 1.1))
+    monkeypatch.setattr(
+        "astrumweaver.setup.systemd.time.monotonic",
+        lambda: next(times),
+    )
+    monkeypatch.setattr(
+        "astrumweaver.setup.systemd.time.sleep",
+        lambda _seconds: None,
+    )
+    health = action(
+        SetupActionKind.HEALTH_CHECK,
+        payload={
+            "provider_id": "llama-cpp",
+            "timeout_seconds": 1,
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="reviewed startup timeout"):
+        driver.apply(health)
+
+
 def test_systemd_health_check_requires_reviewed_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
