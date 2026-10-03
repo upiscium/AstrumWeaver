@@ -181,7 +181,7 @@ def test_systemd_driver_materializes_narrow_nvidia_driver_bridge(
             "provider_id": "llama-cpp",
             "soname": "libcuda.so.1",
             "bridge_directory": (
-                "/var/lib/astrumweaver/runtime/nvidia-driver"
+                "/etc/astrumweaver/runtime/nvidia-driver"
             ),
         },
     )
@@ -226,7 +226,7 @@ def test_systemd_driver_blocks_unmanaged_nvidia_bridge_target(
             "provider_id": "llama-cpp",
             "soname": "libcuda.so.1",
             "bridge_directory": (
-                "/var/lib/astrumweaver/runtime/nvidia-driver"
+                "/etc/astrumweaver/runtime/nvidia-driver"
             ),
         },
     )
