@@ -38,6 +38,7 @@ from astrumweaver.setup.first_run import (
 )
 from astrumweaver.setup.migration import (
     DEFAULT_RUNTIME_MANIFEST,
+    NVIDIA_DRIVER_BRIDGE_DIRECTORY,
     parse_installed_worker_toml,
     parse_installed_worker_unit,
     render_runtime_worker_toml,
@@ -90,6 +91,11 @@ def _worker_unit(
         if runtime
         else ""
     )
+    runtime_env = (
+        f"Environment=LD_LIBRARY_PATH={NVIDIA_DRIVER_BRIDGE_DIRECTORY}\n"
+        if runtime
+        else ""
+    )
     return f"""[Unit]
 Description=AstrumWeaver GPU Worker
 Wants=network-online.target
@@ -101,7 +107,7 @@ User=astrumweaver
 Group=astrumweaver
 SupplementaryGroups=astrumweaver-config
 EnvironmentFile=-/etc/astrumweaver/worker.env
-ExecStartPre=+/usr/local/libexec/astrumweaver/gpu-preflight /etc/astrumweaver/gpu-uuids
+{runtime_env}ExecStartPre=+/usr/local/libexec/astrumweaver/gpu-preflight /etc/astrumweaver/gpu-uuids
 ExecStart={executable} --config /etc/astrumweaver/worker.toml{runtime_arg}
 Restart=on-failure
 RestartSec=5s
@@ -222,6 +228,12 @@ def test_worker_unit_migration_preserves_stable_executable() -> None:
     assert after.execution_mode == "runtime"
     assert after.executable == before.executable
     assert rendered.count("--runtime-manifest") == 1
+    assert (
+        rendered.count(
+            f"Environment=LD_LIBRARY_PATH={NVIDIA_DRIVER_BRIDGE_DIRECTORY}"
+        )
+        == 1
+    )
 
 
 @pytest.mark.parametrize(
