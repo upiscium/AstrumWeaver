@@ -164,7 +164,7 @@ def test_systemd_driver_materializes_narrow_nvidia_driver_bridge(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "root"
-    runtime_state = root / "var/lib/astrumweaver/runtime"
+    runtime_state = root / "etc/astrumweaver/runtime"
     runtime_state.mkdir(parents=True)
 
     host_driver = tmp_path / "host/libcuda.so.1"
@@ -195,6 +195,7 @@ def test_systemd_driver_materializes_narrow_nvidia_driver_bridge(
     assert receipt.changed
     assert target.is_symlink()
     assert target.readlink() == host_driver
+    assert target.parent.stat().st_mode & 0o777 == 0o755
     assert driver.inspect(bridge).state is SetupActionState.SATISFIED
 
     rollback = driver.rollback(bridge, receipt)
@@ -208,7 +209,7 @@ def test_systemd_driver_blocks_unmanaged_nvidia_bridge_target(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "root"
-    bridge_dir = root / "var/lib/astrumweaver/runtime/nvidia-driver"
+    bridge_dir = root / "etc/astrumweaver/runtime/nvidia-driver"
     bridge_dir.mkdir(parents=True)
     (bridge_dir / "libcuda.so.1").write_bytes(b"operator-file")
 
