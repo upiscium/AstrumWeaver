@@ -347,6 +347,49 @@ def test_already_runtime_worker_is_noop_only_for_exact_deployment(
 
 
 
+def test_active_prior_runtime_requires_stop_before_bridge_upgrade(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    staged_root = tmp_path / "staged"
+    worker_path, unit_path, manifest_path = _write_staged_worker(staged_root)
+    worker_path.write_text(
+        render_runtime_worker_toml(_smoke_toml()),
+        encoding="utf-8",
+    )
+    unit_path.write_text(
+        _worker_unit(runtime=True, driver_bridge=False),
+        encoding="utf-8",
+    )
+
+    driver = SystemdSetupDriver(
+        root=Path("/"),
+        worker_config_path=worker_path,
+        worker_unit_path=unit_path,
+        runtime_manifest_path=manifest_path,
+    )
+    monkeypatch.setattr(driver, "_service_active", lambda: True)
+
+    stop = SetupAction(
+        action_id="01-worker-stop",
+        kind=SetupActionKind.WORKER_STOP,
+        description="Stop Worker before migration",
+        payload={
+            "provider_id": "llama-cpp",
+            "source_execution": "canonical_smoke_or_runtime",
+            "desired_execution": "runtime",
+            "runtime_deployment": {"provider_id": "llama-cpp"},
+        },
+        requires_privilege=True,
+        reversible=True,
+    )
+
+    inspection = driver.inspect(stop)
+
+    assert inspection.state is SetupActionState.NEEDS_APPLY
+    assert "driver-bridge reconciliation" in inspection.detail
+
+
 def test_prior_runtime_unit_bridge_upgrade_is_reversible(
     tmp_path: Path,
 ) -> None:
