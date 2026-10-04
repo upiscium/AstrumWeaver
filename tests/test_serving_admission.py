@@ -476,3 +476,44 @@ async def test_serving_admission_http_errors_are_explicit_and_bounded():
             json=body(now - timedelta(seconds=1)),
         )
         assert expired.status_code == 408
+
+
+
+def test_recovered_serving_job_can_move_to_new_epoch_of_same_deployment():
+    now = utc_now()
+    repo = InMemoryControlRepository(lease_seconds=1)
+    _, _, _, binding, old = serving_values()
+    repo.register_worker(registration("worker-a", old), now=now)
+    job = repo.submit_job(serving_submission(binding, now=now), now=now)
+    first = repo.claim_next_job(
+        "worker-a", runtime_instance_epoch=old.runtime_instance_epoch, now=now
+    )
+    assert first is not None
+
+    recovered_at = now + timedelta(seconds=2)
+    recovered = repo.recover_expired_jobs(now=recovered_at)
+    assert [item.job_id for item in recovered] == [job.job_id]
+    assert recovered[0].status is JobStatus.QUEUED
+    assert recovered[0].attempt_runtime_instance_epoch is None
+
+    new = replace(old, runtime_instance_epoch=str(uuid4()))
+    repo.register_worker(registration("worker-a", new), now=recovered_at)
+    second = repo.claim_next_job(
+        "worker-a",
+        runtime_instance_epoch=new.runtime_instance_epoch,
+        now=recovered_at,
+    )
+    assert second is not None
+    assert second.job_id == job.job_id
+    assert second.attempts == first.attempts + 1
+    assert second.attempt_runtime_instance_epoch == new.runtime_instance_epoch
+
+    with pytest.raises(ConflictError):
+        repo.complete_job(
+            job.job_id,
+            JobResult(outputs={"stale": True}),
+            worker_id="worker-a",
+            lease_token=first.lease_token or "",
+            runtime_instance_epoch=old.runtime_instance_epoch,
+            now=recovered_at,
+        )
