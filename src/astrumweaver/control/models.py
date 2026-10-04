@@ -178,10 +178,11 @@ class JobRecord:
         if self.sequence < 1:
             raise ValueError("sequence must be positive")
         object.__setattr__(self, "payload", _mapping(self.payload))
-        if self.serving_binding is not None and not isinstance(
-            self.serving_binding, ServingJobBinding
-        ):
-            raise TypeError("serving_binding must be ServingJobBinding")
+        if self.serving_binding is not None:
+            if not isinstance(self.serving_binding, ServingJobBinding):
+                raise TypeError("serving_binding must be ServingJobBinding")
+            if self.deadline_at is None:
+                raise ValueError("serving-bound jobs require deadline_at")
         if self.deadline_at is not None and self.deadline_at.tzinfo is None:
             raise ValueError("deadline_at must be timezone-aware")
         if self.attempt_runtime_instance_epoch is not None:
@@ -190,6 +191,16 @@ class JobRecord:
                 "attempt_runtime_instance_epoch",
                 validate_runtime_instance_epoch(self.attempt_runtime_instance_epoch),
             )
+            if self.serving_binding is None:
+                raise ValueError("runtime instance epoch requires serving binding")
+            if self.status is not JobStatus.RUNNING:
+                raise ValueError("runtime instance epoch is valid only while running")
+        if (
+            self.serving_binding is not None
+            and self.status is JobStatus.RUNNING
+            and self.attempt_runtime_instance_epoch is None
+        ):
+            raise ValueError("running serving job requires runtime instance epoch")
         if self.error is not None:
             object.__setattr__(self, "error", _mapping(self.error))
 
