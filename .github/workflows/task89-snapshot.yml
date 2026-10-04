@@ -1,0 +1,28 @@
+name: Task 89 source snapshot
+on:
+  push:
+    branches: [fix/89-generated-nixos-modules]
+    paths: [.github/workflows/task89-snapshot.yml]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    if: github.repository == 'upiscium/AstrumWeaver'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Archive exact task source
+        run: |
+          git archive --format=tar HEAD > source.tar
+          git rev-parse HEAD > source.commit
+          git rev-parse HEAD^{tree} > source.tree
+      - uses: actions/upload-artifact@v4
+        with:
+          name: task89-source
+          path: |
+            source.tar
+            source.commit
+            source.tree
+          retention-days: 1
