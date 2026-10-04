@@ -26,6 +26,27 @@ from .control.serde import (
 )
 
 PROTOCOL_VERSION = "v1"
+SERVING_EXTENSION = "serving-bindings-v1"
+_SUPPORTED_EXTENSIONS = frozenset({SERVING_EXTENSION})
+
+
+def _extensions(value: Mapping[str, Any]) -> frozenset[str]:
+    raw = value.get("extensions", ())
+    if not isinstance(raw, (list, tuple)):
+        raise TypeError("extensions must be an array")
+    items = tuple(str(item) for item in raw)
+    if len(set(items)) != len(items):
+        raise ValueError("extensions must not contain duplicates")
+    unknown = set(items) - _SUPPORTED_EXTENSIONS
+    if unknown:
+        raise ValueError("unsupported protocol extension")
+    return frozenset(items)
+
+
+def _require_serving_extension(value: Mapping[str, Any]) -> None:
+    if SERVING_EXTENSION not in _extensions(value):
+        raise ValueError("serving-bindings-v1 extension is required")
+
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -33,7 +54,7 @@ def _iso(value: datetime | None) -> str | None:
 
 
 def worker_record_to_dict(value: WorkerRecord) -> dict[str, Any]:
-    return {
+    result = {
         "protocol_version": PROTOCOL_VERSION,
         "spec": worker_spec_to_dict(value.spec),
         "max_concurrency": value.max_concurrency,
@@ -44,6 +65,9 @@ def worker_record_to_dict(value: WorkerRecord) -> dict[str, Any]:
         "metadata": dict(value.metadata),
         "serving": None if value.serving is None else value.serving.to_dict(),
     }
+    if value.serving is not None:
+        result["extensions"] = [SERVING_EXTENSION]
+    return result
 
 
 def job_record_to_dict(value: JobRecord, *, include_payload: bool = True) -> dict[str, Any]:
@@ -76,12 +100,17 @@ def job_record_to_dict(value: JobRecord, *, include_payload: bool = True) -> dic
     }
     if include_payload:
         result["payload"] = dict(value.payload)
+    if value.serving is not None or value.claimed_runtime_instance_epoch is not None:
+        result["extensions"] = [SERVING_EXTENSION]
     return result
 
 
 def worker_registration_from_dict(value: Mapping[str, Any]) -> WorkerRegistration:
     data = dict(value)
     raw_serving = data.get("serving")
+    _extensions(data)
+    if raw_serving is not None:
+        _require_serving_extension(data)
     return WorkerRegistration(
         spec=worker_spec_from_dict(data["spec"]),
         max_concurrency=int(data.get("max_concurrency", 1)),
@@ -97,6 +126,9 @@ def worker_registration_from_dict(value: Mapping[str, Any]) -> WorkerRegistratio
 def worker_heartbeat_from_dict(value: Mapping[str, Any]) -> WorkerHeartbeat:
     data = dict(value)
     state = data.get("state")
+    _extensions(data)
+    if data.get("runtime_instance_epoch") is not None:
+        _require_serving_extension(data)
     return WorkerHeartbeat(
         state=None if state is None else WorkerState(str(state)),
         active_job_id=data.get("active_job_id"),
@@ -111,6 +143,9 @@ def job_submission_from_dict(value: Mapping[str, Any]) -> JobSubmission:
     available_at = data.get("available_at")
     deadline_at = data.get("deadline_at")
     raw_serving = data.get("serving")
+    _extensions(data)
+    if raw_serving is not None or deadline_at is not None:
+        _require_serving_extension(data)
     return JobSubmission(
         capability=str(data["capability"]),
         payload=data.get("payload") or {},
@@ -145,6 +180,8 @@ def job_request_from_record(value: JobRecord):
 
 __all__ = [
     "PROTOCOL_VERSION",
+    "SERVING_EXTENSION",
+    "_require_serving_extension",
     "job_record_to_dict",
     "job_request_from_record",
     "job_submission_from_dict",
