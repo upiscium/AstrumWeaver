@@ -12,6 +12,8 @@ let
       astrumweaverTestPackages.runtime = prev.ollama;
     }) ];
   };
+  # systemd command options permit a string or a list of command strings.
+  commandText = value: lib.concatStringsSep "\n" (lib.toList value);
   cases = builtins.fromJSON (builtins.readFile manifest);
   evaluate = case:
     let
@@ -60,14 +62,14 @@ let
         # unevaluated packages thunk cannot hide the original unbound pkgs.
         serviceContracts =
           (!control.enable || (
-            lib.hasInfix "astrumweaver-control" cs.ExecStart
-            && lib.hasInfix "--config" cs.ExecStart
-            && lib.hasInfix "astrumweaver-migrate" cs.ExecStartPre
+            lib.hasInfix "astrumweaver-control" (commandText cs.ExecStart)
+            && lib.hasInfix "--config" (commandText cs.ExecStart)
+            && lib.hasInfix "astrumweaver-migrate" (commandText cs.ExecStartPre)
           ))
           && (!worker.enable || (
-            lib.hasInfix "astrumweaver-worker" ws.ExecStart
-            && lib.hasInfix "--config" ws.ExecStart
-            && (worker.gpuUuids == [ ] || lib.hasInfix "gpu-preflight" ws.ExecStartPre)
+            lib.hasInfix "astrumweaver-worker" (commandText ws.ExecStart)
+            && lib.hasInfix "--config" (commandText ws.ExecStart)
+            && (worker.gpuUuids == [ ] || lib.hasInfix "gpu-preflight" (commandText ws.ExecStartPre))
           ));
         packageMatches = !worker.enable || (
           (if runtime.enable then
