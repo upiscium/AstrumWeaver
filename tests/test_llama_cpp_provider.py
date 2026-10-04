@@ -926,6 +926,37 @@ async def test_managed_runtime_starts_checks_alias_and_stops() -> None:
 
 
 @pytest.mark.asyncio
+async def test_managed_runtime_fails_fast_when_owned_process_exits_before_readiness() -> None:
+    api = FakeApi(reachable=False)
+    process = FakeProcess(api, exit_on_start=True)
+    runtime = LlamaCppManagedRuntime(
+        api=api,
+        process=process,
+        context=context(),
+        model_ref="/models/qwen.gguf",
+        model_alias="astrumweaver",
+        startup_timeout_seconds=60.0,
+        launch_policy=LlamaCppLaunchPolicy(
+            gpu_layers="auto",
+            split_mode=LlamaCppSplitMode.NONE,
+            fit=True,
+            tensor_split=None,
+            fit_target_mb=None,
+            main_gpu=0,
+            cpu_moe=False,
+            n_cpu_moe=None,
+            n_cpu_ffn=None,
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="owned process exited before readiness"):
+        await runtime.start()
+
+    assert process.starts == 1
+    assert process.stops == 1
+
+
+@pytest.mark.asyncio
 async def test_managed_runtime_rejects_external_server() -> None:
     api = FakeApi(reachable=True)
     process = FakeProcess(api, running=False)
