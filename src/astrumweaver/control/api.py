@@ -16,7 +16,10 @@ from ..control.models import WorkerState
 from ..control.repository import (
     ConflictError,
     ControlRepository,
+    DeadlineExceededError,
+    NoCompatibleDeployment,
     NotFoundError,
+    OverloadedError,
     RepositoryError,
     StorageUnavailable,
 )
@@ -124,6 +127,20 @@ def create_app(
     @app.exception_handler(NotFoundError)
     async def not_found_handler(_: Request, exc: NotFoundError) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    @app.exception_handler(DeadlineExceededError)
+    async def deadline_handler(_: Request, exc: DeadlineExceededError) -> JSONResponse:
+        return JSONResponse(status_code=408, content={"detail": str(exc)})
+
+    @app.exception_handler(NoCompatibleDeployment)
+    async def no_compatible_handler(
+        _: Request, exc: NoCompatibleDeployment
+    ) -> JSONResponse:
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+    @app.exception_handler(OverloadedError)
+    async def overloaded_handler(_: Request, exc: OverloadedError) -> JSONResponse:
+        return JSONResponse(status_code=429, content={"detail": str(exc)})
 
     @app.exception_handler(ConflictError)
     async def conflict_handler(_: Request, exc: ConflictError) -> JSONResponse:
