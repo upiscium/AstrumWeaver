@@ -23,12 +23,12 @@ usage:
   astrumweaver-runtime-profile rollback llama-cpp
   astrumweaver-runtime-profile status llama-cpp
 EOF
-      exit "${1:-2}"
+      exit "''${1:-2}"
     }
 
     require_llama_cpp() {
-      if [ "${1-}" != "llama-cpp" ]; then
-        echo "astrumweaver-runtime-profile: unsupported runtime package: ${1-<missing>}" >&2
+      if [ "''${1-}" != "llama-cpp" ]; then
+        echo "astrumweaver-runtime-profile: unsupported runtime package: ''${1-<missing>}" >&2
         exit 2
       fi
     }
@@ -130,30 +130,30 @@ PY
       echo "runtime profile now matches this AstrumWeaver candidate"
     }
 
-    case "${1-}" in
+    case "''${1-}" in
       -h|--help)
         usage 0
         ;;
       verify)
-        [ "${2-}" = "package" ] || usage
-        require_llama_cpp "${3-}"
+        [ "''${2-}" = "package" ] || usage
+        require_llama_cpp "''${3-}"
         verify_llama_cpp
         ;;
       ensure)
-        require_llama_cpp "${2-}"
+        require_llama_cpp "''${2-}"
         install_or_upgrade_llama_cpp
         ;;
       upgrade)
-        require_llama_cpp "${2-}"
+        require_llama_cpp "''${2-}"
         install_or_upgrade_llama_cpp
         ;;
       rollback)
-        require_llama_cpp "${2-}"
+        require_llama_cpp "''${2-}"
         "$nix_bin" profile rollback --profile "$profile"
         status_llama_cpp || true
         ;;
       status)
-        require_llama_cpp "${2-}"
+        require_llama_cpp "''${2-}"
         status_llama_cpp
         ;;
       *)
