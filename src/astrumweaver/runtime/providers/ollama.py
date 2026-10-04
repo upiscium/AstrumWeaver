@@ -211,8 +211,6 @@ class OllamaSubprocessController:
             self.executable,
             "serve",
             env=env,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
         )
 
     async def stop(self) -> None:
