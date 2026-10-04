@@ -16,6 +16,7 @@ from enum import StrEnum
 from typing import Protocol, TypeVar, runtime_checkable
 
 from ..contracts import AcceleratorDevice, ResourceShape, WorkerSpec
+from ..control.auth import ClientAuthMode
 from ..runtime import (
     ExecutionDemand,
     GPUTopology,
@@ -63,6 +64,7 @@ from .first_run import (
     FirstRunSecrets,
     SystemdFirstRunInstaller,
     generate_authority_tokens,
+    generate_worker_token,
     render_control_env,
     render_nixos_bootstrap_snippet,
     render_worker_env,
@@ -963,18 +965,60 @@ def _prompt_control_spec(io: TuiIO) -> ControlBootstrapSpec:
     port = _ask_int(io, "Control port", default=9000)
     if port <= 0 or port > 65535:
         raise ValueError("Control port must be between 1 and 65535")
+
+    while True:
+        client_auth_raw = _ask_nonblank(
+            io,
+            "Client API auth (bearer/none)",
+            default="bearer",
+        ).lower()
+        try:
+            client_auth = ClientAuthMode(client_auth_raw)
+            break
+        except ValueError:
+            io.write("Client API auth must be bearer or none.")
+
+    if client_auth is ClientAuthMode.NONE:
+        io.write(
+            "Client API bearer auth is disabled. Protect job submit/read/cancel "
+            "with the deployment network, VPN, reverse proxy, or upstream auth."
+        )
+
     return ControlBootstrapSpec(
         bind_host=bind_host,
         port=port,
+        client_auth=client_auth,
     )
 
 
-def _prompt_control_secrets(io: TuiIO) -> FirstRunSecrets:
+def _prompt_control_secrets(
+    io: TuiIO,
+    *,
+    client_auth: ClientAuthMode,
+) -> FirstRunSecrets:
     database_url = _ask_secret_nonblank(
         io,
         "PostgreSQL URL (input hidden)",
     )
-    if _confirm(io, "Generate new client/Worker authority tokens?", default=True):
+
+    if client_auth is ClientAuthMode.NONE:
+        if _confirm(io, "Generate new Worker authority token?", default=True):
+            worker_token = generate_worker_token()
+            io.write(
+                "Generated Worker authority token. No Client token is generated "
+                "or stored because client_auth=none."
+            )
+        else:
+            worker_token = _ask_secret_nonblank(
+                io,
+                "Worker authority token (input hidden)",
+            )
+        client_token = None
+    elif _confirm(
+        io,
+        "Generate new client/Worker authority tokens?",
+        default=True,
+    ):
         client_token, worker_token = generate_authority_tokens()
         io.write(
             "Generated distinct authority tokens. Values will be written only "
@@ -989,6 +1033,7 @@ def _prompt_control_secrets(io: TuiIO) -> FirstRunSecrets:
             io,
             "Worker authority token (input hidden)",
         )
+
     return FirstRunSecrets(
         database_url=database_url,
         client_token=client_token,
@@ -1043,6 +1088,7 @@ def _first_run_review_token(
             else {
                 "bind_host": control.bind_host,
                 "port": control.port,
+                "client_auth": control.client_auth.value,
                 "worker_ttl_seconds": control.worker_ttl_seconds,
                 "lease_seconds": control.lease_seconds,
                 "maintenance_interval_seconds": control.maintenance_interval_seconds,
@@ -1070,7 +1116,11 @@ def _first_run_review_token(
         "runtime_package_expression": runtime_package_expression,
         "secret_refs": {
             "database_url": role in {FirstRunRole.CONTROL, FirstRunRole.BOTH},
-            "client_token": role in {FirstRunRole.CONTROL, FirstRunRole.BOTH},
+            "client_token": (
+                role in {FirstRunRole.CONTROL, FirstRunRole.BOTH}
+                and control is not None
+                and control.client_auth is ClientAuthMode.BEARER
+            ),
             "worker_token": True,
         },
     }
@@ -1097,6 +1147,11 @@ def _render_first_run_review(
     io.write(f"Role: {role.value}")
     if control is not None:
         io.write(f"Control: {control.bind_host}:{control.port}")
+        io.write(f"Client API auth: {control.client_auth.value}")
+        if control.client_auth is ClientAuthMode.NONE:
+            io.write(
+                "Client API access control is delegated to the deployment/network boundary."
+            )
         io.write("Control actions:")
         if deployment_path is DeploymentPath.NIXOS:
             io.write("  - render reviewed NixOS module snippet")
@@ -1163,7 +1218,10 @@ def run_first_run_tui(
     secrets = FirstRunSecrets()
     if role in {FirstRunRole.CONTROL, FirstRunRole.BOTH}:
         control_spec = _prompt_control_spec(io)
-        secrets = _prompt_control_secrets(io)
+        secrets = _prompt_control_secrets(
+            io,
+            client_auth=control_spec.client_auth,
+        )
 
     worker: WorkerSpec | None = None
     control_url: str | None = None
@@ -1297,7 +1355,10 @@ def run_first_run_tui(
             if role in {FirstRunRole.CONTROL, FirstRunRole.BOTH}:
                 write_protected_file(
                     Path("/etc/astrumweaver/control.env"),
-                    render_control_env(secrets),
+                    render_control_env(
+                        secrets,
+                        client_auth=control_spec.client_auth,
+                    ),
                 )
                 io.write("Wrote protected /etc/astrumweaver/control.env")
             if role in {FirstRunRole.WORKER, FirstRunRole.BOTH}:
