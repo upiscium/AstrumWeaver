@@ -181,12 +181,20 @@ def create_app(
 
     @app.get("/v1/health")
     async def health() -> dict[str, Any]:
-        return {"status": "ok", "protocol_version": PROTOCOL_VERSION}
+        return {
+            "status": "ok",
+            "protocol_version": PROTOCOL_VERSION,
+            "extensions": [SERVING_EXTENSION],
+        }
 
     @app.get("/v1/ready")
     async def ready() -> dict[str, Any]:
         await asyncio.to_thread(repository.check_storage)
-        return {"ready": True, "protocol_version": PROTOCOL_VERSION}
+        return {
+            "ready": True,
+            "protocol_version": PROTOCOL_VERSION,
+            "extensions": [SERVING_EXTENSION],
+        }
 
     @app.post("/v1/jobs", status_code=201, dependencies=[Depends(require_client)])
     async def submit_job(request: Request) -> dict[str, Any]:
