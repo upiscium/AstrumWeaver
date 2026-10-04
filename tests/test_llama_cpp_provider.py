@@ -588,6 +588,7 @@ async def test_subprocess_environment_pins_gpu_uuid_set(monkeypatch) -> None:
     async def fake_create_subprocess_exec(*args, **kwargs):
         captured["args"] = args
         captured["env"] = dict(kwargs["env"])
+        captured["kwargs"] = dict(kwargs)
         return Process()
 
     monkeypatch.setattr(
@@ -624,6 +625,8 @@ async def test_subprocess_environment_pins_gpu_uuid_set(monkeypatch) -> None:
     assert isinstance(env, dict)
     assert env["CUDA_VISIBLE_DEVICES"] == "GPU-large,GPU-small"
     assert "--device" in captured["args"]
+    assert "stdout" not in captured["kwargs"]
+    assert "stderr" not in captured["kwargs"]
 
     await controller.stop()
 
@@ -766,9 +769,16 @@ class FakeApi:
 
 
 class FakeProcess:
-    def __init__(self, api: FakeApi, *, running: bool = False) -> None:
+    def __init__(
+        self,
+        api: FakeApi,
+        *,
+        running: bool = False,
+        exit_on_start: bool = False,
+    ) -> None:
         self.api = api
         self._running = running
+        self.exit_on_start = exit_on_start
         self.starts = 0
         self.stops = 0
 
@@ -778,6 +788,10 @@ class FakeProcess:
 
     async def start(self) -> None:
         self.starts += 1
+        if self.exit_on_start:
+            self._running = False
+            self.api.reachable = False
+            return
         self._running = True
         self.api.reachable = True
 
@@ -908,6 +922,37 @@ async def test_managed_runtime_starts_checks_alias_and_stops() -> None:
     assert process.starts == 1
     assert (await runtime.health()).ready
     await runtime.stop()
+    assert process.stops == 1
+
+
+@pytest.mark.asyncio
+async def test_managed_runtime_fails_fast_when_owned_process_exits_before_readiness() -> None:
+    api = FakeApi(reachable=False)
+    process = FakeProcess(api, exit_on_start=True)
+    runtime = LlamaCppManagedRuntime(
+        api=api,
+        process=process,
+        context=context(),
+        model_ref="/models/qwen.gguf",
+        model_alias="astrumweaver",
+        startup_timeout_seconds=60.0,
+        launch_policy=LlamaCppLaunchPolicy(
+            gpu_layers="auto",
+            split_mode=LlamaCppSplitMode.NONE,
+            fit=True,
+            tensor_split=None,
+            fit_target_mb=None,
+            main_gpu=0,
+            cpu_moe=False,
+            n_cpu_moe=None,
+            n_cpu_ffn=None,
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="owned process exited before readiness"):
+        await runtime.start()
+
+    assert process.starts == 1
     assert process.stops == 1
 
 

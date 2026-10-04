@@ -456,6 +456,8 @@ async def test_subprocess_does_not_rewrite_gpu_identity(monkeypatch) -> None:
         captured["args"].index("--gpu") + 1
     ] == "GPU-exact-uuid"
     assert "env" not in captured["kwargs"]
+    assert "stdout" not in captured["kwargs"]
+    assert "stderr" not in captured["kwargs"]
 
     await controller.stop()
 
@@ -629,9 +631,16 @@ class FakeApi:
 
 
 class FakeProcess:
-    def __init__(self, api: FakeApi, *, running: bool = False) -> None:
+    def __init__(
+        self,
+        api: FakeApi,
+        *,
+        running: bool = False,
+        exit_on_start: bool = False,
+    ) -> None:
         self.api = api
         self._running = running
+        self.exit_on_start = exit_on_start
         self.starts = 0
         self.stops = 0
 
@@ -641,6 +650,10 @@ class FakeProcess:
 
     async def start(self) -> None:
         self.starts += 1
+        if self.exit_on_start:
+            self._running = False
+            self.api.reachable = False
+            return
         self._running = True
         self.api.reachable = True
 
@@ -808,6 +821,27 @@ async def test_managed_runtime_starts_checks_alias_and_stops() -> None:
     assert process.starts == 1
     assert (await runtime.health()).ready
     await runtime.stop()
+    assert process.stops == 1
+
+
+@pytest.mark.asyncio
+async def test_managed_runtime_fails_fast_when_owned_process_exits_before_readiness() -> None:
+    api = FakeApi(reachable=False)
+    process = FakeProcess(api, exit_on_start=True)
+    runtime = FreeTokenManagedRuntime(
+        api=api,
+        process=process,
+        context=context(),
+        model_ref="Qwen/Qwen3-30B-A3B",
+        served_model_name="astrumweaver",
+        startup_timeout_seconds=60.0,
+        launch_policy=launch_policy(),
+    )
+
+    with pytest.raises(RuntimeError, match="owned process exited before readiness"):
+        await runtime.start()
+
+    assert process.starts == 1
     assert process.stops == 1
 
 

@@ -725,6 +725,8 @@ async def test_subprocess_invokes_command_without_cuda_visible_devices(
 
     assert "--device-ids" in captured["args"]
     assert "env" not in captured["kwargs"]
+    assert "stdout" not in captured["kwargs"]
+    assert "stderr" not in captured["kwargs"]
 
     await controller.stop()
 
@@ -872,9 +874,16 @@ class FakeApi:
 
 
 class FakeProcess:
-    def __init__(self, api: FakeApi, *, running: bool = False) -> None:
+    def __init__(
+        self,
+        api: FakeApi,
+        *,
+        running: bool = False,
+        exit_on_start: bool = False,
+    ) -> None:
         self.api = api
         self._running = running
+        self.exit_on_start = exit_on_start
         self.starts = 0
         self.stops = 0
 
@@ -884,6 +893,10 @@ class FakeProcess:
 
     async def start(self) -> None:
         self.starts += 1
+        if self.exit_on_start:
+            self._running = False
+            self.api.reachable = False
+            return
         self._running = True
         self.api.reachable = True
 
@@ -1010,6 +1023,33 @@ async def test_managed_runtime_starts_checks_alias_and_stops() -> None:
     assert process.starts == 1
     assert (await runtime.health()).ready
     await runtime.stop()
+    assert process.stops == 1
+
+
+@pytest.mark.asyncio
+async def test_managed_runtime_fails_fast_when_owned_process_exits_before_readiness() -> None:
+    api = FakeApi(reachable=False)
+    process = FakeProcess(api, exit_on_start=True)
+    runtime = VllmManagedRuntime(
+        api=api,
+        process=process,
+        context=context(),
+        model_ref="Qwen/Qwen3-8B",
+        served_model_name="astrumweaver",
+        startup_timeout_seconds=60.0,
+        launch_policy=VllmLaunchPolicy(
+            tensor_parallel_size=1,
+            enable_expert_parallel=False,
+            gpu_memory_utilization=0.92,
+            cpu_offload_gb=0,
+            device_ids=("GPU-example-one",),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="owned process exited before readiness"):
+        await runtime.start()
+
+    assert process.starts == 1
     assert process.stops == 1
 
 

@@ -124,9 +124,16 @@ class FakeApi:
 
 
 class FakeProcess:
-    def __init__(self, api: FakeApi, *, running: bool = False) -> None:
+    def __init__(
+        self,
+        api: FakeApi,
+        *,
+        running: bool = False,
+        exit_on_start: bool = False,
+    ) -> None:
         self.api = api
         self._running = running
+        self.exit_on_start = exit_on_start
         self.starts = 0
         self.stops = 0
 
@@ -136,6 +143,10 @@ class FakeProcess:
 
     async def start(self) -> None:
         self.starts += 1
+        if self.exit_on_start:
+            self._running = False
+            self.api.reachable = False
+            return
         self._running = True
         self.api.reachable = True
 
@@ -577,6 +588,26 @@ async def test_managed_runtime_multi_gpu_does_not_invent_per_device_proof() -> N
 
 
 @pytest.mark.asyncio
+async def test_managed_runtime_fails_fast_when_owned_process_exits_before_readiness() -> None:
+    api = FakeApi(reachable=False)
+    process = FakeProcess(api, exit_on_start=True)
+    runtime = OllamaManagedRuntime(
+        api=api,
+        process=process,
+        context=context(),
+        model="qwen3:8b",
+        keep_alive="5m",
+        startup_timeout_seconds=60.0,
+    )
+
+    with pytest.raises(RuntimeError, match="owned process exited before readiness"):
+        await runtime.start()
+
+    assert process.starts == 1
+    assert process.stops == 1
+
+
+@pytest.mark.asyncio
 async def test_managed_runtime_rejects_unowned_external_ollama_server() -> None:
     api = FakeApi(reachable=True)
     process = FakeProcess(api, running=False)
@@ -723,6 +754,7 @@ async def test_ollama_subprocess_environment_pins_uuid_set_and_spread(
     async def fake_create_subprocess_exec(*args, **kwargs):
         captured["args"] = args
         captured["env"] = dict(kwargs["env"])
+        captured["kwargs"] = dict(kwargs)
         return Process()
 
     monkeypatch.setattr(
@@ -750,5 +782,7 @@ async def test_ollama_subprocess_environment_pins_uuid_set_and_spread(
     assert env["OLLAMA_NO_CLOUD"] == "true"
     assert env["OLLAMA_NUM_PARALLEL"] == "1"
     assert env["OLLAMA_MAX_LOADED_MODELS"] == "1"
+    assert "stdout" not in captured["kwargs"]
+    assert "stderr" not in captured["kwargs"]
 
     await controller.stop()

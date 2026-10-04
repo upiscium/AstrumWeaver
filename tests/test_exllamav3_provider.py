@@ -435,6 +435,7 @@ async def test_subprocess_environment_pins_exact_worker_gpu_set(monkeypatch) -> 
     async def fake_create_subprocess_exec(*args, **kwargs):
         captured["args"] = args
         captured["env"] = dict(kwargs["env"])
+        captured["kwargs"] = dict(kwargs)
         return Process()
 
     monkeypatch.setattr(
@@ -450,6 +451,8 @@ async def test_subprocess_environment_pins_exact_worker_gpu_set(monkeypatch) -> 
     )
     await controller.start()
     assert captured["env"]["CUDA_VISIBLE_DEVICES"] == "GPU-a,GPU-b"
+    assert "stdout" not in captured["kwargs"]
+    assert "stderr" not in captured["kwargs"]
     await controller.stop()
 
 
@@ -595,9 +598,16 @@ class FakeApi:
 
 
 class FakeProcess:
-    def __init__(self, api: FakeApi, *, running: bool = False) -> None:
+    def __init__(
+        self,
+        api: FakeApi,
+        *,
+        running: bool = False,
+        exit_on_start: bool = False,
+    ) -> None:
         self.api = api
         self._running = running
+        self.exit_on_start = exit_on_start
         self.starts = 0
         self.stops = 0
 
@@ -607,6 +617,10 @@ class FakeProcess:
 
     async def start(self) -> None:
         self.starts += 1
+        if self.exit_on_start:
+            self._running = False
+            self.api.reachable = False
+            return
         self._running = True
         self.api.reachable = True
 
@@ -691,6 +705,27 @@ async def test_residency_reports_policy_without_inventing_memory_bytes() -> None
     report = await executor.residency()
     assert report.items[0].accelerator_memory_bytes is None
     assert report.items[0].metadata["gpu_uuids"] == ["GPU-a", "GPU-b"]
+
+
+@pytest.mark.asyncio
+async def test_managed_runtime_fails_fast_when_owned_process_exits_before_readiness() -> None:
+    api = FakeApi(reachable=False)
+    process = FakeProcess(api, exit_on_start=True)
+    runtime = ExLlamaV3ManagedRuntime(
+        api=api,
+        process=process,
+        context=context(),
+        model_ref="upiscium/Qwen3-14B-EXL3",
+        served_model_name="Qwen3-14B-EXL3",
+        startup_timeout_seconds=60.0,
+        launch_policy=launch_policy(),
+    )
+
+    with pytest.raises(RuntimeError, match="owned process exited before readiness"):
+        await runtime.start()
+
+    assert process.starts == 1
+    assert process.stops == 1
 
 
 @pytest.mark.asyncio
