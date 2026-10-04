@@ -39,6 +39,7 @@ from .repository import (
     _assert_worker_epoch,
     _aware,
     _failure_payload,
+    _lease_expiry,
     _submission_matches,
 )
 from .serde import (
@@ -499,7 +500,11 @@ class PostgresControlRepository:
                     WHERE id = %s
                     """,
                     (
-                        timestamp + timedelta(seconds=self.lease_seconds),
+                        _lease_expiry(
+                            timestamp,
+                            self.lease_seconds,
+                            job_row.get("deadline_at"),
+                        ),
                         timestamp,
                         job_row["id"],
                     ),
@@ -942,7 +947,11 @@ class PostgresControlRepository:
                 (
                     worker_id,
                     lease_token,
-                    timestamp + timedelta(seconds=self.lease_seconds),
+                    _lease_expiry(
+                        timestamp,
+                        self.lease_seconds,
+                        selected.deadline_at,
+                    ),
                     claimed_deployment_revision,
                     claimed_serving_contract_revision,
                     claimed_runtime_instance_epoch,
