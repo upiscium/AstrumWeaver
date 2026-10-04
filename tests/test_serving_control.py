@@ -9,11 +9,15 @@ import pytest
 from astrumweaver import ResourceShape, WorkerSpec
 from astrumweaver.control import (
     ConflictError,
+    DeadlineExceededError,
     InMemoryControlRepository,
     JobStatus,
+    NoCompatibleDeployment,
+    OverloadedError,
     JobSubmission,
     WorkerHeartbeat,
     WorkerRegistration,
+    WorkerState,
     utc_now,
 )
 from astrumweaver.control.api import create_app
@@ -286,6 +290,7 @@ def test_deadline_expiry_is_terminal_and_releases_capacity():
 def test_idempotency_equivalence_includes_serving_binding_and_deadline():
     now = utc_now()
     repo = InMemoryControlRepository()
+    repo.register_worker(serving_worker("worker"), now=now)
     submission = serving_submission(now=now, idempotency_key="same")
     first = repo.submit_job(submission, now=now)
     assert repo.submit_job(submission, now=now).job_id == first.job_id
@@ -515,3 +520,119 @@ async def test_v1_serving_fields_require_explicit_extension_marker():
             },
         )
         assert missing_job.status_code == 422
+
+
+def test_serving_admission_is_bounded_by_liveness_capacity_and_deadline():
+    now = utc_now()
+    repo = InMemoryControlRepository(worker_ttl_seconds=60)
+    request = serving_submission(now=now)
+
+    with pytest.raises(NoCompatibleDeployment):
+        repo.submit_job(request, now=now)
+
+    registration = serving_worker("worker")
+    repo.register_worker(registration, now=now)
+    accepted = repo.submit_job(request, now=now)
+    claimed = repo.claim_next_job("worker", now=now)
+    assert claimed is not None and claimed.job_id == accepted.job_id
+
+    with pytest.raises(OverloadedError):
+        repo.submit_job(serving_submission(now=now), now=now)
+
+    with pytest.raises(DeadlineExceededError):
+        repo.submit_job(
+            replace(
+                serving_submission(now=now),
+                deadline_at=now - timedelta(seconds=1),
+            ),
+            now=now,
+        )
+
+    draining = InMemoryControlRepository()
+    draining.register_worker(serving_worker("draining"), now=now)
+    draining.set_worker_state("draining", WorkerState.DRAINING, now=now)
+    with pytest.raises(NoCompatibleDeployment):
+        draining.submit_job(serving_submission(now=now), now=now)
+
+    stale = InMemoryControlRepository(worker_ttl_seconds=60)
+    stale.register_worker(
+        serving_worker("stale"),
+        now=now - timedelta(seconds=61),
+    )
+    with pytest.raises(NoCompatibleDeployment):
+        stale.submit_job(serving_submission(now=now), now=now)
+
+
+def test_idempotent_retry_precedes_transient_admission_recheck():
+    now = utc_now()
+    repo = InMemoryControlRepository()
+    registration = serving_worker("worker")
+    repo.register_worker(registration, now=now)
+    request = serving_submission(now=now, idempotency_key="durable")
+    first = repo.submit_job(request, now=now)
+    claim = repo.claim_next_job("worker", now=now)
+    assert claim is not None
+
+    retry = repo.submit_job(
+        request,
+        now=request.deadline_at + timedelta(seconds=1),
+    )
+    assert retry.job_id == first.job_id
+
+
+@pytest.mark.asyncio
+async def test_serving_admission_http_errors_are_explicit():
+    now = utc_now()
+    repo = InMemoryControlRepository()
+    app = create_app(
+        repo,
+        client_token="client-secret",
+        worker_token="worker-secret",
+        maintenance_interval_seconds=60,
+    )
+    transport = httpx.ASGITransport(app=app)
+    headers = {"authorization": "Bearer client-secret"}
+    *_, binding, _ = serving_values()
+
+    def body(deadline):
+        return {
+            "protocol_version": PROTOCOL_VERSION,
+            "extensions": [SERVING_EXTENSION],
+            "capability": "llm.chat",
+            "payload": {},
+            "requirements": {},
+            "serving": binding.to_dict(),
+            "deadline_at": deadline.isoformat(),
+        }
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://control") as client:
+        missing = await client.post(
+            "/v1/jobs",
+            headers=headers,
+            json=body(now + timedelta(seconds=10)),
+        )
+        assert missing.status_code == 503
+
+        repo.register_worker(serving_worker("worker"), now=utc_now())
+        accepted = await client.post(
+            "/v1/jobs",
+            headers=headers,
+            json=body(now + timedelta(seconds=10)),
+        )
+        assert accepted.status_code == 201
+        claimed = repo.claim_next_job("worker", now=utc_now())
+        assert claimed is not None
+
+        overloaded = await client.post(
+            "/v1/jobs",
+            headers=headers,
+            json=body(now + timedelta(seconds=10)),
+        )
+        assert overloaded.status_code == 429
+
+        expired = await client.post(
+            "/v1/jobs",
+            headers=headers,
+            json=body(now - timedelta(seconds=1)),
+        )
+        assert expired.status_code == 408
