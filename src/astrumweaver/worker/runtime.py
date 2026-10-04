@@ -6,6 +6,9 @@ import asyncio
 import contextlib
 import importlib
 import inspect
+import math
+import logging
+import time
 import subprocess
 from pathlib import Path
 from collections.abc import Mapping
@@ -13,6 +16,8 @@ from typing import Any
 
 from ..contracts import WorkerSpec
 from ..control.models import WorkerState
+from ..control.serde import worker_spec_from_dict
+from ..transport import PROTOCOL_VERSION
 from ..execution import JobExecutor, JobResult
 from ..gpu_mapping import (
     discover_gpu_mapping,
@@ -20,6 +25,9 @@ from ..gpu_mapping import (
     verify_isolated_gpu_access,
 )
 from .client import ClaimedJob, ControlClient, ControlTransportError
+
+
+_LOG = logging.getLogger(__name__)
 
 
 def discover_nvidia_gpu_uuids(command: str = "nvidia-smi") -> tuple[str, ...]:
@@ -127,6 +135,12 @@ def load_executor(specifier: str, config: Mapping[str, Any] | None = None) -> Jo
 
 
 class WorkerRuntime:
+    """One execution owner with a persistent, job-independent heartbeat deadline.
+
+    Control RPCs are serialized with drain requests. No heartbeat task can
+    outlive an attempt or race a terminal write using an obsolete lease token.
+    """
+
     def __init__(
         self,
         *,
@@ -139,8 +153,11 @@ class WorkerRuntime:
     ) -> None:
         if max_concurrency != 1:
             raise ValueError("v1 WorkerRuntime currently requires max_concurrency=1")
-        if poll_interval_seconds <= 0 or heartbeat_interval_seconds <= 0:
-            raise ValueError("worker intervals must be positive")
+        if any(
+            not math.isfinite(value) or value <= 0
+            for value in (poll_interval_seconds, heartbeat_interval_seconds)
+        ):
+            raise ValueError("worker intervals must be finite and positive")
         self.spec = spec
         self.max_concurrency = max_concurrency
         self.executor = executor
@@ -150,11 +167,29 @@ class WorkerRuntime:
         self._stop = asyncio.Event()
         self._draining = False
         self._registered = False
+        self._control_state: WorkerState | None = None
+        self._control_valid_until = 0.0
+        self._next_heartbeat_at = 0.0
+        self._control_lock = asyncio.Lock()
         self._active: ClaimedJob | None = None
 
     @property
+    def control_available(self) -> bool:
+        return time.monotonic() < self._control_valid_until
+
+    @property
+    def control_state(self) -> str | None:
+        return None if self._control_state is None else self._control_state.value
+
+    @property
     def ready(self) -> bool:
-        return not self._stop.is_set()
+        return (
+            not self._stop.is_set()
+            and self._registered
+            and not self.draining
+            and self.control_available
+            and self._control_state is WorkerState.ONLINE
+        )
 
     @property
     def registered(self) -> bool:
@@ -162,157 +197,233 @@ class WorkerRuntime:
 
     @property
     def draining(self) -> bool:
-        return self._draining
+        return self._draining or self._control_state is WorkerState.DRAINING
 
     @property
     def active_job_id(self) -> str | None:
         return None if self._active is None else self._active.request.job_id
 
     def request_drain(self) -> None:
+        # A signal can set this while an RPC is in flight. A late ONLINE
+        # response must never clear local drain/stop intent.
         self._draining = True
 
     def request_stop(self) -> None:
         self.request_drain()
         self._stop.set()
 
-    async def register(self) -> None:
-        await self.client.register(
-            spec=self.spec,
-            max_concurrency=self.max_concurrency,
-            metadata={"runtime": "astrumweaver-worker"},
-        )
+    def _control_failed(self, exc: ControlTransportError) -> None:
+        if self._control_valid_until:
+            _LOG.warning("Control acknowledgement lost (status=%s); claims paused", exc.status_code)
+        self._control_valid_until = 0.0
+        if exc.status_code in (401, 403, 404):
+            self._registered = False
+        # No immediate busy-loop retry, including after a failed claim/write.
+        self._next_heartbeat_at = time.monotonic() + self.heartbeat_interval_seconds
+
+    def _acknowledge_control(self, record: Any, *, sent_at: float) -> None:
+        try:
+            if not isinstance(record, dict) or record.get("protocol_version") != PROTOCOL_VERSION:
+                raise ValueError("invalid Worker response")
+            state = WorkerState(record["state"])
+            if worker_spec_from_dict(record["spec"]) != self.spec:
+                raise ValueError("Worker identity changed")
+            if record["max_concurrency"] != self.max_concurrency:
+                raise ValueError("Worker capacity changed")
+        except (KeyError, TypeError, ValueError) as exc:
+            error = ControlTransportError(502, "invalid Worker acknowledgement")
+            self._control_failed(error)
+            raise error from exc
+        if state is not self._control_state:
+            _LOG.info("Acknowledged Control Worker state: %s", state.value)
         self._registered = True
-        if self._draining:
-            await self.client.set_state(self.spec.worker_id, WorkerState.DRAINING)
+        self._control_state = state
+        # Count from request start, not response arrival: a delayed reply
+        # cannot grant an unbounded extension of local readiness.
+        self._control_valid_until = (
+            sent_at + self.heartbeat_interval_seconds + self.client.timeout_seconds
+        )
+
+    async def register(self) -> None:
+        async with self._control_lock:
+            sent_at = time.monotonic()
+            try:
+                record = await self.client.register(
+                    spec=self.spec,
+                    max_concurrency=self.max_concurrency,
+                    metadata={"runtime": "astrumweaver-worker"},
+                )
+                self._acknowledge_control(record, sent_at=sent_at)
+            except ControlTransportError as exc:
+                self._control_failed(exc)
+                raise
+            self._next_heartbeat_at = time.monotonic() + self.heartbeat_interval_seconds
+            if self._draining:
+                await self._heartbeat_locked()
+
+    async def _heartbeat_locked(self) -> None:
+        """Called only by the execution owner or drain, under _control_lock."""
+        active = self._active
+        sent_at = time.monotonic()
+        # Heartbeat is never allowed to reacquire OFFLINE resources. Control
+        # rejects an ONLINE/DRAINING promotion from OFFLINE, including races.
+        state = (
+            WorkerState.DRAINING
+            if self._draining and self.control_available
+            and self._control_state is not WorkerState.OFFLINE
+            else None
+        )
+        try:
+            record = await self.client.heartbeat(
+                self.spec.worker_id,
+                active_job_id=None if active is None else active.request.job_id,
+                lease_token=None if active is None else active.lease_token,
+                state=state,
+            )
+            self._acknowledge_control(record, sent_at=sent_at)
+        except ControlTransportError as exc:
+            self._control_failed(exc)
+            raise
+        finally:
+            self._next_heartbeat_at = time.monotonic() + self.heartbeat_interval_seconds
+
+    async def _heartbeat_if_due(self) -> None:
+        async with self._control_lock:
+            if time.monotonic() >= self._next_heartbeat_at:
+                await self._heartbeat_locked()
+
+    async def _wait_for_poll(self) -> None:
+        delay = min(
+            self.poll_interval_seconds,
+            max(0.0, self._next_heartbeat_at - time.monotonic()),
+        )
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(self._stop.wait(), timeout=delay)
 
     async def run_forever(self) -> None:
-        await self.register()
         try:
+            if self._stop.is_set():
+                return
+            await self.register()
             while not self._stop.is_set():
-                if self._draining:
-                    await asyncio.sleep(self.poll_interval_seconds)
-                    continue
-                claimed = await self.client.claim(self.spec.worker_id)
-                if claimed is None:
-                    await self.client.heartbeat(self.spec.worker_id)
-                    try:
-                        await asyncio.wait_for(
-                            self._stop.wait(), timeout=self.poll_interval_seconds
-                        )
-                    except asyncio.TimeoutError:
-                        pass
-                    continue
-                self._active = claimed
                 try:
-                    await self._execute_claim(claimed)
-                finally:
-                    self._active = None
+                    # Also runs during local/remote drain and OFFLINE pause.
+                    # Completion and claim never reset this deadline.
+                    await self._heartbeat_if_due()
+                    if not self.ready:
+                        await self._wait_for_poll()
+                        continue
+                    async with self._control_lock:
+                        if not self.ready:
+                            continue
+                        # A signal-driven drain RPC might have held the lock.
+                        if time.monotonic() >= self._next_heartbeat_at:
+                            await self._heartbeat_locked()
+                        if not self.ready:
+                            continue
+                        claimed = await self.client.claim(self.spec.worker_id)
+                        self._active = claimed
+                    if claimed is None:
+                        await self._wait_for_poll()
+                        continue
+                    try:
+                        await self._execute_claim(claimed)
+                    finally:
+                        self._active = None
+                except ControlTransportError as exc:
+                    # Stay live but not ready. Retry a state-less heartbeat,
+                    # never enrollment or automatic ownership reacquisition.
+                    self._control_failed(exc)
+                    await self._wait_for_poll()
         finally:
-            with contextlib.suppress(ControlTransportError):
-                await self.client.set_state(self.spec.worker_id, WorkerState.OFFLINE)
-            self._registered = False
+            self.request_stop()
+            self._control_valid_until = 0.0
+            async with self._control_lock:
+                if self._registered:
+                    with contextlib.suppress(ControlTransportError):
+                        await self.client.set_state(self.spec.worker_id, WorkerState.OFFLINE)
+                self._registered = False
 
     async def drain(self) -> None:
         self.request_drain()
-        if self._registered:
-            await self.client.set_state(self.spec.worker_id, WorkerState.DRAINING)
+        async with self._control_lock:
+            if self._registered and not self._stop.is_set():
+                # Do not use set_state(DRAINING), which can reacquire OFFLINE
+                # resources. Heartbeat's guarded transition cannot do so.
+                await self._heartbeat_locked()
 
     async def _execute_claim(self, claimed: ClaimedJob) -> None:
-        execution = asyncio.create_task(self.executor.execute(claimed.request))
-        cancelled_remotely = False
+        # The private direct-entry test path also installs the active attempt;
+        # normal callers install it under the claim lock before reaching here.
+        if self._active is not None and self._active is not claimed:
+            raise RuntimeError("Worker already owns a different local attempt")
+        self._active = claimed
+        execution = asyncio.create_task(
+            self.executor.execute(claimed.request), name="astrumweaver-job-execution"
+        )
         try:
             while not execution.done():
-                done, _ = await asyncio.wait(
+                await self._heartbeat_if_due()
+                await asyncio.wait(
                     {execution},
-                    timeout=self.heartbeat_interval_seconds,
+                    timeout=max(0.0, self._next_heartbeat_at - time.monotonic()),
                 )
-                if done:
-                    break
-                try:
-                    await self.client.heartbeat(
-                        self.spec.worker_id,
-                        active_job_id=claimed.request.job_id,
-                        lease_token=claimed.lease_token,
-                    )
-                except ControlTransportError as exc:
-                    if exc.status_code != 409:
-                        raise
-                    status = await self.client.inspect_job(
-                        self.spec.worker_id, claimed.request.job_id
-                    )
-                    if status.get("status") == "cancelled":
-                        cancelled_remotely = True
-                        await self.executor.cancel(claimed.request.job_id)
-                        execution.cancel()
-                        with contextlib.suppress(asyncio.CancelledError):
-                            await execution
-                        return
-                    raise
 
-            if cancelled_remotely:
-                return
-
+            error: dict[str, str] | None = None
+            retryable = False
             try:
                 result = await execution
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                try:
-                    await self.client.fail(
-                        self.spec.worker_id,
-                        claimed.request.job_id,
-                        claimed.lease_token,
-                        error={"type": type(exc).__name__, "message": str(exc)},
-                        retryable=True,
-                    )
-                except ControlTransportError as transport_exc:
-                    if transport_exc.status_code != 409:
-                        raise
-                    status = await self.client.inspect_job(
-                        self.spec.worker_id, claimed.request.job_id
-                    )
-                    if status.get("status") != "cancelled":
-                        raise
-                return
+                error = {"type": type(exc).__name__, "message": str(exc)}
+                retryable = True
+            else:
+                if not isinstance(result, JobResult):
+                    error = {
+                        "type": "ExecutorProtocolError",
+                        "message": "executor returned a non-JobResult value",
+                    }
 
-            if not isinstance(result, JobResult):
-                try:
+            async with self._control_lock:
+                # Renew first if due, even when a short execution completed
+                # immediately. No terminal write races a lease heartbeat.
+                if time.monotonic() >= self._next_heartbeat_at:
+                    await self._heartbeat_locked()
+                if not self.control_available:
+                    raise ControlTransportError(0, "Worker authority is unconfirmed")
+                if error is not None:
                     await self.client.fail(
-                        self.spec.worker_id,
-                        claimed.request.job_id,
-                        claimed.lease_token,
-                        error={
-                            "type": "ExecutorProtocolError",
-                            "message": "executor returned a non-JobResult value",
-                        },
-                        retryable=False,
+                        self.spec.worker_id, claimed.request.job_id,
+                        claimed.lease_token, error=error, retryable=retryable,
                     )
-                except ControlTransportError as transport_exc:
-                    if transport_exc.status_code != 409:
-                        raise
+                else:
+                    await self.client.complete(
+                        self.spec.worker_id, claimed.request.job_id,
+                        claimed.lease_token, result,
+                    )
+                # Do not let a waiting drain heartbeat reuse this terminal lease.
+                self._active = None
+        except ControlTransportError as exc:
+            self._control_failed(exc)
+            if exc.status_code == 409:
+                async with self._control_lock:
                     status = await self.client.inspect_job(
                         self.spec.worker_id, claimed.request.job_id
                     )
-                    if status.get("status") != "cancelled":
-                        raise
-                return
-            try:
-                await self.client.complete(
-                    self.spec.worker_id,
-                    claimed.request.job_id,
-                    claimed.lease_token,
-                    result,
-                )
-            except ControlTransportError as exc:
-                if exc.status_code != 409:
-                    raise
-                status = await self.client.inspect_job(
-                    self.spec.worker_id, claimed.request.job_id
-                )
-                if status.get("status") != "cancelled":
-                    raise
+                if status.get("status") == "cancelled":
+                    return
+            # Unknown/lost lease: abandon local work without reporting a new
+            # failure. Durable recovery/fencing decides this attempt's fate.
+            raise
         finally:
-            if not execution.done():
-                execution.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await execution
+            try:
+                if not execution.done():
+                    try:
+                        await self.executor.cancel(claimed.request.job_id)
+                    finally:
+                        execution.cancel()
+                        with contextlib.suppress(asyncio.CancelledError, Exception):
+                            await execution
+            finally:
+                self._active = None

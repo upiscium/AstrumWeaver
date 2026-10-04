@@ -18,6 +18,8 @@ def create_health_app(runtime: WorkerRuntime) -> FastAPI:
             "status": "ok",
             "worker_id": runtime.spec.worker_id,
             "registered": runtime.registered,
+            "control_state": runtime.control_state,
+            "control_available": runtime.control_available,
             "ready": runtime.ready and runtime.registered and not runtime.draining,
             "active_job_id": runtime.active_job_id,
             "draining": runtime.draining,
