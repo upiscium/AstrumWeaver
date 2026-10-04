@@ -13,9 +13,11 @@ from astrumweaver import ResourceShape, WorkerSpec
 from astrumweaver.control import (
     ConflictError,
     JobStatus,
+    NoCompatibleDeployment,
     JobSubmission,
     PostgresControlRepository,
     WorkerRegistration,
+    WorkerState,
     utc_now,
 )
 from astrumweaver.control.migrate import apply_migrations
@@ -100,7 +102,7 @@ def reset_database():
         connection.execute("TRUNCATE TABLE jobs, workers RESTART IDENTITY CASCADE")
 
 
-def submission(now, binding=None):
+def submission(now, binding=None, *, key=None):
     if binding is None:
         binding, _ = serving_values(
             epoch="12345678-1234-4234-9234-123456789abc"
@@ -110,6 +112,7 @@ def submission(now, binding=None):
         serving=binding,
         deadline_at=now + timedelta(seconds=30),
         max_attempts=2,
+        idempotency_key=key,
     )
 
 
@@ -296,3 +299,93 @@ def test_postgres_legacy_job_keeps_sql_null_serving_metadata():
 
     assert row[0] is None
     assert row[1] is None
+
+
+def test_postgres_serving_admission_excludes_draining_and_stale_workers():
+    assert DATABASE_URL is not None
+    now = utc_now()
+    repo = PostgresControlRepository(DATABASE_URL, worker_ttl_seconds=60)
+    registration = worker(
+        "worker", epoch="12345678-1234-4234-9234-123456789abc"
+    )
+    repo.register_worker(registration, now=now)
+    repo.set_worker_state("worker", WorkerState.DRAINING, now=now)
+
+    with pytest.raises(NoCompatibleDeployment):
+        repo.submit_job(submission(now), now=now)
+
+    repo.register_worker(
+        registration,
+        now=now - timedelta(seconds=61),
+    )
+    with pytest.raises(NoCompatibleDeployment):
+        repo.submit_job(submission(now), now=now)
+
+
+def test_postgres_concurrent_idempotency_preserves_serving_intent():
+    assert DATABASE_URL is not None
+    now = utc_now()
+    setup = PostgresControlRepository(DATABASE_URL)
+    setup.register_worker(
+        worker("worker", epoch="12345678-1234-4234-9234-123456789abc"),
+        now=now,
+    )
+    request = submission(now, key="same-serving-request")
+    repo_a = PostgresControlRepository(DATABASE_URL)
+    repo_b = PostgresControlRepository(DATABASE_URL)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(repo_a.submit_job, request, now=now)
+        second = pool.submit(repo_b.submit_job, request, now=now)
+        records = [first.result(timeout=10), second.result(timeout=10)]
+
+    assert records[0].job_id == records[1].job_id
+    assert records[0].serving == request.serving
+    assert records[0].deadline_at == request.deadline_at
+
+    with pytest.raises(ConflictError, match="idempotency"):
+        setup.submit_job(
+            replace(request, deadline_at=request.deadline_at + timedelta(seconds=1)),
+            now=now,
+        )
+
+
+def test_postgres_deadline_cancel_recovery_race_has_one_terminal_owner():
+    assert DATABASE_URL is not None
+    now = utc_now()
+    setup = PostgresControlRepository(DATABASE_URL, lease_seconds=1)
+    registration = worker(
+        "worker", epoch="12345678-1234-4234-9234-123456789abc"
+    )
+    setup.register_worker(registration, now=now)
+    job = setup.submit_job(
+        replace(submission(now), deadline_at=now + timedelta(seconds=1)),
+        now=now,
+    )
+    claimed = setup.claim_next_job("worker", now=now)
+    assert claimed is not None and claimed.lease_token
+
+    later = now + timedelta(seconds=2)
+    cancel_repo = PostgresControlRepository(DATABASE_URL, lease_seconds=1)
+    recover_repo = PostgresControlRepository(DATABASE_URL, lease_seconds=1)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        cancel_future = pool.submit(cancel_repo.cancel_job, job.job_id, now=later)
+        recover_future = pool.submit(recover_repo.recover_expired_jobs, now=later)
+        cancelled_view = cancel_future.result(timeout=10)
+        recovered_view = recover_future.result(timeout=10)
+
+    final = setup.get_job(job.job_id)
+    assert final.status in {JobStatus.CANCELLED, JobStatus.FAILED}
+    assert setup.get_worker("worker").active_jobs == 0
+    assert cancelled_view.status in {JobStatus.CANCELLED, JobStatus.FAILED}
+    assert all(item.status is JobStatus.FAILED for item in recovered_view)
+
+    with pytest.raises(ConflictError):
+        setup.complete_job(
+            job.job_id,
+            JobResult(text="stale"),
+            worker_id="worker",
+            lease_token=claimed.lease_token,
+            runtime_instance_epoch=registration.serving.runtime_instance.epoch,
+            now=later,
+        )
