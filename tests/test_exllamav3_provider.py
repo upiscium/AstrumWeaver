@@ -708,6 +708,27 @@ async def test_residency_reports_policy_without_inventing_memory_bytes() -> None
 
 
 @pytest.mark.asyncio
+async def test_managed_runtime_fails_fast_when_owned_process_exits_before_readiness() -> None:
+    api = FakeApi(reachable=False)
+    process = FakeProcess(api, exit_on_start=True)
+    runtime = ExLlamaV3ManagedRuntime(
+        api=api,
+        process=process,
+        context=context(),
+        model_ref="upiscium/Qwen3-14B-EXL3",
+        served_model_name="Qwen3-14B-EXL3",
+        startup_timeout_seconds=60.0,
+        launch_policy=launch_policy(),
+    )
+
+    with pytest.raises(RuntimeError, match="owned process exited before readiness"):
+        await runtime.start()
+
+    assert process.starts == 1
+    assert process.stops == 1
+
+
+@pytest.mark.asyncio
 async def test_managed_runtime_lifecycle_and_external_collision() -> None:
     api = FakeApi(reachable=False)
     process = FakeProcess(api)
