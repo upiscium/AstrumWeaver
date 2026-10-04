@@ -1121,9 +1121,13 @@ class PostgresControlRepository:
                 if row is None:
                     return recovered
 
+                deadline_expired = (
+                    row.get("deadline_at") is not None
+                    and row["deadline_at"] <= timestamp
+                )
                 should_retry = (
-                    int(row["attempts"]) < int(row["max_attempts"])
-                    and (row.get("deadline_at") is None or row["deadline_at"] > timestamp)
+                    not deadline_expired
+                    and int(row["attempts"]) < int(row["max_attempts"])
                 )
                 status = JobStatus.QUEUED if should_retry else JobStatus.FAILED
                 updated = connection.execute(
@@ -1150,10 +1154,18 @@ class PostgresControlRepository:
                     (
                         status.value,
                         _json(
-                            {
-                                "message": "worker lease expired",
-                                "retryable": should_retry,
-                            }
+                            (
+                                {
+                                    "type": "deadline_expired",
+                                    "message": "job deadline expired",
+                                    "retryable": False,
+                                }
+                                if deadline_expired
+                                else {
+                                    "message": "worker lease expired",
+                                    "retryable": should_retry,
+                                }
+                            )
                         ),
                         should_retry,
                         should_retry,
