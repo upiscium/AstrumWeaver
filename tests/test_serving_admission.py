@@ -27,7 +27,7 @@ from astrumweaver.serving import (
     resolve_profile,
 )
 from astrumweaver.transport import PROTOCOL_VERSION, SERVING_EXTENSION
-from astrumweaver.worker import ControlClient, WorkerRuntime
+from astrumweaver.worker import ControlClient, ControlTransportError, WorkerRuntime
 from astrumweaver.worker.daemon import _load_serving_manifest
 from astrumweaver.control.models import utc_now
 
@@ -234,6 +234,31 @@ def test_deadline_caps_lease_and_prevents_retry_or_queued_execution():
     assert [item.job_id for item in expired] == [second.job_id]
     assert repo.get_job(second.job_id).status is JobStatus.FAILED
     assert repo.get_job(first.job_id).status is JobStatus.FAILED
+
+
+def test_worker_client_rejects_unnegotiated_or_unknown_serving_response():
+    _, _, _, binding, advertisement = serving_values()
+
+    missing_extension = httpx.Response(
+        200,
+        json={
+            "protocol_version": PROTOCOL_VERSION,
+            "serving": advertisement.to_dict(),
+        },
+    )
+    with pytest.raises(ControlTransportError, match="omitted the serving-v1"):
+        ControlClient._object(missing_extension)
+
+    unknown_extension = httpx.Response(
+        200,
+        json={
+            "protocol_version": PROTOCOL_VERSION,
+            "extensions": ["serving-v1", "unknown-v2"],
+            "serving_binding": binding.to_dict(),
+        },
+    )
+    with pytest.raises(ControlTransportError, match="unsupported extension"):
+        ControlClient._object(unknown_extension)
 
 
 def test_serving_transport_requires_explicit_extension():
