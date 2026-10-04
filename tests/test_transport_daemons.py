@@ -106,6 +106,26 @@ async def test_auth_boundaries_and_protocol_version(app) -> None:
 
 
 @pytest.mark.asyncio
+async def test_client_auth_bearer_rejects_missing_authority(app) -> None:
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://control",
+    ) as client:
+        missing_client = await client.post(
+            "/v1/jobs",
+            json=job_submission(),
+        )
+        missing_worker = await client.post(
+            "/v1/workers/register",
+            json=worker_registration(),
+        )
+
+    assert missing_client.status_code == 401
+    assert missing_worker.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_client_auth_none_opens_only_client_endpoints(
     repository: InMemoryControlRepository,
 ) -> None:
