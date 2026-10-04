@@ -2,6 +2,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -40,6 +41,38 @@ def test_matrix_uses_production_renderer_and_is_deterministic(tmp_path, monkeypa
     assert r"\${not_a_nix_binding}" in literal
     assert all(Path(case["module"]).is_file() for case in cases)
     assert all("ASTRUMWEAVER_WORKER_TOKEN" not in p.read_text() for p in tmp_path.glob("*.nix"))
+
+
+def test_evaluate_applies_source_and_manifest_before_json_conversion(
+    tmp_path,
+    monkeypatch,
+):
+    source = tmp_path / "source with space"
+    evaluator = source / "nix/tests/generated-first-run.nix"
+    evaluator.parent.mkdir(parents=True)
+    evaluator.write_text("{ source, manifest }: [ source manifest ]\n")
+    manifest = tmp_path / "manifest with space.json"
+    manifest.write_text("[]")
+
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(argv, 0, "[]", "")
+
+    monkeypatch.setattr(checker.subprocess, "run", fake_run)
+    checker.evaluate(source, manifest)
+
+    argv = captured["argv"]
+    assert "--file" not in argv
+    assert "--argstr" not in argv
+    expression = argv[argv.index("--expr") + 1]
+    assert "let check = import (builtins.toPath " in expression
+    assert json.dumps(str(evaluator)) in expression
+    assert "source = " + json.dumps(str(source)) in expression
+    assert "manifest = " + json.dumps(str(manifest)) in expression
+    assert captured["kwargs"]["check"] is False
 
 
 @pytest.mark.parametrize("expression", ["myPkgs.ollama", "pkgs", "inputs.runtime", "pkgs.9foo"])
