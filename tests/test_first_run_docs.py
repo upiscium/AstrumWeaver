@@ -43,3 +43,32 @@ def test_bare_planning_tui_example_states_the_path_requirement() -> None:
         "profile's `bin` directory is already on `PATH`, running without a "
         "driver:"
     ) in text
+
+
+def test_generic_systemd_llama_runtime_profile_is_documented_as_standard_path() -> None:
+    install = (ROOT / "docs/installation.md").read_text(encoding="utf-8")
+    setup_tui = (ROOT / "docs/setup-tui.md").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "### RuntimeBackend Nix profile" in install
+    assert "#runtime-llama-cpp" in install
+    assert "llama-cpp-cuda" in install
+    assert "/nix/var/nix/profiles/astrumweaver-runtime-llama-cpp/bin/llama-server" in install
+    assert "astrumweaver-runtime-profile \\" in install
+    assert "upgrade llama-cpp" in install
+    assert "rollback llama-cpp" in install
+    assert "Advanced/custom package and model hooks" in setup_tui
+    assert "RuntimeBackend Nix profile" in readme
+
+
+def test_runtime_package_output_is_cuda_pinned_but_installer_remains_lazy() -> None:
+    flake = (ROOT / "flake.nix").read_text(encoding="utf-8")
+    helper = (ROOT / "nix/runtime-profile-support.nix").read_text(
+        encoding="utf-8"
+    )
+
+    assert "runtimeLlamaCpp = runtimePkgs.llama-cpp-cuda;" in flake
+    assert "runtime-llama-cpp = runtimeLlamaCpp;" in flake
+    assert "runtimeLlamaCpp" not in helper
+    assert "profile upgrade" in helper
+    assert "--override-flake" in helper
