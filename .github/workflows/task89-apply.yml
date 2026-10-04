@@ -1,0 +1,53 @@
+name: Task 89 apply reviewed source
+on:
+  push:
+    branches: [fix/89-generated-nixos-modules]
+    paths: [.github/workflows/task89-apply.yml]
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: github.repository == 'upiscium/AstrumWeaver' && github.ref == 'refs/heads/fix/89-generated-nixos-modules'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Verify and apply exact reviewed source tree
+        env:
+          EXPECTED_HEAD: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          python3 - <<'PY'
+          from pathlib import Path
+          from hashlib import sha256
+          import os
+          expected = [
+              '183aca3e9e334bdb5470a74acbeea8c0ce9e51a8ded95448465c6a02ad818c13',
+              '7625abb68915bd95bbffe9b91a3377c54dfacf005a248ec1a9e158774ed62f8f',
+              '3358c90309132ebbb4ef1e9a619c0bc79490c036d3bc51f653df4c6a05716718',
+              'f4f3ab655cddde7f9ca948a18d90222befd4b597fe9c51428ce873b55e66255a',
+          ]
+          parts = []
+          for index, digest in enumerate(expected):
+              value = Path(f'.task89-part{index}.patch').read_bytes()
+              if index == 0:
+                  value = value.replace(b'\n diff --git ', b'\ndiff --git ')
+              actual = sha256(value).hexdigest()
+              if actual != digest:
+                  raise SystemExit(f'part {index} integrity mismatch: {actual}')
+              parts.append(value)
+          patch = b''.join(parts)
+          if sha256(patch).hexdigest() != 'ccf1babfb9ca5af0e89809e818d3d0e339f48780db02994beb70c70112bebc2d':
+              raise SystemExit('combined patch integrity mismatch')
+          (Path(os.environ['RUNNER_TEMP']) / 'task89.patch').write_bytes(patch)
+          PY
+          git read-tree --reset -u d7999654c8a1a47495cc3538d4680300dafa064a
+          git apply --index "$RUNNER_TEMP/task89.patch"
+          test "$(git write-tree)" = 90dde1e23700f76163c122b60369d0b93bdf7754
+          git diff --cached --check
+          test "$(git ls-remote origin refs/heads/fix/89-generated-nixos-modules | cut -f1)" = "$EXPECTED_HEAD"
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'Validate generated NixOS modules and bound package scope (#89)'
+          git push origin HEAD:refs/heads/fix/89-generated-nixos-modules
