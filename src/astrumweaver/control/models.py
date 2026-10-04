@@ -49,10 +49,13 @@ class WorkerRegistration:
     def __post_init__(self) -> None:
         if self.max_concurrency < 1:
             raise ValueError("max_concurrency must be positive")
-        if self.serving is not None and not isinstance(
-            self.serving, WorkerServingAdvertisement
-        ):
-            raise TypeError("serving must be WorkerServingAdvertisement")
+        if self.serving is not None:
+            if not isinstance(self.serving, WorkerServingAdvertisement):
+                raise TypeError("serving must be WorkerServingAdvertisement")
+            if not frozenset(self.serving.contract_revisions) <= self.spec.capabilities:
+                raise ValueError(
+                    "serving contract capabilities must be advertised by Worker"
+                )
         object.__setattr__(self, "metadata", _mapping(self.metadata))
 
 
@@ -90,10 +93,13 @@ class WorkerRecord:
             raise ValueError("max_concurrency must be positive")
         if self.active_jobs < 0:
             raise ValueError("active_jobs must not be negative")
-        if self.serving is not None and not isinstance(
-            self.serving, WorkerServingAdvertisement
-        ):
-            raise TypeError("serving must be WorkerServingAdvertisement")
+        if self.serving is not None:
+            if not isinstance(self.serving, WorkerServingAdvertisement):
+                raise TypeError("serving must be WorkerServingAdvertisement")
+            if not frozenset(self.serving.contract_revisions) <= self.spec.capabilities:
+                raise ValueError(
+                    "serving contract capabilities must be advertised by Worker"
+                )
         object.__setattr__(self, "metadata", _mapping(self.metadata))
 
     @property
