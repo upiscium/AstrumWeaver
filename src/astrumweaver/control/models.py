@@ -132,6 +132,8 @@ class JobSubmission:
             and self.available_at >= self.deadline_at
         ):
             raise ValueError("available_at must be earlier than deadline_at")
+        if self.deadline_at is not None and self.serving is None:
+            raise ValueError("deadline_at is only supported for serving jobs")
         if self.serving is not None:
             if not isinstance(self.serving, ServingJobBinding):
                 raise TypeError("serving must be ServingJobBinding")
