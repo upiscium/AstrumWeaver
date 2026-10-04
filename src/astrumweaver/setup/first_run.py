@@ -105,7 +105,29 @@ def _toml_string_list(values: tuple[str, ...] | frozenset[str]) -> str:
 
 
 def _nix_string(value: str) -> str:
-    return json.dumps(value, ensure_ascii=False)
+    # JSON and Nix share quote/backslash escapes, but only Nix interpolates
+    # ${...}. Operator/model data must remain literal, never acquire scope.
+    return json.dumps(value, ensure_ascii=False).replace("${", r"\${")
+
+
+def validate_nixos_runtime_package_expression(value: str) -> str:
+    """Accept only a package attribute path rooted in the bound module pkgs.
+
+    Custom packages belong in a nixpkgs overlay, not an undeclared myPkgs or
+    inputs root. This is deliberately not a general-purpose Nix expression
+    parser; attribute existence/package type is checked by Nix evaluation.
+    """
+    expression = value.strip()
+    if not re.fullmatch(r"pkgs(?:\.[A-Za-z_][A-Za-z0-9_'-]*)+", expression) or any(
+        part in {"if", "then", "else", "assert", "with", "let", "in", "rec", "inherit"}
+        for part in expression.split(".")[1:]
+    ):
+        raise ValueError(
+            "runtime package expression must be a simple attribute path rooted "
+            "in pkgs, such as pkgs.ollama or pkgs.vllm; expose custom packages "
+            "through a nixpkgs overlay"
+        )
+    return expression
 
 
 def _nix_string_list(values: tuple[str, ...] | frozenset[str]) -> str:
@@ -656,7 +678,7 @@ def render_nixos_bootstrap_snippet(
 ) -> str:
     """Render deterministic Nix config without mutating operator Nix sources."""
 
-    lines = ["{ config, ... }:", "", "{"]
+    lines = ["{ config, pkgs, ... }:", "", "{"]
     if role in {FirstRunRole.CONTROL, FirstRunRole.BOTH}:
         if control is None:
             raise ValueError("Control role requires ControlBootstrapSpec")
@@ -722,15 +744,9 @@ def render_nixos_bootstrap_snippet(
                     "RuntimeProvider Nix rendering requires reviewed deployment "
                     "data and an explicit Nix package expression"
                 )
-            package_expr = runtime_package_expression.strip()
-            if not re.fullmatch(
-                r"[A-Za-z_][A-Za-z0-9_'-]*(?:\.[A-Za-z0-9_+'-]+)*",
-                package_expr,
-            ):
-                raise ValueError(
-                    "runtime package expression must be a simple Nix attribute "
-                    "path such as pkgs.ollama or myPkgs.vllm"
-                )
+            package_expr = validate_nixos_runtime_package_expression(
+                runtime_package_expression
+            )
             provider_id = str(runtime_deployment["provider_id"])
             provider_config = dict(
                 runtime_deployment.get("provider_config") or {}
@@ -820,5 +836,6 @@ __all__ = [
     "render_nixos_bootstrap_snippet",
     "render_worker_env",
     "render_worker_toml",
+    "validate_nixos_runtime_package_expression",
     "write_protected_file",
 ]

@@ -22,6 +22,7 @@ from astrumweaver.setup.first_run import (
     render_control_env,
     render_control_toml,
     render_nixos_bootstrap_snippet,
+    validate_nixos_runtime_package_expression,
     render_worker_env,
     render_worker_toml,
 )
@@ -226,6 +227,7 @@ def test_nixos_runtime_snippet_embeds_reviewed_provider_demand_and_package() -> 
         runtime_package_expression="pkgs.vllm",
     )
 
+    assert snippet.startswith("{ config, pkgs, ... }:")
     assert "runtime = {" in snippet
     assert 'provider = "vllm";' in snippet
     assert "packages = [ pkgs.vllm ];" in snippet
@@ -589,3 +591,30 @@ def test_explicit_dot_slash_invocation_resolves_siblings(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["./astrumweaver-setup-tui"])
     monkeypatch.setenv("PATH", "")
     assert SystemdFirstRunInstaller()._resolve_tool(helper.name) == str(helper)
+
+
+@pytest.mark.parametrize("expression", [
+    "pkgs.ollama", "pkgs.vllm", "pkgs.llama-cpp", "pkgs.custom.runtime",
+    " pkgs.ollama ",
+])
+def test_nixos_runtime_package_path_has_a_bound_root(expression):
+    assert validate_nixos_runtime_package_expression(expression) == expression.strip()
+
+
+@pytest.mark.parametrize("expression", [
+    "myPkgs.vllm", "inputs.runtime.packages", "builtins.derivation", "ollama",
+    "pkgs", "", "pkgs.", "pkgs..ollama", "pkgs.9foo", "pkgs.foo+bar",
+    'pkgs."ollama"', 'pkgs.${name}', "(pkgs.ollama)", "pkgs.ollama; abort 1",
+    "pkgs.let", "pkgs.ollama # comment", "pkgs.ollama\nother",
+])
+def test_nixos_runtime_package_path_rejects_unbound_or_arbitrary_expressions(expression):
+    with pytest.raises(ValueError, match="rooted in pkgs"):
+        validate_nixos_runtime_package_expression(expression)
+
+
+def test_nixos_data_does_not_create_free_interpolation_variables():
+    snippet = render_nixos_bootstrap_snippet(
+        role=FirstRunRole.CONTROL, control=ControlBootstrapSpec(),
+        control_env_path="/etc/${not_a_nix_binding}/control.env",
+    )
+    assert r"\${not_a_nix_binding}" in snippet

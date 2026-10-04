@@ -69,6 +69,7 @@ from .first_run import (
     render_nixos_bootstrap_snippet,
     render_worker_env,
     render_worker_toml,
+    validate_nixos_runtime_package_expression,
     write_protected_file,
 )
 
@@ -1273,13 +1274,18 @@ def run_first_run_tui(
             if runtime_plan is None:
                 return TuiRunResult(status=TuiRunStatus.CANCELLED)
             if snapshot.deployment_path is DeploymentPath.NIXOS:
-                nix_runtime_package_expression = _ask_nonblank(
-                    io,
-                    (
-                        "Nix package expression for selected runtime "
-                        "(example: pkgs.ollama)"
-                    ),
-                )
+                while True:
+                    expression = _ask_nonblank(
+                        io,
+                        "Nix runtime package attribute path (pkgs.ollama / pkgs.vllm)",
+                    )
+                    try:
+                        nix_runtime_package_expression = (
+                            validate_nixos_runtime_package_expression(expression)
+                        )
+                        break
+                    except ValueError as exc:
+                        io.write(str(exc))
 
     digest = _first_run_review_token(
         role=role,
