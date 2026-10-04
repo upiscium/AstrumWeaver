@@ -345,8 +345,6 @@ class ExLlamaV3SubprocessController:
             self._process = await asyncio.create_subprocess_exec(
                 *self.command(),
                 env=env,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
             )
         except OSError as exc:
             raise RuntimeError("failed to start ExLlamaV3 TabbyAPI process") from exc
@@ -542,7 +540,14 @@ class ExLlamaV3ManagedRuntime(ManagedRuntime):
                 asyncio.get_running_loop().time()
                 + self.startup_timeout_seconds
             )
-            while not await self._server_reachable():
+            while True:
+                if not self.process.running:
+                    raise RuntimeError(
+                        "ExLlamaV3 TabbyAPI owned process exited before readiness; "
+                        "inspect Worker service logs"
+                    )
+                if await self._server_reachable():
+                    break
                 if asyncio.get_running_loop().time() >= deadline:
                     raise RuntimeError(
                         "ExLlamaV3 TabbyAPI server did not become ready before timeout"
