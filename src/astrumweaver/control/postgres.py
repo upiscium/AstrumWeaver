@@ -12,6 +12,11 @@ from uuid import uuid4
 from ..contracts import AcceleratorDevice, ResourceShape, WorkerSpec
 from ..execution import JobResult
 from ..scheduling import worker_matches
+from ..serving import (
+    ServingJobBinding,
+    WorkerServingAdvertisement,
+    worker_serving_matches,
+)
 from .migrate import required_migration_names
 from .models import (
     JobRecord,
@@ -181,6 +186,11 @@ class PostgresControlRepository:
             registered_at=row["registered_at"],
             last_seen_at=row["last_seen_at"],
             metadata=row.get("metadata") or {},
+            serving=(
+                None
+                if row.get("serving") is None
+                else WorkerServingAdvertisement.from_dict(row["serving"])
+            ),
         )
 
     @staticmethod
@@ -205,6 +215,19 @@ class PostgresControlRepository:
             started_at=row.get("started_at"),
             finished_at=row.get("finished_at"),
             lease_expires_at=row.get("lease_expires_at"),
+            deadline_at=row.get("deadline_at"),
+            serving=(
+                None
+                if row.get("serving") is None
+                else ServingJobBinding.from_dict(row["serving"])
+            ),
+            claimed_deployment_revision=row.get("claimed_deployment_revision"),
+            claimed_serving_contract_revision=row.get(
+                "claimed_serving_contract_revision"
+            ),
+            claimed_runtime_instance_epoch=row.get(
+                "claimed_runtime_instance_epoch"
+            ),
             updated_at=row["updated_at"],
         )
 
@@ -292,6 +315,10 @@ class PostgresControlRepository:
                         raise ConflictError(
                             "max_concurrency cannot be lower than active job count"
                         )
+                    if registration.serving != current.serving:
+                        raise ConflictError(
+                            "worker serving deployment cannot change while jobs are active"
+                        )
 
             conflicting = self._gpu_overlap(connection, registration)
             if conflicting:
@@ -314,12 +341,12 @@ class PostgresControlRepository:
                 INSERT INTO workers (
                     id, worker_class, capabilities, labels, gpu_uuids,
                     accelerators, gpu_count, total_vram_mb, max_single_gpu_vram_mb,
-                    max_concurrency, state, metadata, registered_at,
+                    max_concurrency, state, metadata, serving, registered_at,
                     last_seen_at, active_jobs, updated_at
                 ) VALUES (
                     %s, %s, %s, %s, %s,
                     %s, %s, %s, %s,
-                    %s, 'online', %s, %s,
+                    %s, 'online', %s, %s, %s,
                     %s, %s, %s
                 )
                 ON CONFLICT (id) DO UPDATE SET
@@ -334,6 +361,7 @@ class PostgresControlRepository:
                     max_concurrency = EXCLUDED.max_concurrency,
                     state = 'online',
                     metadata = EXCLUDED.metadata,
+                    serving = EXCLUDED.serving,
                     last_seen_at = EXCLUDED.last_seen_at,
                     active_jobs = EXCLUDED.active_jobs,
                     updated_at = EXCLUDED.updated_at
@@ -361,6 +389,11 @@ class PostgresControlRepository:
                     spec.resources.max_single_gpu_vram_mb,
                     registration.max_concurrency,
                     _json(dict(registration.metadata)),
+                    _json(
+                        None
+                        if registration.serving is None
+                        else registration.serving.to_dict()
+                    ),
                     registered_at,
                     timestamp,
                     active_jobs,
@@ -398,6 +431,7 @@ class PostgresControlRepository:
                         spec=current.spec,
                         max_concurrency=current.max_concurrency,
                         metadata=current.metadata,
+                        serving=current.serving,
                     ),
                 )
                 if conflict:
@@ -444,6 +478,7 @@ class PostgresControlRepository:
                     job_row,
                     worker_id=worker_id,
                     lease_token=heartbeat.lease_token,
+                    runtime_instance_epoch=heartbeat.runtime_instance_epoch,
                     now=timestamp,
                 )
                 connection.execute(
