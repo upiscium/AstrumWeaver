@@ -394,3 +394,22 @@ def test_worker_serving_manifest_rejects_contract_from_other_deployment():
                 replace(contract, deployment_revision=digest("9")),
             ),
         )
+
+
+
+def test_worker_registration_rejects_serving_contract_not_in_worker_capabilities():
+    _, serving = serving_values()[3:5]
+    inconsistent = replace(
+        serving,
+        contract_revisions={"other.capability": next(iter(serving.contract_revisions.values()))},
+    )
+    with pytest.raises(ValueError, match="serving contract capabilities"):
+        WorkerRegistration(
+            spec=WorkerSpec(
+                worker_id="worker-a",
+                worker_class="cpu-test",
+                resources=ResourceShape(),
+                capabilities=frozenset({"llm.chat"}),
+            ),
+            serving=inconsistent,
+        )
