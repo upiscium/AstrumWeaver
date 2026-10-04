@@ -18,7 +18,6 @@
       integration = pkgs.callPackage ./nix/integration-package.nix { };
       runtimeLlamaCpp = runtimePkgs.llama-cpp-cuda;
       runtimeProfileSupport = pkgs.callPackage ./nix/runtime-profile-support.nix {
-        inherit runtimeLlamaCpp;
         source = self;
       };
       control = pkgs.callPackage ./nix/control-support.nix {
@@ -216,8 +215,8 @@
           test -x ${installer}/bin/astrumweaver-setup-gpu-worker
           test -x ${installer}/bin/astrumweaver-gpu-isolation-probe
           test -x ${installer}/bin/astrumweaver-runtime-profile
+          ${installer}/bin/astrumweaver-runtime-profile --help >/dev/null
           ${installer}/bin/astrumweaver-runtime-profile status llama-cpp >/dev/null 2>&1 || test "$?" = 1
-          test -x ${runtimeLlamaCpp}/bin/llama-server
           test -x ${control}/bin/astrumweaver-control
           test -x ${control}/bin/astrumweaver-migrate
           test -x ${control}/bin/astrumweaver-setup-control-plane
