@@ -33,15 +33,20 @@ This gives a clean answer to:
 Control requires:
 
 - PostgreSQL reachable through `ASTRUMWEAVER_DATABASE_URL`
-- `ASTRUMWEAVER_CLIENT_TOKEN`
 - `ASTRUMWEAVER_WORKER_TOKEN`
+- `ASTRUMWEAVER_CLIENT_TOKEN` when `control.client_auth = "bearer"`
+
+If `control.client_auth` is omitted, it defaults to `bearer`. Set it to
+`none` only when the deployment/network boundary intentionally supplies
+Client API access control.
 
 Worker requires:
 
 - network access to Control
 - the same `ASTRUMWEAVER_WORKER_TOKEN`
 
-The client and Worker authority tokens must be different.
+When Client auth is `bearer`, the Client and Worker authority tokens must be
+different. Worker authority remains mandatory in both modes.
 
 For a GPU Worker, `nvidia-smi` must already work.
 
@@ -158,12 +163,17 @@ At this point:
 
 Submit a real job.
 
-Set the Control URL and client token locally:
+Set the Control URL locally. For the default
+`client_auth = "bearer"`, also set the Client token:
 
 ```sh
 export ASTRUMWEAVER_CONTROL_URL='http://127.0.0.1:9000'
 export ASTRUMWEAVER_CLIENT_TOKEN='REPLACE_WITH_CLIENT_TOKEN'
 ```
+
+If Control explicitly uses `client_auth = "none"`, do not set a Client token
+for AstrumWeaver. The submit/read/cancel requests below should omit the
+`Authorization` header instead.
 
 Submit:
 
@@ -188,6 +198,12 @@ response="$(
 printf '%s\n' "$response"
 ```
 
+For `client_auth = "none"`, use the same JSON body but omit:
+
+```text
+-H "Authorization: Bearer $ASTRUMWEAVER_CLIENT_TOKEN"
+```
+
 With `jq`:
 
 ```sh
@@ -200,6 +216,12 @@ Inspect the job:
 curl -fsS \
   -H "Authorization: Bearer $ASTRUMWEAVER_CLIENT_TOKEN" \
   "$ASTRUMWEAVER_CONTROL_URL/v1/jobs/$job_id" | jq
+```
+
+For `client_auth = "none"`, the equivalent request is:
+
+```sh
+curl -fsS "$ASTRUMWEAVER_CONTROL_URL/v1/jobs/$job_id" | jq
 ```
 
 After the Worker claims it, the terminal state should become:
