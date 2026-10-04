@@ -15,6 +15,10 @@ from .control.models import (
     WorkerRegistration,
     WorkerState,
 )
+from .serving import (
+    serving_job_binding_from_dict,
+    worker_serving_from_dict,
+)
 from .control.serde import (
     job_result_from_dict,
     job_result_to_dict,
@@ -25,6 +29,26 @@ from .control.serde import (
 )
 
 PROTOCOL_VERSION = "v1"
+SERVING_EXTENSION = "serving-v1"
+
+
+def _extensions(value: Mapping[str, Any]) -> frozenset[str]:
+    raw = value.get("extensions") or ()
+    if isinstance(raw, str) or not isinstance(raw, (list, tuple, set, frozenset)):
+        raise ValueError("extensions must be an array")
+    extensions = frozenset(str(item) for item in raw)
+    unknown = extensions - {SERVING_EXTENSION}
+    if unknown:
+        raise ValueError("unsupported protocol extension")
+    return extensions
+
+
+def _require_serving_extension(value: Mapping[str, Any], *fields: str) -> bool:
+    present = any(value.get(field) is not None for field in fields)
+    enabled = SERVING_EXTENSION in _extensions(value)
+    if present and not enabled:
+        raise ValueError("serving-v1 extension is required")
+    return enabled
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -32,7 +56,7 @@ def _iso(value: datetime | None) -> str | None:
 
 
 def worker_record_to_dict(value: WorkerRecord) -> dict[str, Any]:
-    return {
+    result = {
         "protocol_version": PROTOCOL_VERSION,
         "spec": worker_spec_to_dict(value.spec),
         "max_concurrency": value.max_concurrency,
@@ -42,6 +66,10 @@ def worker_record_to_dict(value: WorkerRecord) -> dict[str, Any]:
         "last_seen_at": value.last_seen_at.isoformat(),
         "metadata": dict(value.metadata),
     }
+    if value.serving is not None:
+        result["extensions"] = [SERVING_EXTENSION]
+        result["serving"] = value.serving.to_dict()
+    return result
 
 
 def job_record_to_dict(value: JobRecord, *, include_payload: bool = True) -> dict[str, Any]:
@@ -67,6 +95,11 @@ def job_record_to_dict(value: JobRecord, *, include_payload: bool = True) -> dic
         "result": None if value.result is None else job_result_to_dict(value.result),
         "error": None if value.error is None else dict(value.error),
     }
+    if value.serving_binding is not None:
+        result["extensions"] = [SERVING_EXTENSION]
+        result["serving_binding"] = value.serving_binding.to_dict()
+        result["deadline_at"] = _iso(value.deadline_at)
+        result["attempt_runtime_instance_epoch"] = value.attempt_runtime_instance_epoch
     if include_payload:
         result["payload"] = dict(value.payload)
     return result
@@ -74,9 +107,12 @@ def job_record_to_dict(value: JobRecord, *, include_payload: bool = True) -> dic
 
 def worker_registration_from_dict(value: Mapping[str, Any]) -> WorkerRegistration:
     data = dict(value)
+    _require_serving_extension(data, "serving")
+    serving = data.get("serving")
     return WorkerRegistration(
         spec=worker_spec_from_dict(data["spec"]),
         max_concurrency=int(data.get("max_concurrency", 1)),
+        serving=None if serving is None else worker_serving_from_dict(serving),
         metadata=data.get("metadata") or {},
     )
 
@@ -84,17 +120,22 @@ def worker_registration_from_dict(value: Mapping[str, Any]) -> WorkerRegistratio
 def worker_heartbeat_from_dict(value: Mapping[str, Any]) -> WorkerHeartbeat:
     data = dict(value)
     state = data.get("state")
+    _require_serving_extension(data, "runtime_instance_epoch")
     return WorkerHeartbeat(
         state=None if state is None else WorkerState(str(state)),
         active_job_id=data.get("active_job_id"),
         lease_token=data.get("lease_token"),
+        runtime_instance_epoch=data.get("runtime_instance_epoch"),
         metadata=data.get("metadata") or {},
     )
 
 
 def job_submission_from_dict(value: Mapping[str, Any]) -> JobSubmission:
     data = dict(value)
+    _require_serving_extension(data, "serving_binding", "deadline_at")
     available_at = data.get("available_at")
+    deadline_at = data.get("deadline_at")
+    serving_binding = data.get("serving_binding")
     return JobSubmission(
         capability=str(data["capability"]),
         payload=data.get("payload") or {},
@@ -103,6 +144,11 @@ def job_submission_from_dict(value: Mapping[str, Any]) -> JobSubmission:
         max_attempts=int(data.get("max_attempts", 3)),
         idempotency_key=data.get("idempotency_key"),
         available_at=None if available_at is None else datetime.fromisoformat(str(available_at)),
+        serving_binding=(
+            None if serving_binding is None
+            else serving_job_binding_from_dict(serving_binding)
+        ),
+        deadline_at=None if deadline_at is None else datetime.fromisoformat(str(deadline_at)),
     )
 
 
@@ -116,12 +162,17 @@ def job_request_from_record(value: JobRecord):
         metadata={
             "attempt": value.attempts,
             "lease_expires_at": _iso(value.lease_expires_at),
+            "serving_binding": (
+                None if value.serving_binding is None else value.serving_binding.to_dict()
+            ),
+            "runtime_instance_epoch": value.attempt_runtime_instance_epoch,
         },
     )
 
 
 __all__ = [
     "PROTOCOL_VERSION",
+    "SERVING_EXTENSION",
     "job_record_to_dict",
     "job_request_from_record",
     "job_submission_from_dict",
