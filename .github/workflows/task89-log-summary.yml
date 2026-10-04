@@ -15,10 +15,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh api repos/upiscium/AstrumWeaver/actions/jobs/111443271137/logs > job.log
+          gh api --allow-escape-sequences repos/upiscium/AstrumWeaver/actions/jobs/111443271137/logs > job.log
           python3 - <<'PY'
           from pathlib import Path
+          import re
           text = Path('job.log').read_text(errors='replace')
+          text = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', text)
           start = text.rfind('##[group]Run nix run')
           if start < 0:
               raise SystemExit('evaluation log anchor not found')
