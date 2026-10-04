@@ -1,0 +1,143 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 191b13fc9b59c28d39404c00db7969114da77c68..95dd963bb4b9b3d975ac93c917df484c19aaf6bd 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -47,2 +47,4 @@ jobs:
+       - name: Check flake
+         run: nix flake check --no-update-lock-file --print-build-logs
++      - name: Evaluate actual generated NixOS first-run modules
++        run: nix run --no-update-lock-file .#check-generated-nixos
+ diff --git a/.github/workflows/task89-snapshot.yml b/.github/workflows/task89-snapshot.yml
+deleted file mode 100644
+index 097a124ceb0f300f294df3f532b6dc5248b1baee..0000000000000000000000000000000000000000
+--- a/.github/workflows/task89-snapshot.yml
++++ /dev/null
+@@ -1,28 +0,0 @@
+-name: Task 89 source snapshot
+-on:
+-  push:
+-    branches: [fix/89-generated-nixos-modules]
+-    paths: [.github/workflows/task89-snapshot.yml]
+-permissions:
+-  contents: read
+-jobs:
+-  snapshot:
+-    if: github.repository == 'upiscium/AstrumWeaver'
+-    runs-on: ubuntu-latest
+-    steps:
+-      - uses: actions/checkout@v6
+-        with:
+-          persist-credentials: false
+-      - name: Archive exact task source
+-        run: |
+-          git archive --format=tar HEAD > source.tar
+-          git rev-parse HEAD > source.commit
+-          git rev-parse HEAD^{tree} > source.tree
+-      - uses: actions/upload-artifact@v4
+-        with:
+-          name: task89-source
+-          path: |
+-            source.tar
+-            source.commit
+-            source.tree
+-          retention-days: 1
+diff --git a/docs/nix.md b/docs/nix.md
+index 1a89792bff2b16bc1fdf3e2a5ad8d7260abe370d..ca9ed878914cbdb2a93c13ac5287e905ebe14ed9 100644
+--- a/docs/nix.md
++++ b/docs/nix.md
+@@ -353,2 +353,49 @@ sudo astrumweaver-gpu-mode status
+ 
+ `borrowable.drainTimeoutSeconds = 0` is the default and means wait indefinitely for the active job rather than forcing it. See [Borrowable GPU Worker](borrowable-worker.md) for the complete handoff contract.
++
++## Generated first-run module scope and validation
++
++The first-run TUI emits a module with the explicit argument pattern
++`{ config, pkgs, ... }:`. Runtime package input is a **simple attribute path
++rooted in `pkgs`**, for example `pkgs.ollama`, `pkgs.vllm`, or
++`pkgs.llama-cpp`. Each path component must be a non-keyword Nix identifier.
++The TUI checks this grammar before review/write; Nix checks that the attribute
++exists and denotes a package in the operator's package set.
++
++An unbound root such as `myPkgs` or `inputs` is rejected. For a custom runtime,
++expose the package through an ordinary `nixpkgs.overlays` entry and select its
++`pkgs.<name>` path (nested paths are allowed). The generated snippet does not
++import an arbitrary flake or discover custom lexical variables from the caller.
++General expressions, function calls and interpolated attribute names are not
++accepted. Literal `${...}` in model/configuration data stays literal; it is not
++Nix code. Secrets remain in the separately protected environment files, never
++in the generated module or Nix store.
++
++A generated snippet must be imported together with the AstrumWeaver NixOS
++module. It is not a complete host configuration: retain the documented host,
++network, PostgreSQL, NVIDIA and GPU-exposure prerequisites and your normal
++`nixos-rebuild` review/apply boundary.
++
++The repository's generated-module regression runs with:
++
++```sh
++nix run --no-update-lock-file .#check-generated-nixos
++```
++
++Run this on a checkout of the candidate revision. The app supplies its pinned
++Python dependencies and Nix; the evaluator uses this checkout's locked nixpkgs
++and AstrumWeaver modules, without updating the lock file. It writes disposable
++fixtures through the **production first-run renderer**, then evaluates the
++actual generated files for Control (default bearer and explicit none), smoke
++CPU/GPU Worker, RuntimeProvider Worker, and combined roles. It forces relevant
++module assertions, service commands/environment-file bindings, runtime demand
++and metadata, and package paths, including nested overlay references and
++literal interpolation-like input. A negative control removes only the `pkgs`
++argument from an emitted runtime module and must fail with an undefined
++variable error.
++
++CI runs this as an additional Nix step alongside `nix flake check`. No service
++is started, no host configuration is applied, and model/driver/runtime packages
++are not built or executed by the evaluation step. Import-from-derivation is
++disabled. This is configuration-evaluation evidence, **not** GPU/provider
++hardware acceptance or the operator-led documentation-only Real Smoke gate.
+diff --git a/docs/setup-tui.md b/docs/setup-tui.md
+index 0c66755d2b4ac874776b95da7fe042d0e4e9e587..b4750426b705e57dbbb0a39cbc35a190c2d9cac6 100644
+--- a/docs/setup-tui.md
++++ b/docs/setup-tui.md
+@@ -319,2 +319,12 @@ inventing a Nix package expression for the selected runtime. Configure the
+ reviewed `services.astrumweaver.worker.runtime` block declaratively after the
+ base snippet, or use runtime mode for planning.
++
++### NixOS runtime package input
++
++For first-run RuntimeProvider setup on NixOS, enter a package attribute path
++rooted in `pkgs`, such as `pkgs.ollama`, `pkgs.vllm`, or `pkgs.llama-cpp`.
++Unknown roots (including `myPkgs`/`inputs`) and general Nix expressions are
++rejected before the review/write confirmation. Custom packages can be exposed
++under `pkgs` using an operator-maintained nixpkgs overlay. See
++[generated module scope and validation](nix.md#generated-first-run-module-scope-and-validation)
++for the supported grammar and the generated-module regression command.
+diff --git a/flake.nix b/flake.nix
+index 6ae20c8262807d49278a1fab68086599ac8dc71d..686ad1567679d5b08a25444e0421f80f709d1530 100644
+--- a/flake.nix
++++ b/flake.nix
+@@ -22,4 +22,14 @@
+         inherit astrumweaver integration;
+       };
++      generatedNixosCheck = pkgs.writeShellApplication {
++        name = "check-generated-nixos";
++        runtimeInputs = [
++          (pkgs.python312.withPackages (_: [ astrumweaver ]))
++          pkgs.nix
++        ];
++        text = ''
++          exec python3 ${self}/tools/check_generated_nixos.py --source ${self} "$@"
++        '';
++      };
+       fakeNvidia = pkgs.writeShellScriptBin "nvidia-smi" ''
+         if [ "$1" = "--query-gpu=uuid" ]; then
+@@ -174,4 +184,9 @@
+       };
+ 
++      apps.${system}.check-generated-nixos = {
++        type = "app";
++        program = "${generatedNixosCheck}/bin/check-generated-nixos";
++      };
++
+       nixosConfigurations.smoke = moduleSmoke;
+ 
