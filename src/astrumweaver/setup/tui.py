@@ -599,6 +599,19 @@ def _render_preview(io: TuiIO, plan, driver: SetupActionDriver) -> bool:
             f"  {action.action_id} {action.state.value}: "
             f"{action.description}{detail}"
         )
+    if (
+        plan.deployment_path is DeploymentPath.SYSTEMD
+        and plan.provider_id == "llama-cpp"
+        and any(
+            action.kind is SetupActionKind.ENSURE_PACKAGE
+            and action.state is not SetupActionState.SATISFIED
+            for action in preview.actions
+        )
+    ):
+        io.write(
+            "  RuntimeBackend recovery: "
+            "docs/installation.md#runtimebackend-nix-profile"
+        )
     return not preview.blocked
 
 
