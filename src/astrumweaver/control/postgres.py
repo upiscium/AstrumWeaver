@@ -1112,6 +1112,12 @@ class PostgresControlRepository:
                         started_at = CASE WHEN %s THEN NULL ELSE started_at END,
                         finished_at = CASE WHEN %s THEN NULL ELSE %s END,
                         available_at = CASE WHEN %s THEN %s ELSE available_at END,
+                        claimed_deployment_revision = CASE
+                            WHEN %s THEN NULL ELSE claimed_deployment_revision END,
+                        claimed_serving_contract_revision = CASE
+                            WHEN %s THEN NULL ELSE claimed_serving_contract_revision END,
+                        claimed_runtime_instance_epoch = CASE
+                            WHEN %s THEN NULL ELSE claimed_runtime_instance_epoch END,
                         updated_at = %s
                     WHERE id = %s
                     RETURNING *
@@ -1129,6 +1135,9 @@ class PostgresControlRepository:
                         timestamp,
                         should_retry,
                         timestamp,
+                        should_retry,
+                        should_retry,
+                        should_retry,
                         timestamp,
                         row["id"],
                     ),
