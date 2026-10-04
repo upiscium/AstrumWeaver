@@ -905,6 +905,9 @@ class PostgresControlRepository:
         expires_at = row.get("lease_expires_at")
         if expires_at is None or expires_at <= now:
             raise ConflictError(f"job {row['id']} lease has expired")
+        deadline_at = row.get("deadline_at")
+        if deadline_at is not None and deadline_at <= now:
+            raise ConflictError(f"job {row['id']} deadline has expired")
         claimed_epoch = row.get("claimed_runtime_instance_epoch")
         if claimed_epoch is not None and runtime_instance_epoch != claimed_epoch:
             raise ConflictError(f"job {row['id']} runtime instance is stale")
@@ -999,7 +1002,11 @@ class PostgresControlRepository:
                 runtime_instance_epoch=runtime_instance_epoch,
                 now=timestamp,
             )
-            should_retry = retryable and int(row["attempts"]) < int(row["max_attempts"])
+            should_retry = (
+                retryable
+                and int(row["attempts"]) < int(row["max_attempts"])
+                and (row.get("deadline_at") is None or row["deadline_at"] > timestamp)
+            )
             status = JobStatus.QUEUED if should_retry else JobStatus.FAILED
             updated = connection.execute(
                 """
@@ -1099,7 +1106,10 @@ class PostgresControlRepository:
                 if row is None:
                     return recovered
 
-                should_retry = int(row["attempts"]) < int(row["max_attempts"])
+                should_retry = (
+                    int(row["attempts"]) < int(row["max_attempts"])
+                    and (row.get("deadline_at") is None or row["deadline_at"] > timestamp)
+                )
                 status = JobStatus.QUEUED if should_retry else JobStatus.FAILED
                 updated = connection.execute(
                     """
