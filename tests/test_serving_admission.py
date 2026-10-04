@@ -459,7 +459,7 @@ async def test_serving_admission_http_errors_are_explicit_and_bounded():
         claimed = repository.claim_next_job(
             "worker-a",
             runtime_instance_epoch=advertisement.runtime_instance_epoch,
-            now=now,
+            now=utc_now(),
         )
         assert claimed is not None
 
