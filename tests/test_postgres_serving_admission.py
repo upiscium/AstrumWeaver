@@ -291,3 +291,47 @@ def test_postgres_deadline_cancel_recovery_race_has_one_terminal_owner():
             runtime_instance_epoch=serving.runtime_instance_epoch,
             now=later,
         )
+
+def test_postgres_serving_claim_skips_unbound_covered_capability():
+    assert DATABASE_URL is not None
+    now = utc_now()
+    binding, serving = serving_values()
+    repo = PostgresControlRepository(DATABASE_URL)
+    repo.register_worker(worker("serving-worker", serving), now=now)
+
+    legacy = repo.submit_job(
+        JobSubmission(
+            capability="llm.chat",
+            payload={"legacy": True},
+            priority=100,
+        ),
+        now=now,
+    )
+    bound = repo.submit_job(
+        replace(submission(binding, now), priority=10),
+        now=now,
+    )
+
+    claimed = repo.claim_next_job(
+        "serving-worker",
+        runtime_instance_epoch=serving.runtime_instance_epoch,
+        now=now,
+    )
+    assert claimed is not None
+    assert claimed.job_id == bound.job_id
+    assert repo.get_job(legacy.job_id).status is JobStatus.QUEUED
+
+    legacy_worker = WorkerRegistration(
+        spec=WorkerSpec(
+            worker_id="legacy-worker",
+            worker_class="cpu-test",
+            resources=ResourceShape(),
+            capabilities=frozenset({"llm.chat"}),
+        )
+    )
+    repo.register_worker(legacy_worker, now=now)
+    legacy_claim = repo.claim_next_job("legacy-worker", now=now)
+    assert legacy_claim is not None
+    assert legacy_claim.job_id == legacy.job_id
+    assert legacy_claim.serving_binding is None
+
