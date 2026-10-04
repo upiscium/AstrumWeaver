@@ -17,7 +17,7 @@ from typing import Any
 from ..contracts import WorkerSpec
 from ..control.models import WorkerState
 from ..control.serde import worker_spec_from_dict
-from ..transport import PROTOCOL_VERSION
+from ..transport import PROTOCOL_VERSION, SERVING_EXTENSION
 from ..execution import JobExecutor, JobResult
 from ..serving import (
     ServingJobBinding,
@@ -268,6 +268,10 @@ class WorkerRuntime:
                 if raw_serving is None
                 else WorkerServingAdvertisement.from_dict(raw_serving)
             )
+            if acknowledged_serving is not None and SERVING_EXTENSION not in set(
+                record.get("extensions") or ()
+            ):
+                raise ValueError("Worker acknowledgement lacks serving extension")
             if acknowledged_serving != self.serving:
                 raise ValueError("Worker serving identity changed")
         except (KeyError, TypeError, ValueError) as exc:
