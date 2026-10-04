@@ -13,6 +13,7 @@ import httpx
 from ..control.models import WorkerState
 from ..control.serde import job_result_to_dict, worker_spec_to_dict
 from ..execution import JobRequest, JobResult
+from ..serving import WorkerServingAdvertisement
 from ..transport import PROTOCOL_VERSION
 
 
@@ -93,6 +94,7 @@ class ControlClient:
         spec,
         max_concurrency: int,
         metadata: Mapping[str, Any] | None = None,
+        serving: WorkerServingAdvertisement | None = None,
     ) -> dict[str, Any]:
         response = await self._request(
             "POST",
@@ -102,6 +104,7 @@ class ControlClient:
                 "spec": worker_spec_to_dict(spec),
                 "max_concurrency": max_concurrency,
                 "metadata": dict(metadata or {}),
+                "serving": None if serving is None else serving.to_dict(),
             },
         )
         return self._object(response)
@@ -113,6 +116,7 @@ class ControlClient:
         active_job_id: str | None = None,
         lease_token: str | None = None,
         state: WorkerState | None = None,
+        runtime_instance_epoch: str | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         response = await self._request(
@@ -123,6 +127,7 @@ class ControlClient:
                 "active_job_id": active_job_id,
                 "lease_token": lease_token,
                 "state": None if state is None else state.value,
+                "runtime_instance_epoch": runtime_instance_epoch,
                 "metadata": dict(metadata or {}),
             },
         )
@@ -152,6 +157,11 @@ class ControlClient:
                 metadata={
                     "attempt": int(body.get("attempts", 0)),
                     "lease_expires_at": body.get("lease_expires_at"),
+                    "deadline_at": body.get("deadline_at"),
+                    "serving": body.get("serving"),
+                    "claimed_deployment_revision": body.get("claimed_deployment_revision"),
+                    "claimed_serving_contract_revision": body.get("claimed_serving_contract_revision"),
+                    "claimed_runtime_instance_epoch": body.get("claimed_runtime_instance_epoch"),
                 },
             ),
             lease_token=lease_token,
@@ -171,6 +181,8 @@ class ControlClient:
         job_id: str,
         lease_token: str,
         result: JobResult,
+        *,
+        runtime_instance_epoch: str | None = None,
     ) -> dict[str, Any]:
         response = await self._request(
             "POST",
@@ -178,6 +190,7 @@ class ControlClient:
             json={
                 "protocol_version": PROTOCOL_VERSION,
                 "lease_token": lease_token,
+                "runtime_instance_epoch": runtime_instance_epoch,
                 "result": job_result_to_dict(result),
             },
         )
@@ -191,6 +204,7 @@ class ControlClient:
         *,
         error: str | Mapping[str, Any],
         retryable: bool,
+        runtime_instance_epoch: str | None = None,
     ) -> dict[str, Any]:
         response = await self._request(
             "POST",
@@ -198,6 +212,7 @@ class ControlClient:
             json={
                 "protocol_version": PROTOCOL_VERSION,
                 "lease_token": lease_token,
+                "runtime_instance_epoch": runtime_instance_epoch,
                 "error": dict(error) if isinstance(error, Mapping) else error,
                 "retryable": retryable,
             },
