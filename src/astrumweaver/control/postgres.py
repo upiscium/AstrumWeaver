@@ -15,7 +15,7 @@ from ..scheduling import worker_matches
 from ..serving import (
     ServingJobBinding,
     WorkerServingAdvertisement,
-    worker_serving_matches,
+    worker_serving_accepts_job,
 )
 from .migrate import required_migration_names
 from .models import (
@@ -842,7 +842,7 @@ class PostgresControlRepository:
             if (
                 selected.capability not in locked_worker.spec.capabilities
                 or not worker_matches(locked_worker.spec, selected.requirements)
-                or not worker_serving_matches(locked_worker.serving, selected.serving)
+                or not worker_serving_accepts_job(locked_worker.serving, selected.capability, selected.serving)
             ):
                 return None
 
