@@ -78,6 +78,14 @@ A serving-bound Job snapshots profile, deployment, contract, capability and
 operation-schema identity. It also requires `deadline_at`. The binding is
 immutable for that Job even if operator profile configuration later changes.
 
+The generic Control API does not resolve a mutable profile name in this slice.
+It accepts an already-resolved binding from a trusted workload adapter and
+persists that identity. Control can independently enforce deployment/contract
+matching and attempt fencing, but it does not reconstruct profile semantics from
+the profile digest. The client-facing profile-name registry/resolution path
+belongs to the #94 gateway; embedding/decision adapters apply the same boundary
+in #95/#96.
+
 Admission is intentionally bounded:
 
 - a deadline already reached is rejected;
@@ -102,9 +110,16 @@ terminal and records `deadline-exceeded`. Queued expired Jobs are failed by
 the normal maintenance loop. Streaming-specific “no retry after visible output”
 semantics remain #94.
 
-Legacy v1 Jobs and Workers omit the extension and retain their existing
-behavior. New serving fields without `serving-v1`, unknown protocol
-extensions, malformed epochs and stale epochs fail closed.
+Legacy v1 remains available through Workers that do not advertise serving.
+On a serving-enabled Worker, any capability named in its serving advertisement
+requires an exact serving binding; an unbound legacy Job for that capability is
+not eligible for claim. Unrelated legacy capabilities on the same Worker remain
+eligible. This prevents the generic Job surface from bypassing deployment,
+contract and deadline binding merely by omitting the extension.
+
+New serving fields without `serving-v1`, unknown protocol extensions,
+malformed epochs and stale epochs fail closed on both Control requests and
+Worker-side Control responses.
 
 The generic WorkerRuntime can carry and locally recheck a
 `WorkerServingAdvertisement`. The production daemon optionally reads a
