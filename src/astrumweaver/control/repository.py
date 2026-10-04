@@ -59,6 +59,38 @@ class ControlRepository(Protocol):
         now: datetime | None = None,
     ) -> WorkerRecord: ...
 
+    def expire_deadline_jobs(
+        self, *, now: datetime | None = None
+    ) -> list[JobRecord]:
+        timestamp = _aware(now)
+        expired: list[JobRecord] = []
+        with self._lock:
+            for job_id, job in list(self._jobs.items()):
+                if (
+                    job.status not in {JobStatus.QUEUED, JobStatus.RUNNING}
+                    or job.deadline_at is None
+                    or job.deadline_at > timestamp
+                ):
+                    continue
+                if job.status is JobStatus.RUNNING:
+                    self._release_worker_capacity(job.assigned_worker_id)
+                updated = job.with_updates(
+                    status=JobStatus.FAILED,
+                    error={
+                        "type": "deadline_expired",
+                        "message": "job deadline expired",
+                        "retryable": False,
+                    },
+                    assigned_worker_id=None,
+                    lease_token=None,
+                    lease_expires_at=None,
+                    finished_at=timestamp,
+                    updated_at=timestamp,
+                )
+                self._jobs[job_id] = updated
+                expired.append(updated)
+        return expired
+
     def submit_job(
         self, submission: JobSubmission, *, now: datetime | None = None
     ) -> JobRecord: ...
@@ -484,6 +516,7 @@ class InMemoryControlRepository:
         *,
         worker_id: str,
         lease_token: str,
+        runtime_instance_epoch: str | None = None,
         now: datetime | None = None,
     ) -> JobRecord:
         timestamp = _aware(now)
@@ -492,7 +525,11 @@ class InMemoryControlRepository:
         with self._lock:
             job = self.get_job(job_id)
             self._assert_running(
-                job, worker_id=worker_id, lease_token=lease_token, now=timestamp
+                job,
+                worker_id=worker_id,
+                lease_token=lease_token,
+                runtime_instance_epoch=runtime_instance_epoch,
+                now=timestamp,
             )
             completed = job.with_updates(
                 status=JobStatus.SUCCEEDED,
@@ -516,13 +553,18 @@ class InMemoryControlRepository:
         retryable: bool,
         worker_id: str,
         lease_token: str,
+        runtime_instance_epoch: str | None = None,
         now: datetime | None = None,
     ) -> JobRecord:
         timestamp = _aware(now)
         with self._lock:
             job = self.get_job(job_id)
             self._assert_running(
-                job, worker_id=worker_id, lease_token=lease_token, now=timestamp
+                job,
+                worker_id=worker_id,
+                lease_token=lease_token,
+                runtime_instance_epoch=runtime_instance_epoch,
+                now=timestamp,
             )
             should_retry = retryable and job.attempts < job.max_attempts
             failed = job.with_updates(
@@ -534,6 +576,15 @@ class InMemoryControlRepository:
                 started_at=None if should_retry else job.started_at,
                 finished_at=None if should_retry else timestamp,
                 available_at=timestamp if should_retry else job.available_at,
+                claimed_deployment_revision=(
+                    None if should_retry else job.claimed_deployment_revision
+                ),
+                claimed_serving_contract_revision=(
+                    None if should_retry else job.claimed_serving_contract_revision
+                ),
+                claimed_runtime_instance_epoch=(
+                    None if should_retry else job.claimed_runtime_instance_epoch
+                ),
                 updated_at=timestamp,
             )
             self._jobs[job_id] = failed
@@ -592,6 +643,15 @@ class InMemoryControlRepository:
                     started_at=None if should_retry else job.started_at,
                     finished_at=None if should_retry else timestamp,
                     available_at=timestamp if should_retry else job.available_at,
+                    claimed_deployment_revision=(
+                        None if should_retry else job.claimed_deployment_revision
+                    ),
+                    claimed_serving_contract_revision=(
+                        None if should_retry else job.claimed_serving_contract_revision
+                    ),
+                    claimed_runtime_instance_epoch=(
+                        None if should_retry else job.claimed_runtime_instance_epoch
+                    ),
                     updated_at=timestamp,
                 )
                 self._jobs[job_id] = updated
