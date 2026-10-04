@@ -48,6 +48,7 @@ from .contracts import (
     DeploymentPath,
     SetupActionKind,
     SetupActionResult,
+    SetupActionState,
     SetupApplyResult,
     SetupApproval,
     SetupHostSnapshot,
