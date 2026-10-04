@@ -1,0 +1,34 @@
+name: Task 89 bounded evaluation diagnostics
+on:
+  push:
+    branches: [fix/89-generated-nixos-modules]
+    paths: [.github/workflows/task89-log-summary.yml]
+permissions:
+  actions: read
+  contents: read
+jobs:
+  diagnostics:
+    if: github.repository == 'upiscium/AstrumWeaver'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read completed evaluation log only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api repos/upiscium/AstrumWeaver/actions/jobs/111443271137/logs > job.log
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path('job.log').read_text(errors='replace')
+          start = text.rfind('##[group]Run nix run')
+          if start < 0:
+              raise SystemExit('evaluation log anchor not found')
+          end = text.find('Post job cleanup.', start)
+          excerpt = text[start:end if end >= 0 else None]
+          Path('evaluation-error.txt').write_text(excerpt[-24000:])
+          print(excerpt[-10000:])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: task89-evaluation-diagnostics
+          path: evaluation-error.txt
+          retention-days: 1
