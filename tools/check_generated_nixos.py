@@ -1,0 +1,203 @@
+"""Evaluate production-generated first-run NixOS modules, without starting services.
+
+Run via `nix run .#check-generated-nixos`. A normal Python environment can use
+--generate-only to inspect the exact fixtures, but that is NOT Nix acceptance.
+"""
+from __future__ import annotations
+
+import argparse
+from dataclasses import replace
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+from typing import Any
+
+
+def generate_cases(directory: Path) -> list[dict[str, Any]]:
+    from astrumweaver import ResourceShape, WorkerSpec
+    from astrumweaver.control.auth import ClientAuthMode
+    from astrumweaver.setup.first_run import (
+        ControlBootstrapSpec, FirstRunExecutionMode, FirstRunRole,
+        render_nixos_bootstrap_snippet,
+    )
+
+    directory.mkdir(parents=True, exist_ok=True)
+    literal = '${not_a_nix_binding} / café "quoted" \\path\nline'
+    gpu = WorkerSpec(
+        worker_id="nix-eval-worker", worker_class="test",
+        resources=ResourceShape(gpu_count=1, total_vram_mb=16384, max_single_gpu_vram_mb=16384),
+        gpu_uuids=("GPU-eval-only",), capabilities=frozenset({"debug.echo"}),
+    )
+    cpu = replace(gpu, resources=ResourceShape(), gpu_uuids=())
+    rows = [
+        ("control-default", "control", "bearer", None, None, gpu),
+        ("control-none", "control", "none", None, None, gpu),
+        ("smoke-gpu", "worker", "bearer", None, None, gpu),
+        ("smoke-cpu", "worker", "bearer", None, None, cpu),
+        ("combined-smoke-none", "both", "none", None, None, gpu),
+        ("runtime-ollama", "worker", "bearer", "ollama", "pkgs.ollama", gpu),
+        ("runtime-vllm", "worker", "bearer", "vllm", "pkgs.vllm", gpu),
+        ("runtime-llama-cpp", "worker", "bearer", "llama-cpp", "pkgs.llama-cpp", gpu),
+        ("combined-runtime-none", "both", "none", "ollama", "pkgs.ollama", gpu),
+        ("combined-vllm-none", "both", "none", "vllm", "pkgs.vllm", gpu),
+        # The evaluator exposes a real Ollama derivation at this test overlay
+        # path. This checks nested pkgs references, not a free myPkgs binding.
+        ("runtime-overlay", "worker", "bearer", "ollama", "pkgs.astrumweaverTestPackages.runtime", gpu),
+        ("literal-data", "both", "none", "ollama", "pkgs.ollama", gpu),
+    ]
+    cases = []
+    for name, role_name, auth, provider, package, spec in rows:
+        role = FirstRunRole(role_name)
+        control = ControlBootstrapSpec() if name == "control-default" else ControlBootstrapSpec(client_auth=ClientAuthMode(auth))
+        is_runtime = provider is not None
+        if is_runtime:
+            spec = replace(spec, capabilities=frozenset({"llm.chat", "text.generate"}))
+        control_env = "/etc/astrumweaver/control.env"
+        worker_env = "/etc/astrumweaver/worker.env"
+        model = {
+            "model_ref": "/srv/models/evaluation-only",
+            "model_format": {"ollama": "ollama", "vllm": "safetensors", "llama-cpp": "gguf"}.get(provider, "ollama"),
+            "topology": "dense", "estimated_size_mb": 400,
+            "metadata": {"evaluation": True},
+        }
+        provider_config = {"evaluation_only": True}
+        demand_metadata = {"test": name}
+        if name == "literal-data":
+            spec = replace(spec, worker_id="worker-${not_a_nix_binding}")
+            control_env = "/etc/${not_a_nix_binding}/control.env"
+            worker_env = "/etc/${not_a_nix_binding}/worker.env"
+            model["model_ref"] = "/srv/${not_a_nix_binding}/model"
+            model["metadata"] = {"literal": literal}
+            provider_config = {"nested": {"literal": literal}}
+            demand_metadata = {"literal": literal}
+        demand = {
+            "model": model, "residency_policy": "prefer_vram", "gpu_topology": "single_gpu",
+            "min_gpu_count": 1, "min_total_vram_mb": 500, "min_single_gpu_vram_mb": 400,
+            "min_host_ram_mb": 512, "preferred_host_ram_mb": 1024, "metadata": demand_metadata,
+        }
+        deployment = {"provider_id": provider, "provider_config": provider_config, "demand": demand} if is_runtime else None
+        snippet = render_nixos_bootstrap_snippet(
+            role=role, control=control, worker=spec, control_url="http://control.example.invalid:9000",
+            execution_mode=FirstRunExecutionMode.RUNTIME if is_runtime else FirstRunExecutionMode.SMOKE,
+            control_env_path=control_env, worker_env_path=worker_env,
+            runtime_deployment=deployment, runtime_package_expression=package,
+        )
+        module = directory / f"{name}.nix"
+        module.write_text(snippet, encoding="utf-8")
+        expected: dict[str, Any] = {"control": None, "worker": None}
+        if role_name != "worker":
+            expected["control"] = {
+                "clientAuth": auth, "environmentFile": control_env, "migrateOnStart": True,
+                "settings": {"control": {
+                    "host": control.bind_host, "port": control.port,
+                    "worker_ttl_seconds": control.worker_ttl_seconds, "lease_seconds": control.lease_seconds,
+                    "maintenance_interval_seconds": control.maintenance_interval_seconds, "access_log": False,
+                }},
+            }
+        if role_name != "control":
+            expected["worker"] = {
+                "workerId": spec.worker_id, "workerClass": spec.worker_class,
+                "controlUrl": "http://control.example.invalid:9000",
+                "capabilities": sorted(spec.capabilities), "gpuUuids": list(spec.gpu_uuids),
+                "totalVramMb": spec.resources.total_vram_mb,
+                "maxSingleGpuVramMb": spec.resources.max_single_gpu_vram_mb,
+                "environmentFile": worker_env,
+                "executorFactory": "" if is_runtime else "astrumweaver.executors.structured_echo:create_executor",
+                "runtime": None if not is_runtime else {
+                    "provider": provider, "modelRef": model["model_ref"], "modelFormat": model["model_format"],
+                    "modelTopology": "dense", "estimatedModelSizeMb": 400, "residencyPolicy": "prefer_vram",
+                    "gpuTopology": "single_gpu", "minGpuCount": 1, "minTotalVramMb": 500,
+                    "minSingleGpuVramMb": 400, "minHostRamMb": 512, "preferredHostRamMb": 1024,
+                    "providerConfig": provider_config, "modelMetadata": model["metadata"], "demandMetadata": demand_metadata,
+                },
+            }
+        cases.append({"name": name, "module": str(module.resolve()), "packagePath": [] if package is None else package.split(".")[1:], "expected": expected})
+    (directory / "manifest.json").write_text(json.dumps(cases, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return cases
+
+
+def evaluate(source: Path, manifest: Path) -> subprocess.CompletedProcess[str]:
+    # `nix eval --file` evaluates the file as a value and does not apply
+    # `--argstr` to a top-level function. Build one explicit expression so
+    # the production evaluator receives both reviewed arguments before JSON
+    # conversion. Paths are encoded as Nix strings and the evaluator file is
+    # converted back to a path only for import.
+    evaluator = source / "nix/tests/generated-first-run.nix"
+    expression = (
+        "let check = import (builtins.toPath "
+        + json.dumps(str(evaluator))
+        + "); in check { source = "
+        + json.dumps(str(source))
+        + "; manifest = "
+        + json.dumps(str(manifest))
+        + "; }"
+    )
+    # No import-from-derivation and no runtime/GPU package realization. Only
+    # Nix expressions and selected service/config/package values are evaluated.
+    return subprocess.run(
+        ["nix", "eval", "--impure", "--json", "--no-update-lock-file",
+         "--option", "allow-import-from-derivation", "false",
+         "--expr", expression],
+        capture_output=True, text=True, timeout=240, check=False,
+    )
+
+
+def check(source: Path, directory: Path) -> None:
+    cases = generate_cases(directory)
+    result = evaluate(source, directory / "manifest.json")
+    if result.returncode != 0:
+        raise RuntimeError("generated NixOS evaluation failed:\n" + result.stderr)
+    actual = json.loads(result.stdout)
+    if len(actual) != len(cases):
+        raise RuntimeError("generated evaluation matrix was not fully evaluated")
+    for case, row in zip(cases, actual, strict=True):
+        if row["name"] != case["name"] or row["actual"] != case["expected"]:
+            raise RuntimeError(f"generated values differ: {case['name']}\n{json.dumps(row, ensure_ascii=False)}")
+        if not row["serviceContracts"] or not row["packageMatches"]:
+            raise RuntimeError(f"service/package contract failed: {case['name']}")
+        print(f"{case['name']}=PASS", flush=True)
+
+    # Mutate only the real generated module's argument binding, exactly
+    # recreating F5. All other values and the evaluator are unchanged.
+    runtime_case = next(case for case in cases if case["name"] == "runtime-ollama")
+    module = Path(runtime_case["module"])
+    corrected = module.read_text(encoding="utf-8")
+    if not corrected.startswith("{ config, pkgs, ... }:"):
+        raise RuntimeError("negative-control binding anchor changed")
+    module.write_text(corrected.replace("{ config, pkgs, ... }:", "{ config, ... }:", 1), encoding="utf-8")
+    negative_manifest = directory / "negative.json"
+    negative_manifest.write_text(json.dumps([runtime_case]), encoding="utf-8")
+    try:
+        negative = evaluate(source, negative_manifest)
+        if negative.returncode == 0 or "undefined variable" not in negative.stderr or "pkgs" not in negative.stderr:
+            raise RuntimeError("unbound-pkgs negative control did not fail as expected:\n" + negative.stderr)
+    finally:
+        module.write_text(corrected, encoding="utf-8")
+    print("unbound-pkgs-negative-control=PASS", flush=True)
+    print(f"generated_nixos_evaluation=PASS({len(cases)} cases)", flush=True)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument("--generate-only", type=Path, help="write fixtures only; NOT evaluation acceptance")
+    args = parser.parse_args()
+    source = args.source.resolve()
+    sys.path.insert(0, str(source / "src"))
+    try:
+        if args.generate_only is not None:
+            cases = generate_cases(args.generate_only.resolve())
+            print(f"generated_fixtures={len(cases)}; nix_evaluation=NOT_RUN")
+        else:
+            with tempfile.TemporaryDirectory(prefix="astrumweaver-nixos-eval-") as directory:
+                check(source, Path(directory))
+    except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

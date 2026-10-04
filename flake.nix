@@ -21,6 +21,16 @@
       installer = pkgs.callPackage ./nix/installer-support.nix {
         inherit astrumweaver integration;
       };
+      generatedNixosCheck = pkgs.writeShellApplication {
+        name = "check-generated-nixos";
+        runtimeInputs = [
+          (pkgs.python312.withPackages (_: [ astrumweaver ]))
+          pkgs.nix
+        ];
+        text = ''
+          exec python3 ${self}/tools/check_generated_nixos.py --source ${self} "$@"
+        '';
+      };
       fakeNvidia = pkgs.writeShellScriptBin "nvidia-smi" ''
         if [ "$1" = "--query-gpu=uuid" ]; then
           echo GPU-example-smoke
@@ -171,6 +181,11 @@
         control = import ./nix/modules/control.nix;
         worker = import ./nix/modules/worker.nix;
         default = import ./nix/modules/default.nix;
+      };
+
+      apps.${system}.check-generated-nixos = {
+        type = "app";
+        program = "${generatedNixosCheck}/bin/check-generated-nixos";
       };
 
       nixosConfigurations.smoke = moduleSmoke;

@@ -310,11 +310,22 @@ dependency.
 ## NixOS first-run boundary
 
 On NixOS, first-run mode does not rewrite an existing flake or
-`configuration.nix`. For smoke-mode Control/Worker bootstrap it can render a
-deterministic module snippet for review/import while preserving
-`nixos-rebuild` as the operator-owned mutation boundary.
+`configuration.nix`. It renders a deterministic module snippet for Control,
+smoke Worker, RuntimeProvider Worker, or combined roles for review/import,
+while preserving `nixos-rebuild` as the operator-owned mutation boundary.
 
-RuntimeProvider-first snippet generation currently fails closed rather than
-inventing a Nix package expression for the selected runtime. Configure the
-reviewed `services.astrumweaver.worker.runtime` block declaratively after the
-base snippet, or use runtime mode for planning.
+RuntimeProvider-first generation requires the reviewed provider/demand and an
+explicit runtime package attribute path supplied by the operator. It never
+invents a package expression. The generated module must be imported together
+with the AstrumWeaver NixOS module; host prerequisites and applying the reviewed
+configuration remain operator responsibilities.
+
+### NixOS runtime package input
+
+For first-run RuntimeProvider setup on NixOS, enter a package attribute path
+rooted in `pkgs`, such as `pkgs.ollama`, `pkgs.vllm`, or `pkgs.llama-cpp`.
+Unknown roots (including `myPkgs`/`inputs`) and general Nix expressions are
+rejected before the review/write confirmation. Custom packages can be exposed
+under `pkgs` using an operator-maintained nixpkgs overlay. See
+[generated module scope and validation](nix.md#generated-first-run-module-scope-and-validation)
+for the supported grammar and the generated-module regression command.

@@ -765,6 +765,7 @@ def test_first_run_nixos_runtime_writes_reviewed_provider_snippet(
             "",  # min RAM
             "",  # preferred RAM
             "fake",
+            "myPkgs.fake",  # undeclared root: reprompt before review/write
             "pkgs.fake",  # explicit Nix runtime package expression
             str(output_path),
             _exact_first_run_write,
@@ -792,4 +793,7 @@ def test_first_run_nixos_runtime_writes_reviewed_provider_snippet(
     assert "worker-private-token" not in rendered
     output = "\n".join(io.output)
     assert "Nix runtime package: pkgs.fake" in output
+    assert "rooted in pkgs" in output
+    assert "myPkgs" not in rendered
+    assert rendered.startswith("{ config, pkgs, ... }:")
     assert "worker-private-token" not in output

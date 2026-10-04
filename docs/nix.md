@@ -352,3 +352,50 @@ sudo astrumweaver-gpu-mode status
 ```
 
 `borrowable.drainTimeoutSeconds = 0` is the default and means wait indefinitely for the active job rather than forcing it. See [Borrowable GPU Worker](borrowable-worker.md) for the complete handoff contract.
+
+## Generated first-run module scope and validation
+
+The first-run TUI emits a module with the explicit argument pattern
+`{ config, pkgs, ... }:`. Runtime package input is a **simple attribute path
+rooted in `pkgs`**, for example `pkgs.ollama`, `pkgs.vllm`, or
+`pkgs.llama-cpp`. Each path component must be a non-keyword Nix identifier.
+The TUI checks this grammar before review/write; Nix checks that the attribute
+exists and denotes a package in the operator's package set.
+
+An unbound root such as `myPkgs` or `inputs` is rejected. For a custom runtime,
+expose the package through an ordinary `nixpkgs.overlays` entry and select its
+`pkgs.<name>` path (nested paths are allowed). The generated snippet does not
+import an arbitrary flake or discover custom lexical variables from the caller.
+General expressions, function calls and interpolated attribute names are not
+accepted. Literal `${...}` in model/configuration data stays literal; it is not
+Nix code. Secrets remain in the separately protected environment files, never
+in the generated module or Nix store.
+
+A generated snippet must be imported together with the AstrumWeaver NixOS
+module. It is not a complete host configuration: retain the documented host,
+network, PostgreSQL, NVIDIA and GPU-exposure prerequisites and your normal
+`nixos-rebuild` review/apply boundary.
+
+The repository's generated-module regression runs with:
+
+```sh
+nix run --no-update-lock-file .#check-generated-nixos
+```
+
+Run this on a checkout of the candidate revision. The app supplies its pinned
+Python dependencies and Nix; the evaluator uses this checkout's locked nixpkgs
+and AstrumWeaver modules, without updating the lock file. It writes disposable
+fixtures through the **production first-run renderer**, then evaluates the
+actual generated files for Control (default bearer and explicit none), smoke
+CPU/GPU Worker, RuntimeProvider Worker, and combined roles. It forces relevant
+module assertions, service commands/environment-file bindings, runtime demand
+and metadata, and package paths, including nested overlay references and
+literal interpolation-like input. A negative control removes only the `pkgs`
+argument from an emitted runtime module and must fail with an undefined
+variable error.
+
+CI runs this as an additional Nix step alongside `nix flake check`. No service
+is started, no host configuration is applied, and model/driver/runtime packages
+are not built or executed by the evaluation step. Import-from-derivation is
+disabled. This is configuration-evaluation evidence, **not** GPU/provider
+hardware acceptance or the operator-led documentation-only Real Smoke gate.
