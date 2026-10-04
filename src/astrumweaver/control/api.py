@@ -23,6 +23,7 @@ from ..control.repository import (
 from ..control.serde import job_result_from_dict
 from ..transport import (
     PROTOCOL_VERSION,
+    _require_serving_extension,
     job_record_to_dict,
     job_submission_from_dict,
     worker_heartbeat_from_dict,
@@ -236,6 +237,7 @@ def create_app(
             lease_token = str(body["lease_token"])
             runtime_instance_epoch = body.get("runtime_instance_epoch")
             if runtime_instance_epoch is not None:
+                _require_serving_extension(body)
                 runtime_instance_epoch = str(runtime_instance_epoch)
             result = job_result_from_dict(body["result"])
             if result is None:
@@ -262,6 +264,7 @@ def create_app(
             lease_token = str(body["lease_token"])
             runtime_instance_epoch = body.get("runtime_instance_epoch")
             if runtime_instance_epoch is not None:
+                _require_serving_extension(body)
                 runtime_instance_epoch = str(runtime_instance_epoch)
             error = body.get("error", "executor failed")
             if not isinstance(error, (str, dict)):
