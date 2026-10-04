@@ -401,8 +401,6 @@ class LlamaCppSubprocessController:
             self._process = await asyncio.create_subprocess_exec(
                 *self.command(),
                 env=env,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
             )
         except OSError as exc:
             raise RuntimeError(
@@ -604,7 +602,14 @@ class LlamaCppManagedRuntime(ManagedRuntime):
                 asyncio.get_running_loop().time()
                 + self.startup_timeout_seconds
             )
-            while not await self._server_reachable():
+            while True:
+                if not self.process.running:
+                    raise RuntimeError(
+                        "llama.cpp owned process exited before readiness; "
+                        "inspect Worker service logs"
+                    )
+                if await self._server_reachable():
+                    break
                 if asyncio.get_running_loop().time() >= deadline:
                     raise RuntimeError(
                         "llama.cpp server did not become ready before timeout"
