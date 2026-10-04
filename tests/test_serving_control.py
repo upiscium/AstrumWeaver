@@ -767,3 +767,27 @@ def test_worker_client_rejects_unnegotiated_serving_response():
     )
     with pytest.raises(ControlTransportError, match="unsupported extension"):
         ControlClient._object(unknown)
+
+
+def test_durable_job_record_rejects_inconsistent_serving_identity():
+    now = utc_now()
+    repo = InMemoryControlRepository()
+    repo.register_worker(serving_worker("worker"), now=now)
+    queued = repo.submit_job(serving_submission(now=now), now=now)
+
+    with pytest.raises(ValueError, match="binding capability"):
+        replace(
+            queued,
+            serving=replace(queued.serving, capability="other.capability"),
+        )
+    with pytest.raises(ValueError, match="require deadline"):
+        replace(queued, deadline_at=None)
+
+    claimed = claim_serving(repo, "worker", now=now)
+    assert claimed is not None
+    with pytest.raises(ValueError, match="deployment revision"):
+        replace(claimed, claimed_deployment_revision=digest("a"))
+    with pytest.raises(ValueError, match="contract revision"):
+        replace(claimed, claimed_serving_contract_revision=digest("b"))
+    with pytest.raises(ValueError, match="requires a serving binding"):
+        replace(claimed, serving=None, deadline_at=None)
