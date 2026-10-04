@@ -336,3 +336,156 @@ def resolve_profile(
     return ResolvedServingProfile(
         profile.revision, deployment, contract, profile, effective,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerServingAdvertisement:
+    """One validated deployment instance and its executable serving contracts.
+
+    This value carries declarative identity only. Registration/claim code must
+    still establish Worker liveness, ownership and capacity atomically.
+    """
+
+    deployment_revision: str
+    runtime_instance: RuntimeInstance
+    contracts: tuple[ServingContract, ...]
+    schema_version: str = "worker-serving-v1"
+
+    def __post_init__(self) -> None:
+        _version(self.schema_version, "worker-serving-v1")
+        _digest(self.deployment_revision, "deployment_revision")
+        if not isinstance(self.runtime_instance, RuntimeInstance):
+            raise ServingContractError("invalid-type", "runtime_instance")
+        if self.runtime_instance.deployment_revision != self.deployment_revision:
+            raise ServingContractError("deployment-revision-mismatch", "runtime_instance")
+        contracts = tuple(self.contracts)
+        if not contracts:
+            raise ServingContractError("empty-contracts", "contracts")
+        revisions: set[str] = set()
+        operations: set[tuple[str, str]] = set()
+        for contract in contracts:
+            if not isinstance(contract, ServingContract):
+                raise ServingContractError("invalid-type", "contracts")
+            if contract.deployment_revision != self.deployment_revision:
+                raise ServingContractError("deployment-revision-mismatch", "contracts")
+            if contract.revision in revisions:
+                raise ServingContractError("duplicate-contract", "contracts")
+            operation = (contract.capability, contract.operation_schema)
+            if operation in operations:
+                raise ServingContractError("duplicate-operation", "contracts")
+            revisions.add(contract.revision)
+            operations.add(operation)
+        object.__setattr__(self, "contracts", contracts)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "deployment_revision": self.deployment_revision,
+            "runtime_instance": {
+                "schema_version": self.runtime_instance.schema_version,
+                "deployment_revision": self.runtime_instance.deployment_revision,
+                "epoch": self.runtime_instance.epoch,
+            },
+            "contracts": [
+                {
+                    "serving_contract_revision": contract.revision,
+                    "contract": contract.to_dict(),
+                }
+                for contract in self.contracts
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "WorkerServingAdvertisement":
+        data = dict(value)
+        instance_data = dict(data["runtime_instance"])
+        contracts: list[ServingContract] = []
+        for raw in data["contracts"]:
+            item = dict(raw)
+            contract = ServingContract(**dict(item["contract"]))
+            if item.get("serving_contract_revision") != contract.revision:
+                raise ServingContractError(
+                    "serving-contract-mismatch", "serving_contract_revision"
+                )
+            contracts.append(contract)
+        return cls(
+            schema_version=data.get("schema_version", "worker-serving-v1"),
+            deployment_revision=data["deployment_revision"],
+            runtime_instance=RuntimeInstance(**instance_data),
+            contracts=tuple(contracts),
+        )
+
+    def contract_by_revision(self, revision: str) -> ServingContract | None:
+        return next(
+            (contract for contract in self.contracts if contract.revision == revision),
+            None,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ServingJobBinding:
+    """Admission-time immutable binding from a resolved logical profile."""
+
+    profile_revision: str
+    deployment_revision: str
+    serving_contract_revision: str
+    capability: str
+    operation_schema: str
+    schema_version: str = "serving-job-binding-v1"
+
+    def __post_init__(self) -> None:
+        _version(self.schema_version, "serving-job-binding-v1")
+        for name in (
+            "profile_revision",
+            "deployment_revision",
+            "serving_contract_revision",
+        ):
+            _digest(getattr(self, name), name)
+        _identifier(self.capability, "capability")
+        _identifier(self.operation_schema, "operation_schema")
+
+    @classmethod
+    def from_resolved(cls, value: ResolvedServingProfile) -> "ServingJobBinding":
+        if not isinstance(value, ResolvedServingProfile):
+            raise ServingContractError("invalid-type", "resolved_profile")
+        return cls(
+            profile_revision=value.profile_revision,
+            deployment_revision=value.deployment.revision,
+            serving_contract_revision=value.contract.revision,
+            capability=value.contract.capability,
+            operation_schema=value.contract.operation_schema,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "profile_revision": self.profile_revision,
+            "deployment_revision": self.deployment_revision,
+            "serving_contract_revision": self.serving_contract_revision,
+            "capability": self.capability,
+            "operation_schema": self.operation_schema,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "ServingJobBinding":
+        return cls(**dict(value))
+
+
+def worker_serving_matches(
+    advertisement: WorkerServingAdvertisement | None,
+    binding: ServingJobBinding | None,
+) -> bool:
+    """Return whether an advertised deployment can claim a bound serving job."""
+
+    if binding is None:
+        return True
+    if advertisement is None:
+        return False
+    if advertisement.deployment_revision != binding.deployment_revision:
+        return False
+    contract = advertisement.contract_by_revision(binding.serving_contract_revision)
+    return (
+        contract is not None
+        and contract.capability == binding.capability
+        and contract.operation_schema == binding.operation_schema
+    )
