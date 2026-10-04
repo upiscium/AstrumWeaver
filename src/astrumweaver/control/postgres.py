@@ -58,6 +58,11 @@ def _json(value: Any) -> Any:
     return Jsonb(value) if Jsonb is not None else value
 
 
+def _json_optional(value: Any) -> Any:
+    """Persist absent optional JSON as SQL NULL, not JSONB null."""
+    return None if value is None else _json(value)
+
+
 # Separate advisory namespaces prevent Worker identity locks and GPU locks
 # from aliasing. Stable digest collisions only serialize unrelated identities.
 _WORKER_OWNERSHIP_LOCK = 0x41535701
@@ -389,7 +394,7 @@ class PostgresControlRepository:
                     spec.resources.max_single_gpu_vram_mb,
                     registration.max_concurrency,
                     _json(dict(registration.metadata)),
-                    _json(
+                    _json_optional(
                         None
                         if registration.serving is None
                         else registration.serving.to_dict()
@@ -666,7 +671,11 @@ class PostgresControlRepository:
                     timestamp,
                     available_at,
                     None if submission.deadline_at is None else _aware(submission.deadline_at),
-                    _json(None if submission.serving is None else submission.serving.to_dict()),
+                    _json_optional(
+                        None
+                        if submission.serving is None
+                        else submission.serving.to_dict()
+                    ),
                     timestamp,
                 ),
             ).fetchone()
@@ -801,9 +810,15 @@ class PostgresControlRepository:
                     worker.spec.resources.gpu_count,
                     worker.spec.resources.total_vram_mb,
                     worker.spec.resources.max_single_gpu_vram_mb,
-                    _json(None if worker.serving is None else worker.serving.to_dict()),
-                    _json(None if worker.serving is None else worker.serving.to_dict()),
-                    _json(None if worker.serving is None else worker.serving.to_dict()),
+                    _json_optional(
+                        None if worker.serving is None else worker.serving.to_dict()
+                    ),
+                    _json_optional(
+                        None if worker.serving is None else worker.serving.to_dict()
+                    ),
+                    _json_optional(
+                        None if worker.serving is None else worker.serving.to_dict()
+                    ),
                     worker_id,
                 ),
             ).fetchone()
