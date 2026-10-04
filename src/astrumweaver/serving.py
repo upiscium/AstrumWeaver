@@ -339,6 +339,87 @@ def resolve_profile(
 
 
 @dataclass(frozen=True, slots=True)
+class ServingDeploymentDeclaration:
+    """Reviewed serving identity/contracts attached to a runtime deployment.
+
+    The declaration is configuration, not a running instance or health proof.
+    A Worker creates a fresh RuntimeInstance epoch only after the runtime is
+    ready, then advertises the resulting WorkerServingAdvertisement.
+    """
+
+    deployment: DeploymentIdentity
+    contracts: tuple[ServingContract, ...]
+    schema_version: str = "serving-deployment-v1"
+
+    def __post_init__(self) -> None:
+        _version(self.schema_version, "serving-deployment-v1")
+        if not isinstance(self.deployment, DeploymentIdentity):
+            raise ServingContractError("invalid-type", "deployment")
+        contracts = tuple(self.contracts)
+        if not contracts:
+            raise ServingContractError("empty-contracts", "contracts")
+        revisions: set[str] = set()
+        operations: set[tuple[str, str]] = set()
+        for contract in contracts:
+            if not isinstance(contract, ServingContract):
+                raise ServingContractError("invalid-type", "contracts")
+            if contract.deployment_revision != self.deployment.revision:
+                raise ServingContractError(
+                    "deployment-revision-mismatch", "contracts"
+                )
+            if contract.revision in revisions:
+                raise ServingContractError("duplicate-contract", "contracts")
+            operation = (contract.capability, contract.operation_schema)
+            if operation in operations:
+                raise ServingContractError("duplicate-operation", "contracts")
+            revisions.add(contract.revision)
+            operations.add(operation)
+        object.__setattr__(self, "contracts", contracts)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "deployment": self.deployment.to_dict(),
+            "contracts": [
+                {
+                    "serving_contract_revision": contract.revision,
+                    "contract": contract.to_dict(),
+                }
+                for contract in self.contracts
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "ServingDeploymentDeclaration":
+        data = dict(value)
+        deployment = DeploymentIdentity(**dict(data["deployment"]))
+        contracts: list[ServingContract] = []
+        for raw in data["contracts"]:
+            item = dict(raw)
+            contract = ServingContract(**dict(item["contract"]))
+            if item.get("serving_contract_revision") != contract.revision:
+                raise ServingContractError(
+                    "serving-contract-mismatch", "serving_contract_revision"
+                )
+            contracts.append(contract)
+        return cls(
+            schema_version=data.get("schema_version", "serving-deployment-v1"),
+            deployment=deployment,
+            contracts=tuple(contracts),
+        )
+
+    def advertisement(self, *, epoch: str) -> "WorkerServingAdvertisement":
+        return WorkerServingAdvertisement(
+            deployment_revision=self.deployment.revision,
+            runtime_instance=RuntimeInstance(
+                deployment_revision=self.deployment.revision,
+                epoch=epoch,
+            ),
+            contracts=self.contracts,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class WorkerServingAdvertisement:
     """One validated deployment instance and its executable serving contracts.
 
