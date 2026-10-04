@@ -188,7 +188,7 @@ def test_nixos_control_snippet_carries_explicit_client_auth() -> None:
         ),
     )
 
-    assert 'client_auth = "none";' in snippet
+    assert 'clientAuth = "none";' in snippet
     assert "environmentFile" in snippet
 
 
