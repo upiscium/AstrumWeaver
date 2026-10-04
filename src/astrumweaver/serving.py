@@ -470,3 +470,92 @@ def serving_worker_matches_binding(
         and worker.contract_revisions.get(binding.capability)
         == binding.serving_contract_revision
     )
+
+
+def deployment_identity_from_dict(value: Mapping[str, object]) -> DeploymentIdentity:
+    data = dict(value)
+    return DeploymentIdentity(
+        schema_version=data.get("schema_version", ""),
+        provider_id=data["provider_id"],
+        runtime_artifact_sha256=data["runtime_artifact_sha256"],
+        adapter_artifact_sha256=data["adapter_artifact_sha256"],
+        model_artifact_sha256=data["model_artifact_sha256"],
+        execution_config_sha256=data["execution_config_sha256"],
+        quantization=data["quantization"],
+        tokenizer_artifact_sha256=data.get("tokenizer_artifact_sha256"),
+        template_artifact_sha256=data.get("template_artifact_sha256"),
+    )
+
+
+def serving_contract_from_dict(value: Mapping[str, object]) -> ServingContract:
+    data = dict(value)
+    return ServingContract(
+        schema_version=data.get("schema_version", ""),
+        deployment_revision=data["deployment_revision"],
+        capability=data["capability"],
+        operation_schema=data["operation_schema"],
+        validation_evidence_sha256=data["validation_evidence_sha256"],
+        features=data.get("features") or (),
+        limits=data.get("limits") or {},
+        semantic_revision=data.get("semantic_revision"),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerServingManifest:
+    """Reviewed content identities from which a Worker may advertise serving.
+
+    The manifest validates internal binding only. Runtime/provider adapters remain
+    responsible for proving that the referenced artifacts/evidence are the ones
+    actually prepared on the Worker.
+    """
+
+    deployment: DeploymentIdentity
+    contracts: tuple[ServingContract, ...]
+    schema_version: str = "worker-serving-manifest-v1"
+
+    def __post_init__(self) -> None:
+        _version(self.schema_version, "worker-serving-manifest-v1")
+        if not isinstance(self.deployment, DeploymentIdentity):
+            raise ServingContractError("invalid-type", "deployment")
+        contracts = tuple(self.contracts)
+        if not contracts or not all(isinstance(item, ServingContract) for item in contracts):
+            raise ServingContractError("invalid-contracts", "contracts")
+        capabilities: set[str] = set()
+        for contract in contracts:
+            if contract.deployment_revision != self.deployment.revision:
+                raise ServingContractError(
+                    "deployment-revision-mismatch", "contracts"
+                )
+            if contract.capability in capabilities:
+                raise ServingContractError("duplicate-capability", "contracts")
+            capabilities.add(contract.capability)
+        object.__setattr__(self, "contracts", contracts)
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "WorkerServingManifest":
+        data = dict(value)
+        raw_contracts = data.get("contracts")
+        if not isinstance(raw_contracts, list):
+            raise ServingContractError("invalid-contracts", "contracts")
+        return cls(
+            schema_version=data.get("schema_version", ""),
+            deployment=deployment_identity_from_dict(data["deployment"]),
+            contracts=tuple(serving_contract_from_dict(item) for item in raw_contracts),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "deployment": self.deployment.to_dict(),
+            "contracts": [contract.to_dict() for contract in self.contracts],
+        }
+
+    def advertisement(self, runtime_instance_epoch: str) -> WorkerServingAdvertisement:
+        return WorkerServingAdvertisement(
+            deployment_revision=self.deployment.revision,
+            runtime_instance_epoch=runtime_instance_epoch,
+            contract_revisions={
+                contract.capability: contract.revision for contract in self.contracts
+            },
+        )
