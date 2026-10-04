@@ -63,9 +63,9 @@ def worker_record_to_dict(value: WorkerRecord) -> dict[str, Any]:
         "registered_at": value.registered_at.isoformat(),
         "last_seen_at": value.last_seen_at.isoformat(),
         "metadata": dict(value.metadata),
-        "serving": None if value.serving is None else value.serving.to_dict(),
     }
     if value.serving is not None:
+        result["serving"] = value.serving.to_dict()
         result["extensions"] = [SERVING_EXTENSION]
     return result
 
@@ -89,11 +89,6 @@ def job_record_to_dict(value: JobRecord, *, include_payload: bool = True) -> dic
         "started_at": _iso(value.started_at),
         "finished_at": _iso(value.finished_at),
         "lease_expires_at": _iso(value.lease_expires_at),
-        "deadline_at": _iso(value.deadline_at),
-        "serving": None if value.serving is None else value.serving.to_dict(),
-        "claimed_deployment_revision": value.claimed_deployment_revision,
-        "claimed_serving_contract_revision": value.claimed_serving_contract_revision,
-        "claimed_runtime_instance_epoch": value.claimed_runtime_instance_epoch,
         "updated_at": value.updated_at.isoformat(),
         "result": None if value.result is None else job_result_to_dict(value.result),
         "error": None if value.error is None else dict(value.error),
@@ -101,7 +96,16 @@ def job_record_to_dict(value: JobRecord, *, include_payload: bool = True) -> dic
     if include_payload:
         result["payload"] = dict(value.payload)
     if value.serving is not None or value.claimed_runtime_instance_epoch is not None:
-        result["extensions"] = [SERVING_EXTENSION]
+        result.update(
+            {
+                "deadline_at": _iso(value.deadline_at),
+                "serving": None if value.serving is None else value.serving.to_dict(),
+                "claimed_deployment_revision": value.claimed_deployment_revision,
+                "claimed_serving_contract_revision": value.claimed_serving_contract_revision,
+                "claimed_runtime_instance_epoch": value.claimed_runtime_instance_epoch,
+                "extensions": [SERVING_EXTENSION],
+            }
+        )
     return result
 
 
@@ -162,19 +166,25 @@ def job_submission_from_dict(value: Mapping[str, Any]) -> JobSubmission:
 def job_request_from_record(value: JobRecord):
     from .execution import JobRequest
 
+    metadata: dict[str, Any] = {
+        "attempt": value.attempts,
+        "lease_expires_at": _iso(value.lease_expires_at),
+    }
+    if value.serving is not None:
+        metadata.update(
+            {
+                "deadline_at": _iso(value.deadline_at),
+                "serving": value.serving.to_dict(),
+                "claimed_deployment_revision": value.claimed_deployment_revision,
+                "claimed_serving_contract_revision": value.claimed_serving_contract_revision,
+                "claimed_runtime_instance_epoch": value.claimed_runtime_instance_epoch,
+            }
+        )
     return JobRequest(
         job_id=value.job_id,
         capability=value.capability,
         payload=value.payload,
-        metadata={
-            "attempt": value.attempts,
-            "lease_expires_at": _iso(value.lease_expires_at),
-            "deadline_at": _iso(value.deadline_at),
-            "serving": None if value.serving is None else value.serving.to_dict(),
-            "claimed_deployment_revision": value.claimed_deployment_revision,
-            "claimed_serving_contract_revision": value.claimed_serving_contract_revision,
-            "claimed_runtime_instance_epoch": value.claimed_runtime_instance_epoch,
-        },
+        metadata=metadata,
     )
 
 
