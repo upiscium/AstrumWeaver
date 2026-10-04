@@ -19,6 +19,11 @@ from ..control.models import WorkerState
 from ..control.serde import worker_spec_from_dict
 from ..transport import PROTOCOL_VERSION
 from ..execution import JobExecutor, JobResult
+from ..serving import (
+    WorkerServingAdvertisement,
+    serving_worker_matches_binding,
+    worker_serving_from_dict,
+)
 from ..gpu_mapping import (
     discover_gpu_mapping,
     load_reviewed_gpu_map,
@@ -152,6 +157,7 @@ class WorkerRuntime:
         poll_interval_seconds: float = 1.0,
         heartbeat_interval_seconds: float = 5.0,
         runtime_supervisor: RuntimeHealthSupervisor | None = None,
+        serving: WorkerServingAdvertisement | None = None,
     ) -> None:
         if max_concurrency != 1:
             raise ValueError("v1 WorkerRuntime currently requires max_concurrency=1")
@@ -165,6 +171,9 @@ class WorkerRuntime:
         self.executor = executor
         self.client = client
         self.runtime_supervisor = runtime_supervisor
+        if serving is not None and not isinstance(serving, WorkerServingAdvertisement):
+            raise TypeError("serving must be WorkerServingAdvertisement")
+        self.serving = serving
         self.poll_interval_seconds = poll_interval_seconds
         self.heartbeat_interval_seconds = heartbeat_interval_seconds
         self._stop = asyncio.Event()
@@ -253,6 +262,12 @@ class WorkerRuntime:
                 raise ValueError("Worker identity changed")
             if record["max_concurrency"] != self.max_concurrency:
                 raise ValueError("Worker capacity changed")
+            remote_serving = (
+                None if record.get("serving") is None
+                else worker_serving_from_dict(record["serving"])
+            )
+            if remote_serving != self.serving:
+                raise ValueError("Worker serving identity changed")
         except (KeyError, TypeError, ValueError) as exc:
             error = ControlTransportError(502, "invalid Worker acknowledgement")
             self._control_failed(error)
@@ -274,6 +289,7 @@ class WorkerRuntime:
                 record = await self.client.register(
                     spec=self.spec,
                     max_concurrency=self.max_concurrency,
+                    serving=self.serving,
                     metadata={"runtime": "astrumweaver-worker"},
                 )
                 self._acknowledge_control(record, sent_at=sent_at)
@@ -304,6 +320,10 @@ class WorkerRuntime:
                 active_job_id=None if active is None else active.request.job_id,
                 lease_token=None if active is None else active.lease_token,
                 state=state,
+                runtime_instance_epoch=(
+                    None if self.serving is None
+                    else self.serving.runtime_instance_epoch
+                ),
             )
             self._acknowledge_control(record, sent_at=sent_at)
         except ControlTransportError as exc:
@@ -352,7 +372,13 @@ class WorkerRuntime:
                             await self._heartbeat_locked()
                         if not self.ready:
                             continue
-                        claimed = await self.client.claim(self.spec.worker_id)
+                        claimed = await self.client.claim(
+                            self.spec.worker_id,
+                            runtime_instance_epoch=(
+                                None if self.serving is None
+                                else self.serving.runtime_instance_epoch
+                            ),
+                        )
                         self._active = claimed
                     if claimed is None:
                         await self._wait_for_poll()
@@ -385,7 +411,14 @@ class WorkerRuntime:
             async with self._control_lock:
                 if self._registered:
                     with contextlib.suppress(ControlTransportError):
-                        await self.client.set_state(self.spec.worker_id, WorkerState.OFFLINE)
+                        await self.client.set_state(
+                            self.spec.worker_id,
+                            WorkerState.OFFLINE,
+                            runtime_instance_epoch=(
+                                None if self.serving is None
+                                else self.serving.runtime_instance_epoch
+                            ),
+                        )
                 self._registered = False
 
     async def drain(self) -> None:
@@ -397,6 +430,17 @@ class WorkerRuntime:
                 await self._heartbeat_locked()
 
     async def _execute_claim(self, claimed: ClaimedJob) -> None:
+        if claimed.serving_binding is not None:
+            if (
+                self.serving is None
+                or claimed.runtime_instance_epoch != self.serving.runtime_instance_epoch
+                or not serving_worker_matches_binding(
+                    self.serving, claimed.serving_binding
+                )
+            ):
+                raise ControlTransportError(502, "claim serving identity mismatch")
+        elif claimed.runtime_instance_epoch is not None:
+            raise ControlTransportError(502, "unbound claim carried a runtime epoch")
         # The private direct-entry test path also installs the active attempt;
         # normal callers install it under the claim lock before reaching here.
         if self._active is not None and self._active is not claimed:
@@ -454,12 +498,17 @@ class WorkerRuntime:
                 if error is not None:
                     await self.client.fail(
                         self.spec.worker_id, claimed.request.job_id,
-                        claimed.lease_token, error=error, retryable=retryable,
+                        claimed.lease_token,
+                        error=error,
+                        retryable=retryable,
+                        runtime_instance_epoch=claimed.runtime_instance_epoch,
                     )
                 else:
                     await self.client.complete(
                         self.spec.worker_id, claimed.request.job_id,
-                        claimed.lease_token, result,
+                        claimed.lease_token,
+                        result,
+                        runtime_instance_epoch=claimed.runtime_instance_epoch,
                     )
                 # Do not let a waiting drain heartbeat reuse this terminal lease.
                 self._active = None
