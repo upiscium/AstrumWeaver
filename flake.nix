@@ -9,9 +9,18 @@
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
+      runtimePkgs = import nixpkgs {
+        inherit system;
+        config.allowUnfree = true;
+      };
 
       astrumweaver = pkgs.callPackage ./nix/package.nix { };
       integration = pkgs.callPackage ./nix/integration-package.nix { };
+      runtimeLlamaCpp = runtimePkgs.llama-cpp-cuda;
+      runtimeProfileSupport = pkgs.callPackage ./nix/runtime-profile-support.nix {
+        inherit runtimeLlamaCpp;
+        source = self;
+      };
       control = pkgs.callPackage ./nix/control-support.nix {
         inherit astrumweaver integration;
       };
@@ -19,7 +28,7 @@
         inherit astrumweaver integration;
       };
       installer = pkgs.callPackage ./nix/installer-support.nix {
-        inherit astrumweaver integration;
+        inherit astrumweaver integration runtimeProfileSupport;
       };
       generatedNixosCheck = pkgs.writeShellApplication {
         name = "check-generated-nixos";
@@ -174,6 +183,7 @@
     {
       packages.${system} = {
         inherit astrumweaver control worker installer integration;
+        runtime-llama-cpp = runtimeLlamaCpp;
         default = astrumweaver;
       };
 
@@ -205,6 +215,9 @@
           test -x ${installer}/bin/astrumweaver-setup-control-plane
           test -x ${installer}/bin/astrumweaver-setup-gpu-worker
           test -x ${installer}/bin/astrumweaver-gpu-isolation-probe
+          test -x ${installer}/bin/astrumweaver-runtime-profile
+          ${installer}/bin/astrumweaver-runtime-profile status llama-cpp >/dev/null 2>&1 || test "$?" = 1
+          test -x ${runtimeLlamaCpp}/bin/llama-server
           test -x ${control}/bin/astrumweaver-control
           test -x ${control}/bin/astrumweaver-migrate
           test -x ${control}/bin/astrumweaver-setup-control-plane
