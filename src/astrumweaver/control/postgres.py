@@ -703,7 +703,7 @@ class PostgresControlRepository:
                   AND (
                       j.serving_binding IS NULL
                       OR (
-                          %s IS NOT NULL
+                          %s::text IS NOT NULL
                           AND j.serving_binding->>'deployment_revision' = %s
                           AND COALESCE(%s::jsonb, '{}'::jsonb) ->> j.capability
                               = j.serving_binding->>'serving_contract_revision'
