@@ -20,6 +20,8 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          # CI workflow updates are owned by the connector, not this job token.
+          test "$(git rev-parse HEAD:.github/workflows/ci.yml)" = 95dd963bb4b9b3d975ac93c917df484c19aaf6bd
           python3 - <<'PY'
           from pathlib import Path
           from hashlib import sha256
@@ -47,6 +49,37 @@ jobs:
           git read-tree --reset -u d7999654c8a1a47495cc3538d4680300dafa064a
           git apply --index "$RUNNER_TEMP/task89.patch"
           test "$(git write-tree)" = 90dde1e23700f76163c122b60369d0b93bdf7754
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('docs/setup-tui.md')
+          text = path.read_text()
+          old = '''On NixOS, first-run mode does not rewrite an existing flake or
+          `configuration.nix`. For smoke-mode Control/Worker bootstrap it can render a
+          deterministic module snippet for review/import while preserving
+          `nixos-rebuild` as the operator-owned mutation boundary.
+
+          RuntimeProvider-first snippet generation currently fails closed rather than
+          inventing a Nix package expression for the selected runtime. Configure the
+          reviewed `services.astrumweaver.worker.runtime` block declaratively after the
+          base snippet, or use runtime mode for planning.
+          '''
+          new = '''On NixOS, first-run mode does not rewrite an existing flake or
+          `configuration.nix`. It renders a deterministic module snippet for Control,
+          smoke Worker, RuntimeProvider Worker, or combined roles for review/import,
+          while preserving `nixos-rebuild` as the operator-owned mutation boundary.
+
+          RuntimeProvider-first generation requires the reviewed provider/demand and an
+          explicit runtime package attribute path supplied by the operator. It never
+          invents a package expression. The generated module must be imported together
+          with the AstrumWeaver NixOS module; host prerequisites and applying the reviewed
+          configuration remain operator responsibilities.
+          '''
+          if text.count(old) != 1:
+              raise SystemExit('reviewed documentation anchor changed')
+          path.write_text(text.replace(old, new))
+          PY
+          git add docs/setup-tui.md
+          test "$(git write-tree)" = 67a19849b8c59594c42573344ae406d88638bd2f
           git diff --cached --check
           test "$(git ls-remote origin refs/heads/fix/89-generated-nixos-modules | cut -f1)" = "$EXPECTED_HEAD"
           git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'Validate generated NixOS modules and bound package scope (#89)'
