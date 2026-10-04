@@ -24,7 +24,33 @@ A body declaring another protocol version is rejected.
 
 Responses include `protocol_version: "v1"` where applicable.
 
-Breaking transport changes require a new protocol namespace rather than silently changing v1 semantics.
+### Optional extension negotiation
+
+A Control implementation may advertise backward-compatible protocol extensions
+through `extensions` on `GET /v1/health` and `GET /v1/ready`. A client or
+Worker must negotiate an extension before sending fields whose meaning depends
+on it. Unknown or unnegotiated extension fields fail closed in an updated
+Control/Worker pair.
+
+The post-v0.1 capability-serving track initially advertises:
+
+```json
+{
+  "protocol_version": "v1",
+  "extensions": ["serving-v1"]
+}
+```
+
+A serving-enabled Worker checks `/v1/ready` for `serving-v1` **before**
+registration. An older v1 Control does not advertise it, so the Worker refuses
+to register rather than letting an older parser silently discard serving
+identity. Client-facing serving adapters must apply the same negotiation rule
+before sending serving-bound v1 Jobs. Legacy Workers and legacy Jobs do not
+need this extension.
+
+Extension negotiation does not permit a breaking transport change. Breaking
+transport changes still require a new protocol namespace rather than silently
+changing v1 semantics.
 
 ## Authorities
 
