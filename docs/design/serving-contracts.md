@@ -1,25 +1,33 @@
-# Serving contracts: isolated first slice
+# Serving contracts and durable admission
 
 Tracking: #91 / #93. Design baseline: #92 at
 `2d34d72db1643c01a1782b00b8058fbedd942fc9`.
 
-This is the first, pure-domain slice of #93. It is developed on
-`feat/93-serving-contracts`, targeting `feature/91-capability-serving`, not
-`main`. The integration branch initially contains only the #92 design snapshot.
-The #79/#89/#90 release-repair track and operator-only #80 gate remain separate.
-Do not merge feature code into the release candidate implicitly.
+The pure-domain contract layer was the first slice of #93. The feature track now
+also integrates those contracts with durable Worker registration, Job admission,
+PostgreSQL persistence, bounded deadlines, extension negotiation and claim-time
+runtime-instance fencing. The work remains on the #91 feature integration stack,
+not on `main`; release-repair and operator-only acceptance tracks remain
+independent.
 
 ## Boundary
 
-`astrumweaver.serving` contains immutable identity/contract/profile values and
-side-effect-free profile validation. It introduces no new Worker/GPU owner,
-service, API route, database migration, registration field or runtime behavior.
-Existing package entrypoints and core contracts do not import this module.
+`astrumweaver.serving` remains the pure identity/contract/profile layer. It
+does not own GPUs, start runtimes or interpret workload payloads. Control and
+Worker integration consume those values through the existing Worker/Job
+authorities rather than introducing a second Slot or resource owner.
 
-A successful resolution is a **configuration snapshot**, not admission, a
-reservation, hardware compatibility evidence or runtime readiness. #93 remains
-open until the later persistence, protocol negotiation, atomic claim/epoch
-binding, deadline and idempotency work is implemented and accepted.
+Profile resolution is still a **configuration snapshot**, not runtime readiness
+or a reservation. Admission persists the resolved `ServingJobBinding` and
+deadline only after at least one fresh ONLINE compatible Worker exists. That
+preflight does not reserve a replica: authoritative compatibility, capacity and
+runtime-instance identity are rechecked when a Worker atomically claims the Job.
+
+A serving Worker advertises one immutable deployment revision and one per-start
+`RuntimeInstance` epoch. Every serving claim, heartbeat/lifecycle mutation and
+terminal write is fenced by the current epoch. Re-registering the same idle
+Worker identity with the same deployment but a new epoch invalidates the old
+process without changing the admitted deployment contract.
 
 ## Identity and validation
 
@@ -56,9 +64,14 @@ caller; constructing a value neither starts a runtime nor verifies uniqueness.
 
 ## Validation scope
 
-Run `python -m pytest tests/test_serving_contracts.py` in the repository's normal
-Python environment. Tests cover canonical identities, defensive immutability,
-version/type rejection, exact binding, explicit selections, limits and snapshot
-stability. The complete repository CI remains required for package integration.
-These are not PostgreSQL concurrency, GPU, gateway, OpenCode or model-quality
-acceptance tests. They satisfy no release or operator hardware gate.
+Schema/unit coverage includes `tests/test_serving_contracts.py` and
+`tests/test_serving_control.py`. Durable integration coverage in
+`tests/test_postgres_serving.py` exercises actual PostgreSQL transactions,
+including competing claims, concurrent idempotency, cancellation/deadline races,
+stale runtime epochs and database identity constraints.
+
+Repository CI is the integration authority for this feature branch. These tests
+are deliberately **not** real-runtime/model, gateway-client, OpenCode, embedding
+quality or decision-quality evidence. Those acceptance levels belong to the
+corresponding adapter issues (#94–#96); passing #93 must not be reported as proof
+that a model/runtime pair supports one of those client surfaces.
