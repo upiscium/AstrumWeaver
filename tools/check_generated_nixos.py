@@ -119,13 +119,27 @@ def generate_cases(directory: Path) -> list[dict[str, Any]]:
 
 
 def evaluate(source: Path, manifest: Path) -> subprocess.CompletedProcess[str]:
+    # `nix eval --file` evaluates the file as a value and does not apply
+    # `--argstr` to a top-level function. Build one explicit expression so
+    # the production evaluator receives both reviewed arguments before JSON
+    # conversion. Paths are encoded as Nix strings and the evaluator file is
+    # converted back to a path only for import.
+    evaluator = source / "nix/tests/generated-first-run.nix"
+    expression = (
+        "let check = import (builtins.toPath "
+        + json.dumps(str(evaluator))
+        + "); in check { source = "
+        + json.dumps(str(source))
+        + "; manifest = "
+        + json.dumps(str(manifest))
+        + "; }"
+    )
     # No import-from-derivation and no runtime/GPU package realization. Only
     # Nix expressions and selected service/config/package values are evaluated.
     return subprocess.run(
         ["nix", "eval", "--impure", "--json", "--no-update-lock-file",
          "--option", "allow-import-from-derivation", "false",
-         "--file", str(source / "nix/tests/generated-first-run.nix"),
-         "--argstr", "source", str(source), "--argstr", "manifest", str(manifest)],
+         "--expr", expression],
         capture_output=True, text=True, timeout=240, check=False,
     )
 
