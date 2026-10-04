@@ -616,3 +616,37 @@ def test_serving_worker_preserves_unrelated_legacy_capability():
     assert claimed.serving_binding is None
     assert claimed.attempt_runtime_instance_epoch is None
 
+def test_serving_admission_excludes_draining_and_stale_workers():
+    now = utc_now()
+    _, _, _, binding, advertisement = serving_values()
+
+    draining_repo = InMemoryControlRepository()
+    draining_repo.register_worker(
+        registration("draining-worker", advertisement),
+        now=now,
+    )
+    draining_repo.set_worker_state(
+        "draining-worker",
+        JobStatus.__mro__[1] if False else __import__(
+            "astrumweaver.control.models", fromlist=["WorkerState"]
+        ).WorkerState.DRAINING,
+        runtime_instance_epoch=advertisement.runtime_instance_epoch,
+        now=now,
+    )
+    with pytest.raises(NoCompatibleDeployment):
+        draining_repo.submit_job(
+            serving_submission(binding, now=now),
+            now=now,
+        )
+
+    stale_repo = InMemoryControlRepository(worker_ttl_seconds=60)
+    stale_repo.register_worker(
+        registration("stale-worker", advertisement),
+        now=now - timedelta(seconds=61),
+    )
+    with pytest.raises(NoCompatibleDeployment):
+        stale_repo.submit_job(
+            serving_submission(binding, now=now),
+            now=now,
+        )
+
