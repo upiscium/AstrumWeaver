@@ -181,6 +181,8 @@ class JobRecord:
         if self.serving_binding is not None:
             if not isinstance(self.serving_binding, ServingJobBinding):
                 raise TypeError("serving_binding must be ServingJobBinding")
+            if self.serving_binding.capability != self.capability:
+                raise ValueError("serving binding capability must match job capability")
             if self.deadline_at is None:
                 raise ValueError("serving-bound jobs require deadline_at")
         if self.deadline_at is not None and self.deadline_at.tzinfo is None:
