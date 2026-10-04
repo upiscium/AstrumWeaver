@@ -295,9 +295,9 @@ async def run_worker(
                     await asyncio.sleep(0.1)
 
                 if worker_runtime.active_job_id is not None:
+                    # WorkerRuntime owns cancellation and joins the execution
+                    # task; invoking the hook here too would cancel twice.
                     forced_cancel = True
-                    with contextlib.suppress(Exception):
-                        await executor.cancel(worker_runtime.active_job_id)
 
             worker_runtime.request_stop()
             health_server.should_exit = True
