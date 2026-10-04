@@ -308,6 +308,21 @@ It provides idempotent coordination around:
 
 The provider still owns the concrete start/stop/health/release implementation.
 
+Subprocess-managed RuntimeProviders inherit the Worker process stdout/stderr.
+Under systemd/NixOS, runtime startup and runtime-process diagnostics are
+therefore available in the owning Worker journal:
+
+```sh
+journalctl -u astrumweaver-worker.service -b
+```
+
+AstrumWeaver does not copy raw provider logs into SetupPlan, structured apply
+evidence, or public acceptance evidence, and does not serialize the child
+environment for diagnostics. If an owned runtime child exits before its
+health endpoint becomes ready, provider startup fails immediately and points
+the operator at the Worker service logs instead of waiting for the full
+startup timeout.
+
 The lifecycle helper does not move durable job ownership out of the Worker/Control layer.
 
 ## TUI relationship
