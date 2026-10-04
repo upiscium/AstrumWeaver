@@ -562,3 +562,35 @@ async def test_failed_owned_cleanup_does_not_report_control_offline():
         async with supervised(managed, repo) as (_, _, _, _, worker, _):
             assert worker.ready
     assert repo.get_worker(SPEC.worker_id).state is not WorkerState.OFFLINE
+
+
+@pytest.mark.asyncio
+async def test_ollama_owned_shutdown_does_not_wait_on_hung_http_health():
+    from test_ollama_provider import FakeApi, FakeProcess, context, OllamaManagedRuntime
+    api = FakeApi(reachable=True)
+    process = FakeProcess(api, running=True)
+    runtime = OllamaManagedRuntime(api=api, process=process, context=context(),
+                                   model=api.model, keep_alive="5m", startup_timeout_seconds=1)
+    async def hung_inventory():
+        await asyncio.Event().wait()
+    api.list_models = hung_inventory
+    await asyncio.wait_for(RuntimeLifecycleManager(runtime).shutdown_owned(timeout_seconds=0.03), 0.5)
+    assert process.stops == 1 and not process.running
+    assert api.closed and api.unloaded == []
+
+
+@pytest.mark.asyncio
+async def test_ollama_release_rechecks_ownership_after_awaited_reachability():
+    from test_ollama_provider import FakeApi, FakeProcess, context, OllamaManagedRuntime
+    api = FakeApi(reachable=True)
+    process = FakeProcess(api, running=True)
+    runtime = OllamaManagedRuntime(api=api, process=process, context=context(),
+                                   model=api.model, keep_alive="5m", startup_timeout_seconds=1)
+    original = api.list_models
+    async def exited_during_response():
+        result = await original()
+        process._running = False
+        return result
+    api.list_models = exited_during_response
+    await runtime.release()
+    assert api.closed and api.unloaded == []

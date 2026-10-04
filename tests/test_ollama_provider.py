@@ -526,7 +526,8 @@ async def test_managed_runtime_starts_loads_verifies_and_stops_owned_server() ->
 
     await runtime.stop()
     assert process.stops == 1
-    assert api.unloaded == ["qwen3:8b"]
+    # Owned process termination releases the model without an HTTP precondition.
+    assert api.unloaded == []
 
 
 @pytest.mark.asyncio
