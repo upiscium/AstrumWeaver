@@ -629,3 +629,104 @@ def test_postgres_ownership_race_harness_detects_missing_serialization():
         assert one.result(timeout=10).state is WorkerState.ONLINE
     with psycopg.connect(DATABASE_URL) as connection:
         assert connection.execute("SELECT count(*) FROM workers WHERE state = 'online'").fetchone()[0] == 2
+
+
+@pytest.mark.asyncio
+async def test_postgres_worker_heartbeat_survives_continuous_short_job_backlog():
+    """Exercise real Worker -> HTTP API -> PostgreSQL for more than two TTLs."""
+    from astrumweaver.worker import ControlClient, WorkerRuntime
+    from astrumweaver import ResidencyReport
+
+    assert DATABASE_URL is not None
+    repo = PostgresControlRepository(DATABASE_URL, worker_ttl_seconds=1, lease_seconds=1)
+    spec = worker("heartbeat-backlog", single_vram_mb=1).spec
+    job_ids = [
+        repo.submit_job(JobSubmission(capability="llm.chat", payload={}, max_attempts=1)).job_id
+        for _ in range(400)
+    ]
+
+    class ShortExecutor:
+        executed = 0
+
+        async def execute(self, request):
+            self.executed += 1
+            await asyncio.sleep(0.01)
+            return JobResult(text="ok")
+
+        async def cancel(self, job_id):
+            pass
+
+        async def residency(self):
+            return ResidencyReport()
+
+    app = create_app(repo, client_token=None, worker_token="test-worker", client_auth="none")
+    async with ControlClient(
+        "http://control", "test-worker", transport=httpx.ASGITransport(app=app), timeout_seconds=0.5
+    ) as client:
+        executor = ShortExecutor()
+        runtime = WorkerRuntime(
+            spec=spec, max_concurrency=1, executor=executor, client=client,
+            heartbeat_interval_seconds=0.04, poll_interval_seconds=0.01,
+        )
+        task = asyncio.create_task(runtime.run_forever())
+        try:
+            async with asyncio.timeout(3):
+                while not runtime.registered:
+                    if task.done():
+                        await task
+                    await asyncio.sleep(0.005)
+            start = monotonic()
+            ages = []
+            while monotonic() - start < 2.2:
+                assert not task.done()
+                expired = await asyncio.to_thread(repo.expire_stale_workers)
+                assert not expired
+                current = await asyncio.to_thread(repo.get_worker, spec.worker_id)
+                assert current.state is WorkerState.ONLINE
+                assert runtime.ready
+                ages.append((utc_now() - current.last_seen_at).total_seconds())
+                await asyncio.sleep(0.02)
+            assert executor.executed > 5
+            assert max(ages) < 0.8
+            assert (await asyncio.to_thread(repo.get_job, job_ids[-1])).status is JobStatus.QUEUED, "backlog exhausted"
+        finally:
+            runtime.request_stop()
+            await asyncio.wait_for(task, 3)
+        assert repo.get_worker(spec.worker_id).state is WorkerState.OFFLINE
+
+
+@pytest.mark.asyncio
+async def test_postgres_runtime_observes_offline_without_implicit_gpu_reacquisition():
+    from astrumweaver.worker import ControlClient, WorkerRuntime
+    from astrumweaver.executors.structured_echo import StructuredEchoExecutor
+
+    assert DATABASE_URL is not None
+    repo = PostgresControlRepository(DATABASE_URL)
+    spec = replace(worker("offline-liveness", single_vram_mb=1).spec, capabilities=frozenset({"debug.echo"}))
+    app = create_app(repo, client_token=None, worker_token="test-worker", client_auth="none")
+    async with ControlClient("http://control", "test-worker", transport=httpx.ASGITransport(app=app)) as client:
+        runtime = WorkerRuntime(
+            spec=spec, max_concurrency=1, executor=StructuredEchoExecutor(), client=client,
+            heartbeat_interval_seconds=0.02, poll_interval_seconds=0.01,
+        )
+        task = asyncio.create_task(runtime.run_forever())
+        try:
+            async with asyncio.timeout(3):
+                while not runtime.registered:
+                    await asyncio.sleep(0.005)
+            await asyncio.to_thread(repo.set_worker_state, spec.worker_id, WorkerState.OFFLINE)
+            async with asyncio.timeout(3):
+                while runtime.control_state != "offline":
+                    await asyncio.sleep(0.005)
+            competitor = replace(spec, worker_id="replacement-owner")
+            await asyncio.to_thread(repo.register_worker, WorkerRegistration(spec=competitor))
+            with pytest.raises(ConflictError):
+                await asyncio.to_thread(repo.set_worker_state, spec.worker_id, WorkerState.ONLINE)
+            await runtime.drain()
+            await asyncio.sleep(0.08)
+            assert not runtime.ready
+            assert repo.get_worker(spec.worker_id).state is WorkerState.OFFLINE
+            assert repo.get_worker(competitor.worker_id).state is WorkerState.ONLINE
+        finally:
+            runtime.request_stop()
+            await asyncio.wait_for(task, 3)

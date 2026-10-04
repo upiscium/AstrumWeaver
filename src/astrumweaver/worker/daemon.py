@@ -311,10 +311,15 @@ async def run_worker(
                 return_exceptions=True,
             )
         finally:
-            signal_task.cancel()
-            drain_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await drain_task
+            # A registration/transport/protocol failure must not leave the
+            # sibling health server or a claimed execution alive in-process.
+            worker_runtime.request_stop()
+            health_server.should_exit = True
+            tasks = (worker_task, health_task, signal_task, drain_task)
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
     finally:
         await client.aclose()
         if runtime_manager is not None:

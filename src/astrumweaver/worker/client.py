@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import math
+
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -41,6 +44,9 @@ class ControlClient:
             raise ValueError("base_url is required")
         if not worker_token:
             raise ValueError("worker_token is required")
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError("Control request timeout must be finite and positive")
+        self.timeout_seconds = timeout_seconds
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
             headers={"authorization": f"Bearer {worker_token}"},
@@ -59,8 +65,9 @@ class ControlClient:
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         try:
-            response = await self._client.request(method, path, **kwargs)
-        except httpx.HTTPError as exc:
+            async with asyncio.timeout(self.timeout_seconds):
+                response = await self._client.request(method, path, **kwargs)
+        except (httpx.HTTPError, TimeoutError) as exc:
             raise ControlTransportError(0, "control unavailable") from exc
         if response.status_code >= 400:
             try:
@@ -69,6 +76,16 @@ class ControlClient:
                 detail = "request failed"
             raise ControlTransportError(response.status_code, detail)
         return response
+
+    @staticmethod
+    def _object(response: httpx.Response) -> dict[str, Any]:
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise ControlTransportError(502, "Control returned invalid JSON") from exc
+        if not isinstance(body, dict):
+            raise ControlTransportError(502, "Control response must be an object")
+        return body
 
     async def register(
         self,
@@ -87,7 +104,7 @@ class ControlClient:
                 "metadata": dict(metadata or {}),
             },
         )
-        return response.json()
+        return self._object(response)
 
     async def heartbeat(
         self,
@@ -109,7 +126,7 @@ class ControlClient:
                 "metadata": dict(metadata or {}),
             },
         )
-        return response.json()
+        return self._object(response)
 
     async def set_state(self, worker_id: str, state: WorkerState) -> dict[str, Any]:
         response = await self._request(
@@ -117,13 +134,13 @@ class ControlClient:
             f"/v1/workers/{worker_id}/state",
             json={"protocol_version": PROTOCOL_VERSION, "state": state.value},
         )
-        return response.json()
+        return self._object(response)
 
     async def claim(self, worker_id: str) -> ClaimedJob | None:
         response = await self._request("POST", f"/v1/workers/{worker_id}/jobs/claim")
         if response.status_code == 204:
             return None
-        body = response.json()
+        body = self._object(response)
         lease_token = body.get("lease_token")
         if not isinstance(lease_token, str) or not lease_token:
             raise ControlTransportError(502, "claim response lacks lease token")
@@ -146,7 +163,7 @@ class ControlClient:
         response = await self._request(
             "GET", f"/v1/workers/{worker_id}/jobs/{job_id}"
         )
-        return response.json()
+        return self._object(response)
 
     async def complete(
         self,
@@ -164,7 +181,7 @@ class ControlClient:
                 "result": job_result_to_dict(result),
             },
         )
-        return response.json()
+        return self._object(response)
 
     async def fail(
         self,
@@ -185,4 +202,4 @@ class ControlClient:
                 "retryable": retryable,
             },
         )
-        return response.json()
+        return self._object(response)
