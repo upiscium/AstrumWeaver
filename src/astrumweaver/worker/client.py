@@ -92,6 +92,28 @@ class ControlClient:
             raise ControlTransportError(502, "Control returned invalid JSON") from exc
         if not isinstance(body, dict):
             raise ControlTransportError(502, "Control response must be an object")
+
+        raw_extensions = body.get("extensions") or ()
+        if (
+            isinstance(raw_extensions, str)
+            or not isinstance(raw_extensions, (list, tuple, set, frozenset))
+        ):
+            raise ControlTransportError(502, "Control response extensions are invalid")
+        extensions = frozenset(str(item) for item in raw_extensions)
+        if extensions - {SERVING_EXTENSION}:
+            raise ControlTransportError(502, "Control response uses an unsupported extension")
+        serving_fields = (
+            "serving",
+            "serving_binding",
+            "attempt_runtime_instance_epoch",
+        )
+        if (
+            any(body.get(field) is not None for field in serving_fields)
+            and SERVING_EXTENSION not in extensions
+        ):
+            raise ControlTransportError(
+                502, "Control response omitted the serving-v1 extension"
+            )
         return body
 
     async def register(
