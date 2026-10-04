@@ -26,6 +26,53 @@ Responses include `protocol_version: "v1"` where applicable.
 
 Breaking transport changes require a new protocol namespace rather than silently changing v1 semantics.
 
+### Serving extension negotiation
+
+Deployment-bound serving uses the optional v1 extension:
+
+```text
+serving-bindings-v1
+```
+
+Control advertises supported extensions from `GET /v1/health` and
+`GET /v1/ready`. A Worker that intends to register a serving deployment must
+check `/v1/ready` first and must not send serving registration state to a
+Control that does not advertise this extension.
+
+Requests carrying serving identity or a runtime-instance epoch include:
+
+```json
+{
+  "protocol_version": "v1",
+  "extensions": ["serving-bindings-v1"]
+}
+```
+
+Unknown extensions fail closed. Worker-side protocol parsing also rejects a
+response that contains serving identity without the extension marker. Legacy v1
+Workers and direct Jobs continue to omit the extension and retain their existing
+empty-body claim behavior.
+
+A serving Job snapshots an immutable `ServingJobBinding` plus an absolute
+timezone-aware deadline. Admission has three explicit bounded failure classes:
+
+- HTTP 408: the request deadline has already expired;
+- HTTP 429: compatible fresh ONLINE replicas exist but all are at capacity;
+- HTTP 503: no fresh ONLINE Worker currently satisfies the exact serving
+  deployment/contract plus generic Job requirements.
+
+Admission compatibility is not a reservation. At claim, the Worker supplies its
+current runtime-instance epoch; Control atomically rechecks Worker liveness,
+state, generic requirements, serving binding and capacity before persisting the
+attempt identity. Heartbeats, lifecycle writes and terminal writes for a serving
+Worker are fenced by the same epoch, so a restarted Worker invalidates its stale
+predecessor even when the immutable deployment revision did not change.
+
+Idempotency is resolved before transient liveness/capacity/deadline admission
+checks. An equivalent retry of an already-admitted request returns the same
+durable Job; reuse of the key for different resolved serving intent is a
+conflict.
+
 ## Authorities
 
 v1 keeps the Worker trust domain bearer-authenticated and makes Client API
@@ -164,7 +211,10 @@ POST /v1/workers/{worker_id}/jobs/claim
 GET  /v1/workers/{worker_id}/jobs/{job_id}
 ```
 
-An empty claim returns HTTP 204 with no body.
+Legacy Workers use the existing empty claim request. A serving Worker sends its
+`runtime_instance_epoch` with `serving-bindings-v1`; a stale or missing epoch
+cannot claim for a serving registration. An empty eligible queue returns HTTP
+204 with no body.
 
 The Worker job-status endpoint is intentionally restricted and does not expose the full payload/result record used by the client endpoint.
 
