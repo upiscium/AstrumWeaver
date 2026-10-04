@@ -771,7 +771,17 @@ class PostgresControlRepository:
                       (j.requirements->>'min_single_gpu_vram_mb')::integer, 0
                   )
                   AND (
-                      j.serving IS NULL
+                      (
+                          j.serving IS NULL
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM jsonb_array_elements(
+                                  COALESCE(%s::jsonb->'contracts', '[]'::jsonb)
+                              ) AS covered(item)
+                              WHERE covered.item->'contract'->>'capability'
+                                    = j.capability
+                          )
+                      )
                       OR (
                           %s::jsonb IS NOT NULL
                           AND %s::jsonb->>'deployment_revision'
@@ -810,6 +820,9 @@ class PostgresControlRepository:
                     worker.spec.resources.gpu_count,
                     worker.spec.resources.total_vram_mb,
                     worker.spec.resources.max_single_gpu_vram_mb,
+                    _json_optional(
+                        None if worker.serving is None else worker.serving.to_dict()
+                    ),
                     _json_optional(
                         None if worker.serving is None else worker.serving.to_dict()
                     ),
