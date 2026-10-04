@@ -40,12 +40,23 @@ must work before AstrumWeaver installation.
 For Control, prepare:
 
 - a PostgreSQL database
-- a client authority token
 - a Worker authority token
+- a Client authority token when Client API auth is `bearer`
 
-The two tokens must be different.
+Client API authentication is explicit:
 
-A convenient way to create tokens is:
+```toml
+[control]
+client_auth = "bearer" # or "none"
+```
+
+If the setting is omitted, Control defaults to `bearer`, preserving the
+existing secure behavior. In bearer mode the Client and Worker tokens must be
+different. In `none` mode, Client submit/read/cancel endpoints have no
+AstrumWeaver bearer requirement, so protect them with the intended network,
+VPN, reverse proxy, or upstream authentication boundary.
+
+A convenient way to create bearer tokens is:
 
 ```sh
 openssl rand -hex 32
@@ -207,6 +218,8 @@ Minimal Control module:
   services.astrumweaver.control = {
     enable = true;
 
+    clientAuth = "bearer"; # secure default; use "none" only intentionally
+
     settings.control = {
       host = "127.0.0.1";
       port = 9000;
@@ -228,11 +241,19 @@ AstrumWeaver service on the host:
 sudo install -d -m 0750 /etc/astrumweaver
 ```
 
-Then create `/etc/astrumweaver/control.env` outside the Nix store:
+Then create `/etc/astrumweaver/control.env` outside the Nix store.
+For `clientAuth = "bearer"`:
 
 ```text
 ASTRUMWEAVER_DATABASE_URL=postgresql://USER:PASSWORD@DB_HOST:5432/astrumweaver
 ASTRUMWEAVER_CLIENT_TOKEN=REPLACE_WITH_CLIENT_TOKEN
+ASTRUMWEAVER_WORKER_TOKEN=REPLACE_WITH_WORKER_TOKEN
+```
+
+For `clientAuth = "none"`, omit the Client token entirely:
+
+```text
+ASTRUMWEAVER_DATABASE_URL=postgresql://USER:PASSWORD@DB_HOST:5432/astrumweaver
 ASTRUMWEAVER_WORKER_TOKEN=REPLACE_WITH_WORKER_TOKEN
 ```
 
@@ -321,6 +342,11 @@ Then run:
 ```sh
 sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-setup-tui
 ```
+
+The first-run Control phase asks for `bearer` or `none`. Bearer is the
+default. If `none` is selected, the TUI does not generate, request, or write
+an `ASTRUMWEAVER_CLIENT_TOKEN`; only the Worker authority token remains in
+the protected Control environment file.
 
 The installer-profile TUI entrypoint is a packaging wrapper. It passes the
 lexical profile `bin` directory explicitly into first-run setup, so Python
