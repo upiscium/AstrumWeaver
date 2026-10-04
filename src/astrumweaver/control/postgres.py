@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from hashlib import sha256
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import Any
@@ -50,6 +51,16 @@ except ImportError:  # pragma: no cover - optional dependency path
 
 def _json(value: Any) -> Any:
     return Jsonb(value) if Jsonb is not None else value
+
+
+# Separate advisory namespaces prevent Worker identity locks and GPU locks
+# from aliasing. Stable digest collisions only serialize unrelated identities.
+_WORKER_OWNERSHIP_LOCK = 0x41535701
+_GPU_OWNERSHIP_LOCK = 0x41535702
+
+
+def _ownership_lock_key(identity: str) -> int:
+    return int.from_bytes(sha256(identity.encode("utf-8")).digest()[:4], "big", signed=True)
 
 
 class PostgresControlRepository:
@@ -130,6 +141,9 @@ class PostgresControlRepository:
         with self._connection() as connection:
             try:
                 with connection.transaction():
+                    # Ownership predicates must see a fresh snapshot after an
+                    # advisory-lock wait, independent of the database default.
+                    connection.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
                     yield connection
             except RepositoryError:
                 raise
@@ -194,6 +208,44 @@ class PostgresControlRepository:
             updated_at=row["updated_at"],
         )
 
+    def _lock_worker_ownership(
+        self,
+        connection: Any,
+        worker_id: str,
+        requested_gpu_uuids: tuple[str, ...] = (),
+    ) -> dict[str, Any] | None:
+        """Serialize acquisition, including a Worker/GPU with no row yet.
+
+        Enrollment/state transitions take identity -> sorted GPU lock keys ->
+        own Worker row. They never lock peer Worker rows or job rows. Job
+        transactions retain job -> Worker order and do not take advisory locks.
+        Release-only updates need no advisory lock: they can remove, but cannot
+        introduce, an owner. Reacquisition must pass through this method.
+        """
+        connection.execute(
+            "SELECT pg_advisory_xact_lock(%s::integer, %s::integer)",
+            (_WORKER_OWNERSHIP_LOCK, _ownership_lock_key(worker_id)),
+        )
+        current = connection.execute(
+            "SELECT gpu_uuids FROM workers WHERE id = %s", (worker_id,)
+        ).fetchone()
+        # The identity lock prevents concurrent enrollment from changing this
+        # topology while GPU locks are acquired. Include old and desired GPUs
+        # so topology replacement and resource handoff use one protocol.
+        gpu_uuids = set(requested_gpu_uuids)
+        if current is not None:
+            gpu_uuids.update(current.get("gpu_uuids") or ())
+        for key in sorted({_ownership_lock_key(uuid) for uuid in gpu_uuids}):
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(%s::integer, %s::integer)",
+                (_GPU_OWNERSHIP_LOCK, key),
+            )
+        # Liveness and active-job counts may have changed during a lock wait.
+        # Read/lock the current row only after acquiring the entire GPU set.
+        return connection.execute(
+            "SELECT * FROM workers WHERE id = %s FOR UPDATE", (worker_id,)
+        ).fetchone()
+
     def _gpu_overlap(
         self,
         connection: Any,
@@ -215,7 +267,6 @@ class PostgresControlRepository:
               )
             ORDER BY id
             LIMIT 1
-            FOR UPDATE
             """,
             (registration.spec.worker_id, _json(gpu_uuids)),
         ).fetchone()
@@ -227,10 +278,9 @@ class PostgresControlRepository:
         timestamp = _aware(now)
         spec = registration.spec
         with self._transaction() as connection:
-            existing = connection.execute(
-                "SELECT * FROM workers WHERE id = %s FOR UPDATE",
-                (spec.worker_id,),
-            ).fetchone()
+            existing = self._lock_worker_ownership(
+                connection, spec.worker_id, spec.gpu_uuids
+            )
             if existing is not None:
                 current = self._worker(existing)
                 if current.active_jobs > 0:
@@ -337,13 +387,11 @@ class PostgresControlRepository:
     ) -> WorkerRecord:
         timestamp = _aware(now)
         with self._transaction() as connection:
-            current_row = connection.execute(
-                "SELECT * FROM workers WHERE id = %s FOR UPDATE", (worker_id,)
-            ).fetchone()
+            current_row = self._lock_worker_ownership(connection, worker_id)
             if current_row is None:
                 raise NotFoundError(f"worker not found: {worker_id}")
             current = self._worker(current_row)
-            if state is WorkerState.ONLINE and current.state is WorkerState.OFFLINE:
+            if state is not WorkerState.OFFLINE:
                 conflict = self._gpu_overlap(
                     connection,
                     WorkerRegistration(
@@ -417,8 +465,10 @@ class PostgresControlRepository:
             if worker_row is None:
                 raise NotFoundError(f"worker not found: {worker_id}")
             current = self._worker(worker_row)
-            if current.state is WorkerState.OFFLINE and heartbeat.state is WorkerState.ONLINE:
-                raise ConflictError("offline worker must be explicitly returned online")
+            if current.state is WorkerState.OFFLINE and heartbeat.state in {
+                WorkerState.ONLINE, WorkerState.DRAINING,
+            }:
+                raise ConflictError("offline worker must explicitly reacquire GPU ownership")
 
             active_jobs = connection.execute(
                 """

@@ -4,6 +4,11 @@ import asyncio
 import os
 from datetime import timedelta
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from threading import Event
+from time import monotonic, sleep
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -22,6 +27,8 @@ from astrumweaver.control import (
     PostgresControlRepository,
     StorageUnavailable,
     WorkerRegistration,
+    WorkerHeartbeat,
+    WorkerState,
     utc_now,
 )
 
@@ -411,3 +418,214 @@ def test_packaged_migration_entrypoint_is_idempotent() -> None:
 
     repo = PostgresControlRepository(DATABASE_URL)
     repo.check_storage()
+
+
+# F2 regressions use real connections and a controlled pause *after* the first
+# ownership predicate, before INSERT/UPDATE. The competitor must wait on the
+# ownership advisory lock, not slip through the absent-row gap. No GPU needed.
+
+
+
+def shared_worker(name, gpus=("GPU-shared",)):
+    original = worker(name, single_vram_mb=1024, gpu_count=len(gpus))
+    return replace(original, spec=replace(original.spec, gpu_uuids=gpus))
+
+
+def bounded_repo(cls=PostgresControlRepository, **kwargs):
+    name = "aw-ownership-test-" + uuid4().hex
+    dsn = psycopg.conninfo.make_conninfo(
+        DATABASE_URL, application_name=name, connect_timeout=5,
+        options="-c lock_timeout=4000 -c statement_timeout=8000",
+    )
+    return cls(dsn, **kwargs), name
+
+
+class PausedOwnershipRepository(PostgresControlRepository):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.checked = Event()
+        self.release = Event()
+
+    def _gpu_overlap(self, connection, registration):
+        result = super()._gpu_overlap(connection, registration)
+        self.checked.set()
+        if not self.release.wait(8):
+            raise AssertionError("test ownership pause timed out")
+        return result
+
+
+def wait_for_advisory_waiter(application_name, future):
+    deadline = monotonic() + 3
+    with psycopg.connect(DATABASE_URL, autocommit=True, connect_timeout=5) as observer:
+        observer.execute("SET statement_timeout = '2s'")
+        while monotonic() < deadline:
+            if future.done():
+                pytest.fail("competing ownership mutation did not wait for the held lock")
+            row = observer.execute(
+                "SELECT count(*) FROM pg_stat_activity "
+                "WHERE application_name = %s AND wait_event_type = 'Lock' "
+                "AND wait_event = 'advisory'", (application_name,),
+            ).fetchone()
+            if row[0]:
+                return
+            sleep(0.01)
+    pytest.fail("competitor did not reach the database advisory lock")
+
+
+def run_ownership_race(first, first_call, second, second_call, *, conflict=True):
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        winner = pool.submit(first_call)
+        try:
+            assert first.checked.wait(3), "first request did not reach its overlap check"
+            competitor = pool.submit(second_call)
+            wait_for_advisory_waiter(second, competitor)
+        finally:
+            first.release.set()
+        winner.result(timeout=10)
+        if conflict:
+            with pytest.raises(ConflictError, match="overlaps"):
+                competitor.result(timeout=10)
+        else:
+            competitor.result(timeout=10)
+
+
+@pytest.mark.parametrize("a,b", [
+    (("GPU-shared",), ("GPU-shared",)),
+    (("GPU-a", "GPU-shared"), ("GPU-shared", "GPU-c")),
+    (("GPU-a", "GPU-b"), ("GPU-b", "GPU-a")),
+])
+def test_postgres_concurrent_new_workers_cannot_reserve_overlapping_gpus(a, b):
+    first, _ = bounded_repo(PausedOwnershipRepository)
+    second, name = bounded_repo()
+    run_ownership_race(
+        first, lambda: first.register_worker(shared_worker("first", a)),
+        name, lambda: second.register_worker(shared_worker("second", b)),
+    )
+    with psycopg.connect(DATABASE_URL) as connection:
+        assert connection.execute("SELECT count(*) FROM workers").fetchone()[0] == 1
+    # The rejected transaction released *all* locks; a different GPU can enroll.
+    assert second.register_worker(shared_worker("second", ("GPU-other",))).state is WorkerState.ONLINE
+
+
+def test_postgres_disjoint_gpu_registration_is_not_globally_serialized():
+    first, _ = bounded_repo(PausedOwnershipRepository)
+    second, _ = bounded_repo()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        one = pool.submit(first.register_worker, shared_worker("first", ("GPU-a",)))
+        try:
+            assert first.checked.wait(3)
+            two = pool.submit(second.register_worker, shared_worker("second", ("GPU-b",)))
+            assert two.result(timeout=3).state is WorkerState.ONLINE
+        finally:
+            first.release.set()
+        one.result(timeout=10)
+
+
+def test_postgres_same_new_worker_identity_serializes_topology_replacement():
+    first, _ = bounded_repo(PausedOwnershipRepository)
+    second, name = bounded_repo()
+    run_ownership_race(
+        first, lambda: first.register_worker(shared_worker("same", ("GPU-a",))),
+        name, lambda: second.register_worker(shared_worker("same", ("GPU-b",))),
+        conflict=False,
+    )
+    assert second.get_worker("same").spec.gpu_uuids == ("GPU-b",)
+    assert second.register_worker(shared_worker("reuse", ("GPU-a",))).state is WorkerState.ONLINE
+
+
+@pytest.mark.parametrize("target", [WorkerState.ONLINE, WorkerState.DRAINING])
+@pytest.mark.parametrize("first_reacquires", [False, True])
+def test_postgres_reacquisition_competes_with_registration(target, first_reacquires):
+    base, _ = bounded_repo()
+    base.register_worker(shared_worker("old"))
+    base.set_worker_state("old", WorkerState.OFFLINE)
+    first, _ = bounded_repo(PausedOwnershipRepository)
+    second, name = bounded_repo()
+    if first_reacquires:
+        first_call = lambda: first.set_worker_state("old", target)
+        second_call = lambda: second.register_worker(shared_worker("new"))
+    else:
+        first_call = lambda: first.register_worker(shared_worker("new"))
+        second_call = lambda: second.set_worker_state("old", target)
+    run_ownership_race(first, first_call, name, second_call)
+    if not first_reacquires:
+        assert base.get_worker("old").state is WorkerState.OFFLINE
+
+
+@pytest.mark.parametrize("target", [WorkerState.ONLINE, WorkerState.DRAINING])
+def test_postgres_offline_heartbeat_cannot_reacquire_gpus(target):
+    repo, _ = bounded_repo()
+    repo.register_worker(shared_worker("old"))
+    repo.set_worker_state("old", WorkerState.OFFLINE)
+    repo.register_worker(shared_worker("new"))
+    with pytest.raises(ConflictError, match="explicitly reacquire"):
+        repo.heartbeat_worker("old", WorkerHeartbeat(state=target))
+    assert repo.get_worker("old").state is WorkerState.OFFLINE
+    assert repo.heartbeat_worker("old").state is WorkerState.OFFLINE
+
+
+@pytest.mark.parametrize("release", ["complete", "fail", "cancel", "recover"])
+@pytest.mark.parametrize("offline_reason", ["state", "ttl"])
+def test_postgres_offline_busy_worker_keeps_gpus_until_fenced_release(release, offline_reason):
+    repo, _ = bounded_repo(lease_seconds=300, worker_ttl_seconds=1)
+    now = utc_now()
+    repo.register_worker(shared_worker("old"), now=now)
+    job = repo.submit_job(JobSubmission(capability="llm.chat"), now=now)
+    claim = repo.claim_next_job("old", now=now)
+    assert claim is not None
+    if offline_reason == "ttl":
+        now += timedelta(seconds=2)
+        assert repo.expire_stale_workers(now=now)
+    else:
+        repo.set_worker_state("old", WorkerState.OFFLINE, now=now)
+    with pytest.raises(ConflictError, match="overlaps"):
+        repo.register_worker(shared_worker("new"), now=now)
+    with pytest.raises(ConflictError, match="topology"):
+        repo.register_worker(shared_worker("old", ("GPU-other",)), now=now)
+    if release == "complete":
+        repo.complete_job(job.job_id, JobResult(text="ok"), worker_id="old", lease_token=claim.lease_token, now=now)
+    elif release == "fail":
+        repo.fail_job(job.job_id, "test", worker_id="old", lease_token=claim.lease_token, retryable=False, now=now)
+    elif release == "cancel":
+        repo.cancel_job(job.job_id, now=now)
+    else:
+        repo.recover_expired_jobs(now=now + timedelta(seconds=301))
+    assert repo.get_worker("old").active_jobs == 0
+    assert repo.register_worker(shared_worker("new"), now=now).state is WorkerState.ONLINE
+    with pytest.raises(ConflictError):
+        repo.complete_job(job.job_id, JobResult(text="stale"), worker_id="old", lease_token=claim.lease_token, now=now)
+
+
+def test_postgres_enrollment_pins_read_committed_even_if_database_default_differs():
+    dsn = psycopg.conninfo.make_conninfo(
+        DATABASE_URL, options="-c default_transaction_isolation=repeatable\\ read",
+    )
+    repo = PostgresControlRepository(dsn)
+    with repo._transaction() as connection:
+        assert connection.execute("SHOW transaction_isolation").fetchone()["transaction_isolation"] == "read committed"
+
+
+def test_postgres_ownership_race_harness_detects_missing_serialization():
+    # Negative control: deliberately remove ONLY the new acquisition protocol
+    # in this test double. Both absent-owner predicates can then pass; the
+    # controlled schedule reproduces F2 without a production escape hatch.
+    class Unserialized(PausedOwnershipRepository):
+        def _lock_worker_ownership(self, connection, worker_id, requested_gpu_uuids=()):
+            return connection.execute(
+                "SELECT * FROM workers WHERE id = %s FOR UPDATE", (worker_id,)
+            ).fetchone()
+
+    first, _ = bounded_repo(Unserialized)
+    second, _ = bounded_repo(Unserialized)
+    second.release.set()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        one = pool.submit(first.register_worker, shared_worker("first"))
+        try:
+            assert first.checked.wait(3)
+            two = pool.submit(second.register_worker, shared_worker("second"))
+            assert two.result(timeout=3).state is WorkerState.ONLINE
+        finally:
+            first.release.set()
+        assert one.result(timeout=10).state is WorkerState.ONLINE
+    with psycopg.connect(DATABASE_URL) as connection:
+        assert connection.execute("SELECT count(*) FROM workers WHERE state = 'online'").fetchone()[0] == 2
