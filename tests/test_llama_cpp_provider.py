@@ -588,6 +588,7 @@ async def test_subprocess_environment_pins_gpu_uuid_set(monkeypatch) -> None:
     async def fake_create_subprocess_exec(*args, **kwargs):
         captured["args"] = args
         captured["env"] = dict(kwargs["env"])
+        captured["kwargs"] = dict(kwargs)
         return Process()
 
     monkeypatch.setattr(
@@ -624,6 +625,8 @@ async def test_subprocess_environment_pins_gpu_uuid_set(monkeypatch) -> None:
     assert isinstance(env, dict)
     assert env["CUDA_VISIBLE_DEVICES"] == "GPU-large,GPU-small"
     assert "--device" in captured["args"]
+    assert "stdout" not in captured["kwargs"]
+    assert "stderr" not in captured["kwargs"]
 
     await controller.stop()
 
