@@ -12,6 +12,7 @@ from uuid import uuid4
 from ..contracts import AcceleratorDevice, ResourceShape, WorkerSpec
 from ..execution import JobResult
 from ..scheduling import worker_matches
+from ..serving import serving_job_binding_from_dict, worker_serving_from_dict
 from .migrate import required_migration_names
 from .models import (
     JobRecord,
@@ -25,12 +26,18 @@ from .models import (
 )
 from .repository import (
     ConflictError,
+    DeadlineExceededError,
+    NoCompatibleDeployment,
     NotFoundError,
+    OverloadedError,
     RepositoryError,
     StorageUnavailable,
+    _assert_worker_epoch,
     _aware,
     _failure_payload,
+    _lease_expiry,
     _submission_matches,
+    _worker_supports_serving,
 )
 from .serde import (
     job_result_from_dict,
@@ -180,6 +187,10 @@ class PostgresControlRepository:
             active_jobs=int(row.get("active_jobs") or 0),
             registered_at=row["registered_at"],
             last_seen_at=row["last_seen_at"],
+            serving=(
+                None if row.get("serving") is None
+                else worker_serving_from_dict(row["serving"])
+            ),
             metadata=row.get("metadata") or {},
         )
 
@@ -206,6 +217,12 @@ class PostgresControlRepository:
             finished_at=row.get("finished_at"),
             lease_expires_at=row.get("lease_expires_at"),
             updated_at=row["updated_at"],
+            serving_binding=(
+                None if row.get("serving_binding") is None
+                else serving_job_binding_from_dict(row["serving_binding"])
+            ),
+            deadline_at=row.get("deadline_at"),
+            attempt_runtime_instance_epoch=row.get("attempt_runtime_instance_epoch"),
         )
 
     def _lock_worker_ownership(
@@ -284,9 +301,9 @@ class PostgresControlRepository:
             if existing is not None:
                 current = self._worker(existing)
                 if current.active_jobs > 0:
-                    if registration.spec != current.spec:
+                    if registration.spec != current.spec or registration.serving != current.serving:
                         raise ConflictError(
-                            "worker resource/topology cannot change while jobs are active"
+                            "worker resource/topology/serving identity cannot change while jobs are active"
                         )
                     if registration.max_concurrency < current.active_jobs:
                         raise ConflictError(
@@ -313,12 +330,12 @@ class PostgresControlRepository:
                 """
                 INSERT INTO workers (
                     id, worker_class, capabilities, labels, gpu_uuids,
-                    accelerators, gpu_count, total_vram_mb, max_single_gpu_vram_mb,
+                    accelerators, serving, gpu_count, total_vram_mb, max_single_gpu_vram_mb,
                     max_concurrency, state, metadata, registered_at,
                     last_seen_at, active_jobs, updated_at
                 ) VALUES (
                     %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s,
                     %s, 'online', %s, %s,
                     %s, %s, %s
                 )
@@ -328,6 +345,7 @@ class PostgresControlRepository:
                     labels = EXCLUDED.labels,
                     gpu_uuids = EXCLUDED.gpu_uuids,
                     accelerators = EXCLUDED.accelerators,
+                    serving = EXCLUDED.serving,
                     gpu_count = EXCLUDED.gpu_count,
                     total_vram_mb = EXCLUDED.total_vram_mb,
                     max_single_gpu_vram_mb = EXCLUDED.max_single_gpu_vram_mb,
@@ -356,6 +374,10 @@ class PostgresControlRepository:
                             for device in spec.accelerators
                         ]
                     ),
+                    _json(
+                        None if registration.serving is None
+                        else registration.serving.to_dict()
+                    ),
                     spec.resources.gpu_count,
                     spec.resources.total_vram_mb,
                     spec.resources.max_single_gpu_vram_mb,
@@ -383,6 +405,7 @@ class PostgresControlRepository:
         worker_id: str,
         state: WorkerState,
         *,
+        runtime_instance_epoch: str | None = None,
         now: datetime | None = None,
     ) -> WorkerRecord:
         timestamp = _aware(now)
@@ -391,12 +414,14 @@ class PostgresControlRepository:
             if current_row is None:
                 raise NotFoundError(f"worker not found: {worker_id}")
             current = self._worker(current_row)
+            _assert_worker_epoch(current, runtime_instance_epoch)
             if state is not WorkerState.OFFLINE:
                 conflict = self._gpu_overlap(
                     connection,
                     WorkerRegistration(
                         spec=current.spec,
                         max_concurrency=current.max_concurrency,
+                        serving=current.serving,
                         metadata=current.metadata,
                     ),
                 )
@@ -444,6 +469,7 @@ class PostgresControlRepository:
                     job_row,
                     worker_id=worker_id,
                     lease_token=heartbeat.lease_token,
+                    runtime_instance_epoch=heartbeat.runtime_instance_epoch,
                     now=timestamp,
                 )
                 connection.execute(
@@ -453,7 +479,9 @@ class PostgresControlRepository:
                     WHERE id = %s
                     """,
                     (
-                        timestamp + timedelta(seconds=self.lease_seconds),
+                        _lease_expiry(
+                            timestamp, self.lease_seconds, job_row.get("deadline_at")
+                        ),
                         timestamp,
                         job_row["id"],
                     ),
@@ -465,6 +493,7 @@ class PostgresControlRepository:
             if worker_row is None:
                 raise NotFoundError(f"worker not found: {worker_id}")
             current = self._worker(worker_row)
+            _assert_worker_epoch(current, heartbeat.runtime_instance_epoch)
             if current.state is WorkerState.OFFLINE and heartbeat.state in {
                 WorkerState.ONLINE, WorkerState.DRAINING,
             }:
@@ -546,15 +575,41 @@ class PostgresControlRepository:
                         )
                     return record
 
+            if submission.deadline_at is not None and _aware(submission.deadline_at) <= timestamp:
+                raise DeadlineExceededError("job deadline has already expired")
+            if submission.serving_binding is not None:
+                cutoff = timestamp - timedelta(seconds=self.worker_ttl_seconds)
+                candidate_rows = connection.execute(
+                    """
+                    SELECT * FROM workers
+                    WHERE state = 'online'
+                      AND last_seen_at >= %s
+                      AND capabilities ? %s
+                    """,
+                    (cutoff, submission.capability),
+                ).fetchall()
+                compatible = [
+                    worker
+                    for worker in (self._worker(item) for item in candidate_rows)
+                    if worker_matches(worker.spec, submission.requirements)
+                    and _worker_supports_serving(worker, submission.serving_binding)
+                ]
+                if not compatible:
+                    raise NoCompatibleDeployment("no compatible serving deployment")
+                if all(worker.active_jobs >= worker.max_concurrency for worker in compatible):
+                    raise OverloadedError("all compatible serving workers are busy")
+
             row = connection.execute(
                 """
                 INSERT INTO jobs (
                     id, capability, payload, requirements, priority,
                     attempts, max_attempts, idempotency_key,
+                    serving_binding, deadline_at,
                     created_at, available_at, updated_at
                 ) VALUES (
                     %s, %s, %s, %s, %s,
                     0, %s, %s,
+                    %s, %s,
                     %s, %s, %s
                 )
                 ON CONFLICT (idempotency_key) DO NOTHING
@@ -568,6 +623,11 @@ class PostgresControlRepository:
                     submission.priority,
                     submission.max_attempts,
                     submission.idempotency_key,
+                    _json(
+                        None if submission.serving_binding is None
+                        else submission.serving_binding.to_dict()
+                    ),
+                    None if submission.deadline_at is None else _aware(submission.deadline_at),
                     timestamp,
                     available_at,
                     timestamp,
@@ -603,7 +663,11 @@ class PostgresControlRepository:
         return self._job(row)
 
     def claim_next_job(
-        self, worker_id: str, *, now: datetime | None = None
+        self,
+        worker_id: str,
+        *,
+        runtime_instance_epoch: str | None = None,
+        now: datetime | None = None,
     ) -> JobRecord | None:
         timestamp = _aware(now)
         cutoff = timestamp - timedelta(seconds=self.worker_ttl_seconds)
@@ -614,6 +678,7 @@ class PostgresControlRepository:
             if worker_row is None:
                 raise NotFoundError(f"worker not found: {worker_id}")
             worker = self._worker(worker_row)
+            _assert_worker_epoch(worker, runtime_instance_epoch)
             if worker.last_seen_at < cutoff:
                 connection.execute(
                     """
@@ -633,7 +698,17 @@ class PostgresControlRepository:
                 FROM jobs AS j
                 WHERE j.status = 'queued'
                   AND j.available_at <= %s
+                  AND (j.deadline_at IS NULL OR j.deadline_at > %s)
                   AND j.attempts < j.max_attempts
+                  AND (
+                      j.serving_binding IS NULL
+                      OR (
+                          %s IS NOT NULL
+                          AND j.serving_binding->>'deployment_revision' = %s
+                          AND COALESCE(%s::jsonb, '{}'::jsonb) ->> j.capability
+                              = j.serving_binding->>'serving_contract_revision'
+                      )
+                  )
                   AND %s::jsonb ? j.capability
                   AND (
                       j.requirements->>'worker_class' IS NULL
@@ -674,6 +749,10 @@ class PostgresControlRepository:
                 """,
                 (
                     timestamp,
+                    timestamp,
+                    None if worker.serving is None else worker.serving.deployment_revision,
+                    None if worker.serving is None else worker.serving.deployment_revision,
+                    _json({} if worker.serving is None else dict(worker.serving.contract_revisions)),
                     _json(sorted(worker.spec.capabilities)),
                     worker.spec.worker_class,
                     _json(sorted(worker.spec.capabilities)),
@@ -694,6 +773,7 @@ class PostgresControlRepository:
             if locked_worker_row is None:
                 raise NotFoundError(f"worker not found: {worker_id}")
             locked_worker = self._worker(locked_worker_row)
+            _assert_worker_epoch(locked_worker, runtime_instance_epoch)
             if (
                 locked_worker.last_seen_at < cutoff
                 or locked_worker.state is not WorkerState.ONLINE
@@ -705,6 +785,7 @@ class PostgresControlRepository:
             if (
                 selected.capability not in locked_worker.spec.capabilities
                 or not worker_matches(locked_worker.spec, selected.requirements)
+                or not _worker_supports_serving(locked_worker, selected.serving_binding)
             ):
                 return None
 
@@ -717,6 +798,7 @@ class PostgresControlRepository:
                     assigned_worker_id = %s,
                     lease_token = %s,
                     lease_expires_at = %s,
+                    attempt_runtime_instance_epoch = %s,
                     started_at = %s,
                     finished_at = NULL,
                     error = NULL,
@@ -727,7 +809,11 @@ class PostgresControlRepository:
                 (
                     worker_id,
                     lease_token,
-                    timestamp + timedelta(seconds=self.lease_seconds),
+                    _lease_expiry(timestamp, self.lease_seconds, selected.deadline_at),
+                    (
+                        None if selected.serving_binding is None
+                        else locked_worker.serving.runtime_instance_epoch
+                    ),
                     timestamp,
                     timestamp,
                     row["id"],
@@ -749,6 +835,7 @@ class PostgresControlRepository:
         *,
         worker_id: str,
         lease_token: str,
+        runtime_instance_epoch: str | None,
         now: datetime,
     ) -> None:
         if row["status"] != JobStatus.RUNNING.value:
@@ -757,6 +844,11 @@ class PostgresControlRepository:
             raise ConflictError(f"job {row['id']} is assigned to another worker")
         if not lease_token or row.get("lease_token") != lease_token:
             raise ConflictError(f"job {row['id']} lease token is stale")
+        if (
+            row.get("serving_binding") is not None
+            and row.get("attempt_runtime_instance_epoch") != runtime_instance_epoch
+        ):
+            raise ConflictError(f"job {row['id']} runtime instance epoch is stale")
         expires_at = row.get("lease_expires_at")
         if expires_at is None or expires_at <= now:
             raise ConflictError(f"job {row['id']} lease has expired")
@@ -783,6 +875,7 @@ class PostgresControlRepository:
         *,
         worker_id: str,
         lease_token: str,
+        runtime_instance_epoch: str | None = None,
         now: datetime | None = None,
     ) -> JobRecord:
         if not isinstance(result, JobResult):
@@ -798,6 +891,7 @@ class PostgresControlRepository:
                 row,
                 worker_id=worker_id,
                 lease_token=lease_token,
+                runtime_instance_epoch=runtime_instance_epoch,
                 now=timestamp,
             )
             updated = connection.execute(
@@ -809,6 +903,7 @@ class PostgresControlRepository:
                     assigned_worker_id = NULL,
                     lease_token = NULL,
                     lease_expires_at = NULL,
+                    attempt_runtime_instance_epoch = NULL,
                     finished_at = %s,
                     updated_at = %s
                 WHERE id = %s
@@ -832,6 +927,7 @@ class PostgresControlRepository:
         retryable: bool,
         worker_id: str,
         lease_token: str,
+        runtime_instance_epoch: str | None = None,
         now: datetime | None = None,
     ) -> JobRecord:
         timestamp = _aware(now)
@@ -845,9 +941,15 @@ class PostgresControlRepository:
                 row,
                 worker_id=worker_id,
                 lease_token=lease_token,
+                runtime_instance_epoch=runtime_instance_epoch,
                 now=timestamp,
             )
-            should_retry = retryable and int(row["attempts"]) < int(row["max_attempts"])
+            deadline_exceeded = row.get("deadline_at") is not None and row["deadline_at"] <= timestamp
+            should_retry = (
+                retryable
+                and not deadline_exceeded
+                and int(row["attempts"]) < int(row["max_attempts"])
+            )
             status = JobStatus.QUEUED if should_retry else JobStatus.FAILED
             updated = connection.execute(
                 """
@@ -857,6 +959,7 @@ class PostgresControlRepository:
                     assigned_worker_id = NULL,
                     lease_token = NULL,
                     lease_expires_at = NULL,
+                    attempt_runtime_instance_epoch = NULL,
                     started_at = CASE WHEN %s THEN NULL ELSE started_at END,
                     finished_at = CASE WHEN %s THEN NULL ELSE %s END,
                     available_at = CASE WHEN %s THEN %s ELSE available_at END,
@@ -903,6 +1006,7 @@ class PostgresControlRepository:
                     assigned_worker_id = NULL,
                     lease_token = NULL,
                     lease_expires_at = NULL,
+                    attempt_runtime_instance_epoch = NULL,
                     finished_at = %s,
                     updated_at = %s
                 WHERE id = %s
@@ -938,7 +1042,14 @@ class PostgresControlRepository:
                 if row is None:
                     return recovered
 
-                should_retry = int(row["attempts"]) < int(row["max_attempts"])
+                deadline_exceeded = (
+                    row.get("deadline_at") is not None
+                    and row["deadline_at"] <= timestamp
+                )
+                should_retry = (
+                    not deadline_exceeded
+                    and int(row["attempts"]) < int(row["max_attempts"])
+                )
                 status = JobStatus.QUEUED if should_retry else JobStatus.FAILED
                 updated = connection.execute(
                     """
@@ -948,6 +1059,7 @@ class PostgresControlRepository:
                         assigned_worker_id = NULL,
                         lease_token = NULL,
                         lease_expires_at = NULL,
+                        attempt_runtime_instance_epoch = NULL,
                         started_at = CASE WHEN %s THEN NULL ELSE started_at END,
                         finished_at = CASE WHEN %s THEN NULL ELSE %s END,
                         available_at = CASE WHEN %s THEN %s ELSE available_at END,
@@ -959,7 +1071,11 @@ class PostgresControlRepository:
                         status.value,
                         _json(
                             {
-                                "message": "worker lease expired",
+                                "code": "deadline-exceeded" if deadline_exceeded else "lease-expired",
+                                "message": (
+                                    "job deadline exceeded"
+                                    if deadline_exceeded else "worker lease expired"
+                                ),
                                 "retryable": should_retry,
                             }
                         ),
@@ -976,6 +1092,50 @@ class PostgresControlRepository:
                     connection, row.get("assigned_worker_id"), timestamp
                 )
                 recovered.append(self._job(updated))
+
+    def expire_deadline_jobs(
+        self, *, now: datetime | None = None
+    ) -> list[JobRecord]:
+        timestamp = _aware(now)
+        expired: list[JobRecord] = []
+        while True:
+            with self._transaction() as connection:
+                row = connection.execute(
+                    """
+                    SELECT * FROM jobs
+                    WHERE status = 'queued'
+                      AND deadline_at IS NOT NULL
+                      AND deadline_at <= %s
+                    ORDER BY sequence ASC
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT 1
+                    """,
+                    (timestamp,),
+                ).fetchone()
+                if row is None:
+                    return expired
+                updated = connection.execute(
+                    """
+                    UPDATE jobs
+                    SET status = 'failed',
+                        error = %s,
+                        finished_at = %s,
+                        updated_at = %s
+                    WHERE id = %s
+                    RETURNING *
+                    """,
+                    (
+                        _json({
+                            "code": "deadline-exceeded",
+                            "message": "job deadline exceeded",
+                            "retryable": False,
+                        }),
+                        timestamp,
+                        timestamp,
+                        row["id"],
+                    ),
+                ).fetchone()
+                expired.append(self._job(updated))
 
 
 __all__ = ["PostgresControlRepository"]
