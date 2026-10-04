@@ -456,6 +456,8 @@ async def test_subprocess_does_not_rewrite_gpu_identity(monkeypatch) -> None:
         captured["args"].index("--gpu") + 1
     ] == "GPU-exact-uuid"
     assert "env" not in captured["kwargs"]
+    assert "stdout" not in captured["kwargs"]
+    assert "stderr" not in captured["kwargs"]
 
     await controller.stop()
 
