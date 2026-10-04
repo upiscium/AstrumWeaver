@@ -374,9 +374,10 @@ class PostgresControlRepository:
                             for device in spec.accelerators
                         ]
                     ),
-                    _json(
-                        None if registration.serving is None
-                        else registration.serving.to_dict()
+                    (
+                        None
+                        if registration.serving is None
+                        else _json(registration.serving.to_dict())
                     ),
                     spec.resources.gpu_count,
                     spec.resources.total_vram_mb,
@@ -623,9 +624,10 @@ class PostgresControlRepository:
                     submission.priority,
                     submission.max_attempts,
                     submission.idempotency_key,
-                    _json(
-                        None if submission.serving_binding is None
-                        else submission.serving_binding.to_dict()
+                    (
+                        None
+                        if submission.serving_binding is None
+                        else _json(submission.serving_binding.to_dict())
                     ),
                     None if submission.deadline_at is None else _aware(submission.deadline_at),
                     timestamp,
