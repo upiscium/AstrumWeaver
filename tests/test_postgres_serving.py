@@ -438,3 +438,42 @@ def test_postgres_restart_fences_stale_serving_process_before_claim():
         )
         is None
     )
+
+
+def test_postgres_rejects_corrupt_durable_serving_identity():
+    assert DATABASE_URL is not None
+    now = utc_now()
+    repo = PostgresControlRepository(DATABASE_URL)
+    registration = worker(
+        "worker", epoch="12345678-1234-4234-9234-123456789abc"
+    )
+    repo.register_worker(registration, now=now)
+    queued = repo.submit_job(submission(now), now=now)
+
+    with psycopg.connect(DATABASE_URL, autocommit=True) as connection:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            connection.execute(
+                """
+                UPDATE jobs
+                SET serving = jsonb_set(
+                    serving,
+                    '{capability}',
+                    to_jsonb(%s::text)
+                )
+                WHERE id::text = %s
+                """,
+                ("other.capability", queued.job_id),
+            )
+
+    claimed = claim_serving(repo, "worker", now=now)
+    assert claimed is not None
+    with psycopg.connect(DATABASE_URL, autocommit=True) as connection:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            connection.execute(
+                """
+                UPDATE jobs
+                SET claimed_deployment_revision = %s
+                WHERE id::text = %s
+                """,
+                (digest("a"), queued.job_id),
+            )
