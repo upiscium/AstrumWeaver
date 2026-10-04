@@ -409,6 +409,49 @@ async def test_ready_rejects_legacy_001_only_schema_until_all_migrations_apply()
         assert after.json()["ready"] is True
 
 
+def test_serving_migration_replays_after_schema_commit_before_ledger_record() -> None:
+    assert DATABASE_URL is not None
+    apply_migrations(DATABASE_URL)
+
+    # Model a process loss after 003 committed but before its ledger row was
+    # recorded. Re-running the migration must converge instead of failing on
+    # already-created serving constraints.
+    with psycopg.connect(DATABASE_URL, autocommit=True) as connection:
+        connection.execute(
+            "DELETE FROM schema_migrations WHERE name = %s",
+            ("003_serving_bindings.sql",),
+        )
+
+    applied = apply_migrations(DATABASE_URL)
+    assert "003_serving_bindings.sql" in applied
+
+    with psycopg.connect(DATABASE_URL) as connection:
+        constraints = {
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT conname
+                FROM pg_constraint
+                WHERE conrelid = 'jobs'::regclass
+                  AND conname LIKE 'jobs_serving_%'
+                """
+            ).fetchall()
+        }
+        recorded = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM schema_migrations"
+            ).fetchall()
+        }
+
+    assert constraints == {
+        "jobs_serving_deadline_check",
+        "jobs_serving_epoch_scope_check",
+        "jobs_serving_running_epoch_check",
+    }
+    assert "003_serving_bindings.sql" in recorded
+
+
 def test_packaged_migration_entrypoint_is_idempotent() -> None:
     assert DATABASE_URL is not None
     applied = apply_migrations(DATABASE_URL)
