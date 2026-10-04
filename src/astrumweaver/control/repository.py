@@ -232,7 +232,7 @@ class InMemoryControlRepository:
         timestamp = _aware(now)
         with self._lock:
             current = self.get_worker(worker_id)
-            if state is WorkerState.ONLINE and current.state is WorkerState.OFFLINE:
+            if state is not WorkerState.OFFLINE:
                 registration = WorkerRegistration(
                     spec=current.spec,
                     max_concurrency=current.max_concurrency,
@@ -256,8 +256,10 @@ class InMemoryControlRepository:
         heartbeat = heartbeat or WorkerHeartbeat()
         with self._lock:
             current = self.get_worker(worker_id)
-            if current.state is WorkerState.OFFLINE and heartbeat.state is WorkerState.ONLINE:
-                raise ConflictError("offline worker must be explicitly returned online")
+            if current.state is WorkerState.OFFLINE and heartbeat.state in {
+                WorkerState.ONLINE, WorkerState.DRAINING,
+            }:
+                raise ConflictError("offline worker must explicitly reacquire GPU ownership")
 
             if heartbeat.active_job_id is not None or heartbeat.lease_token is not None:
                 if not heartbeat.active_job_id or not heartbeat.lease_token:

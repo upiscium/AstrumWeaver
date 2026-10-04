@@ -82,6 +82,48 @@ A worker with active jobs may not change its resource/topology declaration durin
 
 This protects the scheduler-visible exclusive compute-unit contract.
 
+PostgreSQL ownership acquisition is serialized even when neither Worker exists
+yet. Registration and explicit state changes take transaction-scoped advisory
+locks in this order:
+
+1. the Worker identity;
+2. the sorted, deduplicated lock keys of its current and requested GPU UUIDs;
+3. that Worker's row.
+
+Worker and GPU locks use separate fixed namespaces and deterministic SHA-256
+identity keys. A digest collision can serialize unrelated identities, but cannot
+admit an overlapping owner. Sorting the actual lock keys, rather than only the
+UUID strings, also keeps collision cases deadlock-safe. Different non-overlapping
+Worker/GPU sets can enroll concurrently; there is no global admission lock.
+
+The overlap predicate runs with a fresh READ COMMITTED snapshot after lock
+acquisition and does not lock peer Worker rows. Repository write transactions
+explicitly select READ COMMITTED instead of inheriting a database-level isolation
+default that might preserve a stale pre-wait snapshot. Locks are released on
+transaction commit/rollback, not stored in process-local or session state.
+
+Both ONLINE and DRAINING reserve the declared GPUs. An OFFLINE Worker with
+outstanding running jobs retains its reservation until fenced terminal/recovery
+accounting releases the last job. Expiry, completion, failure, cancellation and
+OFFLINE transitions only release ownership; they retain their existing row-lock
+protocol and never acquire advisory locks after a Worker row. A subsequent
+registration or explicit ONLINE/DRAINING transition must recheck ownership.
+Heartbeat cannot take an OFFLINE Worker back to either reserving state; use
+explicit registration/state transition instead. A heartbeat with no state keeps
+an OFFLINE Worker OFFLINE.
+
+This protocol is enforced by the Control repository, not by a database uniqueness
+constraint or hypervisor device isolation. Direct SQL and older Control binaries
+do not participate. Deploy the updated version to **all** Control processes before
+resuming enrollment or state changes; mixed-version rolling enrollment is not
+safe. No schema migration is needed for this change. Pre-existing duplicate GPU
+owners are not silently reassigned: stop enrollment, inspect affected Workers and
+outstanding attempts, and resolve ownership deliberately before resuming. Do not
+use database edits to bypass an active attempt's lease fence.
+
+References: PostgreSQL 17 [advisory locks](https://www.postgresql.org/docs/17/explicit-locking.html#ADVISORY-LOCKS)
+and [READ COMMITTED isolation](https://www.postgresql.org/docs/17/transaction-iso.html#XACT-READ-COMMITTED).
+
 ## Resource matching
 
 The durable PostgreSQL claim query implements the same semantics as the pure matcher:
@@ -127,6 +169,10 @@ Whenever a transaction touches both a job and a worker, AstrumWeaver uses the lo
 
 job -> worker
 
-Heartbeat renewal follows the same order.
+Heartbeat renewal follows the same order. Enrollment/state operations use the
+separate advisory-identity -> advisory-GPU -> own-Worker order described above,
+do not lock any jobs, and do not lock peer Workers. Job/lease operations never
+wait for these advisory locks. This avoids introducing an ownership/lease lock
+cycle.
 
 This avoids introducing a worker/job lock inversion between claim, completion, failure, cancellation, recovery, and heartbeat paths.
