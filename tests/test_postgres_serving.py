@@ -116,6 +116,20 @@ def submission(now, binding=None, *, key=None):
     )
 
 
+def serving_epoch(repo, worker_id: str) -> str:
+    serving = repo.get_worker(worker_id).serving
+    assert serving is not None
+    return serving.runtime_instance.epoch
+
+
+def claim_serving(repo, worker_id: str, *, now):
+    return repo.claim_next_job(
+        worker_id,
+        runtime_instance_epoch=serving_epoch(repo, worker_id),
+        now=now,
+    )
+
+
 def test_postgres_serving_claim_persists_exact_attempt_identity():
     assert DATABASE_URL is not None
     now = utc_now()
@@ -126,7 +140,7 @@ def test_postgres_serving_claim_persists_exact_attempt_identity():
     repo.register_worker(registration, now=now)
     job = repo.submit_job(submission(now), now=now)
 
-    claim = repo.claim_next_job("worker", now=now)
+    claim = claim_serving(repo, "worker", now=now)
     assert claim is not None
     assert claim.job_id == job.job_id
     assert claim.serving == job.serving
@@ -190,8 +204,8 @@ def test_postgres_wrong_deployment_cannot_block_matching_worker():
     repo.register_worker(right, now=now)
     job = repo.submit_job(submission(now, binding), now=now)
 
-    assert repo.claim_next_job("wrong", now=now) is None
-    assert repo.claim_next_job("right", now=now).job_id == job.job_id
+    assert claim_serving(repo, "wrong", now=now) is None
+    assert claim_serving(repo, "right", now=now).job_id == job.job_id
 
 
 def test_postgres_restart_epoch_fences_old_attempt_and_retry_uses_new_epoch():
@@ -203,7 +217,7 @@ def test_postgres_restart_epoch_fences_old_attempt_and_retry_uses_new_epoch():
     )
     repo.register_worker(first, now=now)
     job = repo.submit_job(submission(now), now=now)
-    claim1 = repo.claim_next_job("worker", now=now)
+    claim1 = claim_serving(repo, "worker", now=now)
     assert claim1 is not None
 
     retry_at = now + timedelta(seconds=2)
@@ -214,7 +228,7 @@ def test_postgres_restart_epoch_fences_old_attempt_and_retry_uses_new_epoch():
         "worker", epoch="42345678-1234-4234-9234-123456789abc"
     )
     repo.register_worker(second, now=retry_at)
-    claim2 = repo.claim_next_job("worker", now=retry_at)
+    claim2 = claim_serving(repo, "worker", now=retry_at)
     assert claim2 is not None
     assert claim2.claimed_runtime_instance_epoch == second.serving.runtime_instance.epoch
 
@@ -249,7 +263,7 @@ def test_postgres_deadline_expiry_releases_running_capacity():
         replace(submission(now), deadline_at=now + timedelta(seconds=1)),
         now=now,
     )
-    assert repo.claim_next_job("worker", now=now) is not None
+    assert claim_serving(repo, "worker", now=now) is not None
 
     expired = repo.expire_deadline_jobs(now=now + timedelta(seconds=2))
     assert [item.job_id for item in expired] == [job.job_id]
@@ -274,7 +288,7 @@ def test_postgres_competing_matching_workers_claim_serving_job_once():
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(
-            pool.map(lambda worker_id: repo.claim_next_job(worker_id, now=now), ["a", "b"])
+            pool.map(lambda worker_id: claim_serving(repo, worker_id, now=now), ["a", "b"])
         )
 
     claims = [item for item in results if item is not None]
@@ -309,7 +323,12 @@ def test_postgres_serving_admission_excludes_draining_and_stale_workers():
         "worker", epoch="12345678-1234-4234-9234-123456789abc"
     )
     repo.register_worker(registration, now=now)
-    repo.set_worker_state("worker", WorkerState.DRAINING, now=now)
+    repo.set_worker_state(
+        "worker",
+        WorkerState.DRAINING,
+        runtime_instance_epoch=registration.serving.runtime_instance.epoch,
+        now=now,
+    )
 
     with pytest.raises(NoCompatibleDeployment):
         repo.submit_job(submission(now), now=now)
@@ -362,7 +381,7 @@ def test_postgres_deadline_cancel_recovery_race_has_one_terminal_owner():
         replace(submission(now), deadline_at=now + timedelta(seconds=1)),
         now=now,
     )
-    claimed = setup.claim_next_job("worker", now=now)
+    claimed = claim_serving(setup, "worker", now=now)
     assert claimed is not None and claimed.lease_token
 
     later = now + timedelta(seconds=2)
@@ -389,3 +408,33 @@ def test_postgres_deadline_cancel_recovery_race_has_one_terminal_owner():
             runtime_instance_epoch=registration.serving.runtime_instance.epoch,
             now=later,
         )
+
+
+def test_postgres_restart_fences_stale_serving_process_before_claim():
+    assert DATABASE_URL is not None
+    now = utc_now()
+    repo = PostgresControlRepository(DATABASE_URL)
+    first = worker(
+        "worker", epoch="12345678-1234-4234-9234-123456789abc"
+    )
+    repo.register_worker(first, now=now)
+    second = worker(
+        "worker", epoch="82345678-1234-4234-9234-123456789abc"
+    )
+    repo.register_worker(second, now=now)
+
+    with pytest.raises(ConflictError, match="runtime instance is stale"):
+        repo.claim_next_job(
+            "worker",
+            runtime_instance_epoch=first.serving.runtime_instance.epoch,
+            now=now,
+        )
+
+    assert (
+        repo.claim_next_job(
+            "worker",
+            runtime_instance_epoch=second.serving.runtime_instance.epoch,
+            now=now,
+        )
+        is None
+    )
