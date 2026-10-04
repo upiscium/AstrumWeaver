@@ -416,6 +416,82 @@ RuntimeProvider.
 The manual commands below remain documented for troubleshooting,
 non-interactive deployment, and understanding exactly what the TUI wraps.
 
+### RuntimeBackend Nix profile
+
+For generic systemd, RuntimeBackend packages are kept separate from the
+installer/Control/Worker profiles. The release-blocking standard path currently
+covers **llama.cpp**.
+
+When the TUI selects `llama-cpp`, the first-party systemd driver uses the
+packaged runtime-profile manager to reconcile:
+
+```text
+/nix/var/nix/profiles/astrumweaver-runtime-llama-cpp
+```
+
+against the exact AstrumWeaver candidate that provided the TUI. That candidate
+exports:
+
+```text
+#runtime-llama-cpp = nixpkgs llama-cpp-cuda
+```
+
+so this path is explicitly GPU-capable; it does not rely on the ambiguous
+plain `llama-cpp` nixpkgs default.
+
+The Worker deployment manifest stores the stable executable path:
+
+```text
+/nix/var/nix/profiles/astrumweaver-runtime-llama-cpp/bin/llama-server
+```
+
+The package preflight verifies the dedicated profile's Nix provenance. An
+unrelated `llama-server` found through the root shell's or service's ambient
+`PATH` does **not** satisfy the prerequisite.
+
+For the normal TUI flow, do not install llama.cpp manually first. Dry-run shows
+the runtime package as satisfied or needing apply; after the exact SetupPlan is
+approved, the packaged helper installs or upgrades the dedicated profile and a
+rerun converges to satisfied state.
+
+You can inspect the profile explicitly:
+
+```sh
+sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-runtime-profile \
+  status llama-cpp
+```
+
+After intentionally upgrading the AstrumWeaver installer profile to a newer
+candidate, explicitly move the runtime profile to that same candidate with:
+
+```sh
+sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-runtime-profile \
+  upgrade llama-cpp
+```
+
+The runtime profile has its own Nix generations. To return to its previous
+generation:
+
+```sh
+sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-runtime-profile \
+  rollback llama-cpp
+```
+
+Rollback is deliberately operator-owned. A newer TUI still expects its own
+candidate; applying that newer reviewed SetupPlan again will reconcile the
+runtime profile forward. If you intentionally keep a rolled-back runtime,
+keep the corresponding AstrumWeaver candidate/runtime contract aligned as
+well.
+
+Do not add unrelated packages to the
+`astrumweaver-runtime-llama-cpp` profile. AstrumWeaver owns that profile as a
+single-runtime boundary.
+
+The `ASTRUMWEAVER_RUNTIME_INSTALLERS_JSON` and
+`ASTRUMWEAVER_RUNTIME_VERIFIERS_JSON` argv maps remain available for
+advanced/custom deployments and for providers without a first-party managed
+Nix RuntimeBackend. They are not the normal llama.cpp installation path.
+
 ### Manual Control package
 
 

@@ -34,6 +34,26 @@ The provider does not own:
 - arbitrary model download without explicit setup policy
 - Control-plane runtime-specific scheduling
 
+## Generic systemd package boundary
+
+On generic systemd Linux, the standard llama.cpp installation path is managed
+by AstrumWeaver's dedicated Nix RuntimeBackend profile:
+
+```text
+/nix/var/nix/profiles/astrumweaver-runtime-llama-cpp
+```
+
+The AstrumWeaver flake output used by that profile is `#runtime-llama-cpp`,
+which is explicitly backed by nixpkgs `llama-cpp-cuda`. The Worker runtime
+deployment records the stable executable
+`/nix/var/nix/profiles/astrumweaver-runtime-llama-cpp/bin/llama-server`.
+
+The generic-systemd prerequisite check validates the Nix profile provenance
+against the same AstrumWeaver candidate as the installer. A different
+`llama-server` on ambient `PATH` is intentionally irrelevant. Installation,
+candidate upgrade, and profile rollback are documented under
+[Installation — RuntimeBackend Nix profile](installation.md#runtimebackend-nix-profile).
+
 ## Model format
 
 The initial provider requires:

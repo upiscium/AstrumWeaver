@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
+
+from astrumweaver.setup.systemd import (
+    GENERIC_SYSTEMD_LLAMA_CPP_EXECUTABLE,
+    GENERIC_SYSTEMD_RUNTIME_PROFILE_MANAGER,
+    create_systemd_driver,
+)
 
 from astrumweaver.setup import (
     SetupAction,
@@ -166,6 +173,82 @@ def test_systemd_driver_runs_only_explicit_package_installer(
     assert receipt.changed
     assert log.read_text(encoding="utf-8") == "custom-runtime"
     assert driver.inspect(install).state is SetupActionState.SATISFIED
+
+
+def test_standard_llama_cpp_profile_ignores_ambient_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "root"
+    manager = tmp_path / "astrumweaver-runtime-profile"
+    marker = tmp_path / "runtime-installed"
+    manager.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -eu\n"
+        "case \"$1\" in\n"
+        "  verify)\n"
+        "    test \"$2\" = package\n"
+        "    test \"$3\" = llama-cpp\n"
+        f"    test -f {str(marker)!r}\n"
+        "    ;;\n"
+        "  ensure)\n"
+        "    test \"$2\" = llama-cpp\n"
+        f"    touch {str(marker)!r}\n"
+        "    ;;\n"
+        "  *) exit 2 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    manager.chmod(0o755)
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    ambient = fake_bin / "llama-server"
+    ambient.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    ambient.chmod(0o755)
+
+    monkeypatch.setenv("ASTRUMWEAVER_SETUP_ROOT", str(root))
+    monkeypatch.setenv("ASTRUMWEAVER_RUNTIME_PROFILE_MANAGER", str(manager))
+    monkeypatch.setenv(
+        "PATH",
+        str(fake_bin) + os.pathsep + os.environ.get("PATH", ""),
+    )
+    monkeypatch.delenv("ASTRUMWEAVER_RUNTIME_INSTALLERS_JSON", raising=False)
+    monkeypatch.delenv("ASTRUMWEAVER_RUNTIME_VERIFIERS_JSON", raising=False)
+
+    driver = create_systemd_driver()
+    install = action(
+        SetupActionKind.ENSURE_PACKAGE,
+        payload={
+            "provider_id": "llama-cpp",
+            "package_reference": "llama-cpp",
+        },
+    )
+
+    assert driver.installers["llama-cpp"] == (str(manager), "ensure")
+    assert driver.verifiers["llama-cpp"] == (str(manager), "verify")
+    assert ambient.exists()
+    assert driver.inspect(install).state is SetupActionState.NEEDS_APPLY
+
+    receipt = driver.apply(install)
+
+    assert receipt.changed
+    assert marker.exists()
+    assert driver.inspect(install).state is SetupActionState.SATISFIED
+
+
+def test_standard_runtime_profile_paths_are_absolute_and_separate() -> None:
+    assert Path(GENERIC_SYSTEMD_RUNTIME_PROFILE_MANAGER).is_absolute()
+    assert Path(GENERIC_SYSTEMD_LLAMA_CPP_EXECUTABLE).is_absolute()
+    assert (
+        GENERIC_SYSTEMD_RUNTIME_PROFILE_MANAGER
+        != GENERIC_SYSTEMD_LLAMA_CPP_EXECUTABLE
+    )
+    assert "astrumweaver-installer" in GENERIC_SYSTEMD_RUNTIME_PROFILE_MANAGER
+    assert (
+        "astrumweaver-runtime-llama-cpp"
+        in GENERIC_SYSTEMD_LLAMA_CPP_EXECUTABLE
+    )
 
 
 def test_systemd_driver_materializes_narrow_nvidia_driver_bridge(

@@ -46,6 +46,14 @@ from .migration import (
 )
 
 
+GENERIC_SYSTEMD_RUNTIME_PROFILE_MANAGER = (
+    "/nix/var/nix/profiles/astrumweaver-installer/bin/"
+    "astrumweaver-runtime-profile"
+)
+GENERIC_SYSTEMD_LLAMA_CPP_EXECUTABLE = (
+    "/nix/var/nix/profiles/astrumweaver-runtime-llama-cpp/bin/llama-server"
+)
+
 _PROVIDER_EXECUTABLES: Mapping[str, str] = {
     "ollama": "ollama",
     "llama-cpp": "llama-server",
@@ -76,8 +84,10 @@ def _action_marker(action: SetupAction) -> str:
 class SystemdSetupDriver:
     """Materialize reviewed runtime setup on an existing systemd Worker host.
 
-    Runtime package mutation is allowed only through an explicit operator-
-    configured argv prefix. No shell is involved and no installer is guessed.
+    The standard generic-systemd llama.cpp path is reconciled through the
+    packaged AstrumWeaver Nix runtime-profile manager. Other package/model
+    mutation is allowed only through explicit operator-configured argv prefixes.
+    No shell is involved and no distribution package manager is guessed.
     """
 
     def __init__(
@@ -1506,10 +1516,36 @@ def _argv_map_from_env(name: str) -> dict[str, tuple[str, ...]]:
     return values
 
 
+def _argv_map_with_defaults(
+    name: str,
+    defaults: Mapping[str, tuple[str, ...]],
+) -> dict[str, tuple[str, ...]]:
+    values = {
+        str(provider_id): tuple(argv)
+        for provider_id, argv in defaults.items()
+    }
+    values.update(_argv_map_from_env(name))
+    return values
+
+
 def create_systemd_driver() -> SystemdSetupDriver:
     """Factory usable directly by astrumweaver-setup-tui --driver."""
 
     root = Path(os.environ.get("ASTRUMWEAVER_SETUP_ROOT", "/"))
+    runtime_profile_manager = os.environ.get(
+        "ASTRUMWEAVER_RUNTIME_PROFILE_MANAGER",
+        GENERIC_SYSTEMD_RUNTIME_PROFILE_MANAGER,
+    ).strip()
+    if not runtime_profile_manager or not Path(runtime_profile_manager).is_absolute():
+        raise RuntimeError(
+            "ASTRUMWEAVER_RUNTIME_PROFILE_MANAGER must be an absolute path"
+        )
+    standard_installers = {
+        "llama-cpp": (runtime_profile_manager, "ensure"),
+    }
+    standard_verifiers = {
+        "llama-cpp": (runtime_profile_manager, "verify"),
+    }
     return SystemdSetupDriver(
         root=root,
         worker_config_path=Path(
@@ -1586,8 +1622,9 @@ def create_systemd_driver() -> SystemdSetupDriver:
                 "0.25",
             )
         ),
-        installers=_argv_map_from_env(
-            "ASTRUMWEAVER_RUNTIME_INSTALLERS_JSON"
+        installers=_argv_map_with_defaults(
+            "ASTRUMWEAVER_RUNTIME_INSTALLERS_JSON",
+            standard_installers,
         ),
         downloaders=_argv_map_from_env(
             "ASTRUMWEAVER_RUNTIME_DOWNLOADERS_JSON"
@@ -1595,7 +1632,10 @@ def create_systemd_driver() -> SystemdSetupDriver:
         converters=_argv_map_from_env(
             "ASTRUMWEAVER_RUNTIME_CONVERTERS_JSON"
         ),
-        verifiers=_argv_map_from_env("ASTRUMWEAVER_RUNTIME_VERIFIERS_JSON"),
+        verifiers=_argv_map_with_defaults(
+            "ASTRUMWEAVER_RUNTIME_VERIFIERS_JSON",
+            standard_verifiers,
+        ),
         service_user=os.environ.get(
             "ASTRUMWEAVER_WORKER_USER",
             "astrumweaver",
@@ -1607,4 +1647,9 @@ def create_systemd_driver() -> SystemdSetupDriver:
     )
 
 
-__all__ = ["SystemdSetupDriver", "create_systemd_driver"]
+__all__ = [
+    "GENERIC_SYSTEMD_LLAMA_CPP_EXECUTABLE",
+    "GENERIC_SYSTEMD_RUNTIME_PROFILE_MANAGER",
+    "SystemdSetupDriver",
+    "create_systemd_driver",
+]

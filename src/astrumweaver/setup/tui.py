@@ -38,6 +38,7 @@ from ..runtime.providers import (
     FreeTokenMoeStrategy,
     FreeTokenProvider,
     LlamaCppProvider,
+    LlamaCppProviderConfig,
     LlamaCppSplitMode,
     OllamaProvider,
     VllmProvider,
@@ -47,6 +48,7 @@ from .contracts import (
     DeploymentPath,
     SetupActionKind,
     SetupActionResult,
+    SetupActionState,
     SetupApplyResult,
     SetupApproval,
     SetupHostSnapshot,
@@ -55,7 +57,11 @@ from .contracts import (
 from .discovery import DiscoveredGpu, discover_local_gpus, discover_local_host
 from .migration import DEFAULT_RUNTIME_MANIFEST, InstalledWorkerContract
 from .planner import build_runtime_setup_plan
-from .systemd import SystemdSetupDriver, create_systemd_driver
+from .systemd import (
+    GENERIC_SYSTEMD_LLAMA_CPP_EXECUTABLE,
+    SystemdSetupDriver,
+    create_systemd_driver,
+)
 from .first_run import (
     ControlBootstrapSpec,
     control_url_for_bind_host,
@@ -256,11 +262,21 @@ _PROVIDER_OPTIONS: Mapping[str, tuple[TuiOptionSpec, ...]] = {
 }
 
 
-def default_runtime_catalog() -> RuntimeCatalog:
+def default_runtime_catalog(
+    *,
+    deployment_path: DeploymentPath | None = None,
+) -> RuntimeCatalog:
+    llama_cpp = LlamaCppProvider(
+        LlamaCppProviderConfig(
+            executable=GENERIC_SYSTEMD_LLAMA_CPP_EXECUTABLE,
+        )
+        if deployment_path is DeploymentPath.SYSTEMD
+        else None
+    )
     return RuntimeCatalog(
         (
             OllamaProvider(),
-            LlamaCppProvider(),
+            llama_cpp,
             VllmProvider(),
             FreeTokenProvider(),
             ExLlamaV3Provider(),
@@ -584,6 +600,19 @@ def _render_preview(io: TuiIO, plan, driver: SetupActionDriver) -> bool:
             f"  {action.action_id} {action.state.value}: "
             f"{action.description}{detail}"
         )
+    if (
+        plan.deployment_path is DeploymentPath.SYSTEMD
+        and plan.provider_id == "llama-cpp"
+        and any(
+            action.kind is SetupActionKind.ENSURE_PACKAGE
+            and action.state is not SetupActionState.SATISFIED
+            for action in preview.actions
+        )
+    ):
+        io.write(
+            "  RuntimeBackend recovery: "
+            "docs/installation.md#runtimebackend-nix-profile"
+        )
     return not preview.blocked
 
 
@@ -643,7 +672,12 @@ def _approval(io: TuiIO, plan) -> SetupApproval | None:
     )
 
 
-def recovery_guidance(result: SetupApplyResult) -> tuple[str, ...]:
+def recovery_guidance(
+    result: SetupApplyResult,
+    *,
+    deployment_path: DeploymentPath | None = None,
+    provider_id: str | None = None,
+) -> tuple[str, ...]:
     if result.succeeded:
         return ("Setup completed successfully.",)
     if any(action.status.value == "rollback_failed" for action in result.rollback_actions):
@@ -651,6 +685,23 @@ def recovery_guidance(result: SetupApplyResult) -> tuple[str, ...]:
             "Rollback was incomplete. Reconcile the reported action before retrying.",
             "Do not switch runtime providers implicitly; keep the explicit selection or edit it.",
         )
+    if any(
+        action.kind is SetupActionKind.ENSURE_PACKAGE
+        and action.status.value in {"blocked", "failed"}
+        for action in result.actions
+    ):
+        guidance = ["Runtime package provisioning did not complete."]
+        if (
+            deployment_path is DeploymentPath.SYSTEMD
+            and provider_id == "llama-cpp"
+        ):
+            guidance.append(
+                "Use the standard Nix RuntimeBackend path in "
+                "docs/installation.md#runtimebackend-nix-profile; custom "
+                "installer argv is an advanced override."
+            )
+        guidance.append("No provider substitution was performed.")
+        return tuple(guidance)
     if any(action.status.value == "blocked" for action in result.actions):
         return (
             "Resolve the blocked preflight/action and rerun the same reviewed setup flow.",
@@ -662,7 +713,7 @@ def recovery_guidance(result: SetupApplyResult) -> tuple[str, ...]:
     )
 
 
-def _render_result(io: TuiIO, result: SetupApplyResult) -> None:
+def _render_result(io: TuiIO, result: SetupApplyResult, plan) -> None:
     io.write(f"Apply result: {result.status.value}")
     for action in result.actions:
         detail = f" — {action.detail}" if action.detail else ""
@@ -670,7 +721,11 @@ def _render_result(io: TuiIO, result: SetupApplyResult) -> None:
     for action in result.rollback_actions:
         detail = f" — {action.detail}" if action.detail else ""
         io.write(f"  rollback {action.action_id} {action.status.value}{detail}")
-    for line in recovery_guidance(result):
+    for line in recovery_guidance(
+        result,
+        deployment_path=plan.deployment_path,
+        provider_id=plan.provider_id,
+    ):
         io.write(line)
 
 
@@ -682,7 +737,9 @@ def plan_runtime_for_worker(
     catalog: RuntimeCatalog | None = None,
     reconcile_existing_worker: bool = False,
 ) -> RuntimeTuiPlan | None:
-    catalog = catalog or default_runtime_catalog()
+    catalog = catalog or default_runtime_catalog(
+        deployment_path=snapshot.deployment_path
+    )
     demand = _prompt_demand(io, worker)
 
     while True:
@@ -788,7 +845,7 @@ def apply_runtime_tui_plan(
             f"  {action.action_id}: {action.status.value}"
         ),
     )
-    _render_result(io, result)
+    _render_result(io, result, plan)
     return TuiRunResult(
         status=TuiRunStatus.APPLIED if result.succeeded else TuiRunStatus.FAILED,
         provider_id=provider_id,
@@ -856,7 +913,9 @@ def run_setup_tui(
     existing_worker: InstalledWorkerContract | None = None,
     reconcile_existing_worker: bool = False,
 ) -> TuiRunResult:
-    catalog = catalog or default_runtime_catalog()
+    catalog = catalog or default_runtime_catalog(
+        deployment_path=snapshot.deployment_path
+    )
     io.clear()
     io.write("AstrumWeaver Worker/runtime setup")
     io.write("=" * 34)
@@ -1553,6 +1612,7 @@ def _check_packaging(tool_dir: Path | None) -> int:
         "astrumweaver-control",
         "astrumweaver-worker",
         "astrumweaver-migrate",
+        "astrumweaver-runtime-profile",
     )
     print(f"packaged tool authority: {tool_dir}")
     for name in names:

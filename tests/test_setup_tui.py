@@ -33,14 +33,21 @@ from astrumweaver.setup import (
     DeploymentPath,
     DiscoveredGpu,
     PrivilegeMode,
+    SetupAction,
+    SetupActionKind,
     SetupActionState,
     SetupHostSnapshot,
+    SetupPlan,
+    SetupPlanGoal,
     discover_local_gpus,
 )
 from astrumweaver.runtime import ModelPreparationPolicy, RuntimeHostFacts
 from astrumweaver.setup.migration import InstalledWorkerContract
+from astrumweaver.setup.systemd import GENERIC_SYSTEMD_LLAMA_CPP_EXECUTABLE
 from astrumweaver.setup.tui import (
     TuiRunStatus,
+    _render_preview,
+    default_runtime_catalog,
     build_worker_spec,
     configure_provider,
     run_first_run_tui,
@@ -238,6 +245,71 @@ def wizard_responses(*, runtime: str = "fake") -> list[Response]:
         "",  # preferred host RAM
         runtime,
     ]
+
+
+def test_systemd_llama_preview_points_to_runtimebackend_recovery_docs() -> None:
+    io = ScriptedIO([])
+    plan = SetupPlan(
+        provider_id="llama-cpp",
+        deployment_path=DeploymentPath.SYSTEMD,
+        goal=SetupPlanGoal.ACTIVATE,
+        actions=(
+            SetupAction(
+                action_id="01-runtime-package",
+                kind=SetupActionKind.ENSURE_PACKAGE,
+                description="Ensure llama.cpp runtime package",
+                payload={
+                    "provider_id": "llama-cpp",
+                    "package_reference": "llama-cpp",
+                },
+            ),
+        ),
+    )
+
+    assert _render_preview(io, plan, FakeDriver())
+    assert any(
+        "docs/installation.md#runtimebackend-nix-profile" in line
+        for line in io.output
+    )
+
+
+def test_systemd_catalog_binds_llama_cpp_to_managed_profile() -> None:
+    provider = default_runtime_catalog(
+        deployment_path=DeploymentPath.SYSTEMD
+    ).get("llama-cpp")
+    assert provider is not None
+    assert provider.config.executable == GENERIC_SYSTEMD_LLAMA_CPP_EXECUTABLE
+
+    context = RuntimeCompatibilityContext(
+        worker=build_worker_spec(
+            worker_id="worker-managed-llama",
+            worker_class="gpu-single",
+            gpus=one_gpu(),
+        ),
+        host=systemd_snapshot().runtime_host,
+        demand=ExecutionDemand(
+            model=ModelDemand(
+                model_ref="/models/example.gguf",
+                model_format="gguf",
+                topology=ModelTopology.DENSE,
+                estimated_size_mb=12000,
+            ),
+            residency_policy=ResidencyPolicy.PREFER_VRAM,
+            gpu_topology=GPUTopology.SINGLE_GPU,
+        ),
+    )
+    intent = provider.setup_intent(context)
+
+    assert (
+        intent.configuration["executable"]
+        == GENERIC_SYSTEMD_LLAMA_CPP_EXECUTABLE
+    )
+
+    nixos_provider = default_runtime_catalog(
+        deployment_path=DeploymentPath.NIXOS
+    ).get("llama-cpp")
+    assert nixos_provider is not None
+    assert nixos_provider.config.executable == "llama-server"
 
 
 def test_discover_local_gpus_reads_uuid_vram_and_compute_capability() -> None:

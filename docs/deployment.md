@@ -47,6 +47,16 @@ selects the new daemon closure. A pre-existing `/nix/store/...` daemon path is
 treated as a legacy unit and is refused until the operator performs the
 reviewed migration; it is never silently overwritten.
 
+RuntimeBackend ownership is separate from the role profiles. The standard
+generic-systemd llama.cpp path is
+`/nix/var/nix/profiles/astrumweaver-runtime-llama-cpp`; the installer-packaged
+runtime-profile manager reconciles it to the reviewed candidate and the Worker
+manifest persists
+`/nix/var/nix/profiles/astrumweaver-runtime-llama-cpp/bin/llama-server`.
+Consequently a root-shell `PATH` entry cannot satisfy or replace the reviewed
+runtime package. See
+[Installation — RuntimeBackend Nix profile](installation.md#runtimebackend-nix-profile).
+
 ## Generic systemd role layout
 
 The role separation below applies only to the generic systemd setup helpers.

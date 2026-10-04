@@ -19,7 +19,6 @@ backend. Client API auth defaults to `bearer` for secure compatibility. Choosing
 `none` is explicit and means the TUI omits the Client token from protected
 environment material while leaving Worker bearer authentication mandatory.
 
-backend when requested.
 
 ## First-run flow
 
@@ -275,17 +274,37 @@ reloads systemd, and restarts the same Worker. The token EnvironmentFile is
 preserved by reference and never read; Control credentials, network identity,
 Worker identity and GPU ownership are not invented or reconstructed.
 
-Provider package/model commands are opt-in argv maps supplied through protected
-deployment environment, for example a locally reviewed wrapper:
+For generic systemd, `llama-cpp` has a first-party package path. The driver
+uses the `astrumweaver-runtime-profile` helper packaged with `#installer` to
+reconcile the dedicated Nix profile documented in
+[Installation — RuntimeBackend Nix profile](installation.md#runtimebackend-nix-profile).
+The deployment manifest uses that profile's absolute `llama-server` path, so
+an ambient `PATH` entry cannot become runtime authority.
+
+Missing or older llama.cpp package state therefore appears as a normal
+`NEEDS_APPLY` prerequisite during dry-run. Once the exact plan is approved,
+the helper installs/upgrades the dedicated runtime profile. Re-running the same
+candidate is idempotent.
+
+### Advanced/custom package and model hooks
+
+Explicit argv maps remain an escape hatch for providers without a first-party
+managed RuntimeBackend or for deliberate custom deployments:
 
 ```sh
 export ASTRUMWEAVER_RUNTIME_INSTALLERS_JSON='{"vllm":["/usr/local/sbin/install-reviewed-vllm"]}'
 export ASTRUMWEAVER_RUNTIME_DOWNLOADERS_JSON='{"vllm":["/usr/local/sbin/fetch-reviewed-vllm-model"]}'
 ```
 
-The driver appends the reviewed package reference or model reference as the
-final argument. It does not invoke a shell or guess `apt`, `pip`, `curl`,
-or another installer.
+For a provider with a first-party managed package path, a deliberate custom
+replacement must supply both a package installer and its matching read-only
+verifier. Overriding only the installer leaves the first-party verifier in
+authority and therefore fails closed after the custom command runs. This keeps
+an ambient or unrelated executable from becoming package evidence accidentally.
+
+The driver appends the reviewed package/model reference as the final argument.
+It does not invoke a shell or guess `apt`, `pip`, `curl`, or another
+distribution installer.
 
 NixOS normally uses `services.astrumweaver.worker.runtime` instead. The
 runtime provider and demand are persisted as an immutable Nix-store deployment
