@@ -1,5 +1,6 @@
 """AstrumWeaver durable control-plane contracts."""
 
+from .auth import ClientAuthMode
 from .models import (
     JobRecord,
     JobStatus,
@@ -21,6 +22,7 @@ from .repository import (
 )
 
 __all__ = [
+    "ClientAuthMode",
     "ConflictError",
     "ControlRepository",
     "InMemoryControlRepository",
