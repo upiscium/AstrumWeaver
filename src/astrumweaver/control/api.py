@@ -71,7 +71,9 @@ async def _optional_json_v1(request: Request) -> dict[str, Any]:
 
 
 def _serving_epoch(value: dict[str, Any]) -> str | None:
-    raw_extensions = value.get("extensions") or ()
+    raw_extensions = value.get("extensions")
+    if raw_extensions is None:
+        raw_extensions = []
     if not isinstance(raw_extensions, list):
         raise ValueError("extensions must be an array")
     extensions = frozenset(str(item) for item in raw_extensions)
