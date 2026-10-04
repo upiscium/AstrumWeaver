@@ -15,6 +15,7 @@ from .control.models import (
     WorkerRegistration,
     WorkerState,
 )
+from .serving import ServingJobBinding, WorkerServingAdvertisement
 from .control.serde import (
     job_result_from_dict,
     job_result_to_dict,
@@ -41,6 +42,7 @@ def worker_record_to_dict(value: WorkerRecord) -> dict[str, Any]:
         "registered_at": value.registered_at.isoformat(),
         "last_seen_at": value.last_seen_at.isoformat(),
         "metadata": dict(value.metadata),
+        "serving": None if value.serving is None else value.serving.to_dict(),
     }
 
 
@@ -63,6 +65,11 @@ def job_record_to_dict(value: JobRecord, *, include_payload: bool = True) -> dic
         "started_at": _iso(value.started_at),
         "finished_at": _iso(value.finished_at),
         "lease_expires_at": _iso(value.lease_expires_at),
+        "deadline_at": _iso(value.deadline_at),
+        "serving": None if value.serving is None else value.serving.to_dict(),
+        "claimed_deployment_revision": value.claimed_deployment_revision,
+        "claimed_serving_contract_revision": value.claimed_serving_contract_revision,
+        "claimed_runtime_instance_epoch": value.claimed_runtime_instance_epoch,
         "updated_at": value.updated_at.isoformat(),
         "result": None if value.result is None else job_result_to_dict(value.result),
         "error": None if value.error is None else dict(value.error),
@@ -74,10 +81,16 @@ def job_record_to_dict(value: JobRecord, *, include_payload: bool = True) -> dic
 
 def worker_registration_from_dict(value: Mapping[str, Any]) -> WorkerRegistration:
     data = dict(value)
+    raw_serving = data.get("serving")
     return WorkerRegistration(
         spec=worker_spec_from_dict(data["spec"]),
         max_concurrency=int(data.get("max_concurrency", 1)),
         metadata=data.get("metadata") or {},
+        serving=(
+            None
+            if raw_serving is None
+            else WorkerServingAdvertisement.from_dict(raw_serving)
+        ),
     )
 
 
@@ -88,6 +101,7 @@ def worker_heartbeat_from_dict(value: Mapping[str, Any]) -> WorkerHeartbeat:
         state=None if state is None else WorkerState(str(state)),
         active_job_id=data.get("active_job_id"),
         lease_token=data.get("lease_token"),
+        runtime_instance_epoch=data.get("runtime_instance_epoch"),
         metadata=data.get("metadata") or {},
     )
 
@@ -95,6 +109,8 @@ def worker_heartbeat_from_dict(value: Mapping[str, Any]) -> WorkerHeartbeat:
 def job_submission_from_dict(value: Mapping[str, Any]) -> JobSubmission:
     data = dict(value)
     available_at = data.get("available_at")
+    deadline_at = data.get("deadline_at")
+    raw_serving = data.get("serving")
     return JobSubmission(
         capability=str(data["capability"]),
         payload=data.get("payload") or {},
@@ -103,6 +119,8 @@ def job_submission_from_dict(value: Mapping[str, Any]) -> JobSubmission:
         max_attempts=int(data.get("max_attempts", 3)),
         idempotency_key=data.get("idempotency_key"),
         available_at=None if available_at is None else datetime.fromisoformat(str(available_at)),
+        deadline_at=None if deadline_at is None else datetime.fromisoformat(str(deadline_at)),
+        serving=None if raw_serving is None else ServingJobBinding.from_dict(raw_serving),
     )
 
 
@@ -116,6 +134,11 @@ def job_request_from_record(value: JobRecord):
         metadata={
             "attempt": value.attempts,
             "lease_expires_at": _iso(value.lease_expires_at),
+            "deadline_at": _iso(value.deadline_at),
+            "serving": None if value.serving is None else value.serving.to_dict(),
+            "claimed_deployment_revision": value.claimed_deployment_revision,
+            "claimed_serving_contract_revision": value.claimed_serving_contract_revision,
+            "claimed_runtime_instance_epoch": value.claimed_runtime_instance_epoch,
         },
     )
 
