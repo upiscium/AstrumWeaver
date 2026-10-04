@@ -36,6 +36,7 @@ from .repository import (
     OverloadedError,
     RepositoryError,
     StorageUnavailable,
+    _assert_worker_epoch,
     _aware,
     _failure_payload,
     _submission_matches,
@@ -424,6 +425,7 @@ class PostgresControlRepository:
         worker_id: str,
         state: WorkerState,
         *,
+        runtime_instance_epoch: str | None = None,
         now: datetime | None = None,
     ) -> WorkerRecord:
         timestamp = _aware(now)
@@ -432,6 +434,7 @@ class PostgresControlRepository:
             if current_row is None:
                 raise NotFoundError(f"worker not found: {worker_id}")
             current = self._worker(current_row)
+            _assert_worker_epoch(current, runtime_instance_epoch)
             if state is not WorkerState.OFFLINE:
                 conflict = self._gpu_overlap(
                     connection,
@@ -508,6 +511,7 @@ class PostgresControlRepository:
             if worker_row is None:
                 raise NotFoundError(f"worker not found: {worker_id}")
             current = self._worker(worker_row)
+            _assert_worker_epoch(current, heartbeat.runtime_instance_epoch)
             if current.state is WorkerState.OFFLINE and heartbeat.state in {
                 WorkerState.ONLINE, WorkerState.DRAINING,
             }:
@@ -745,7 +749,11 @@ class PostgresControlRepository:
         return self._job(row)
 
     def claim_next_job(
-        self, worker_id: str, *, now: datetime | None = None
+        self,
+        worker_id: str,
+        *,
+        runtime_instance_epoch: str | None = None,
+        now: datetime | None = None,
     ) -> JobRecord | None:
         timestamp = _aware(now)
         cutoff = timestamp - timedelta(seconds=self.worker_ttl_seconds)
@@ -756,6 +764,7 @@ class PostgresControlRepository:
             if worker_row is None:
                 raise NotFoundError(f"worker not found: {worker_id}")
             worker = self._worker(worker_row)
+            _assert_worker_epoch(worker, runtime_instance_epoch)
             if worker.last_seen_at < cutoff:
                 connection.execute(
                     """
@@ -880,6 +889,7 @@ class PostgresControlRepository:
             if locked_worker_row is None:
                 raise NotFoundError(f"worker not found: {worker_id}")
             locked_worker = self._worker(locked_worker_row)
+            _assert_worker_epoch(locked_worker, runtime_instance_epoch)
             if (
                 locked_worker.last_seen_at < cutoff
                 or locked_worker.state is not WorkerState.ONLINE
