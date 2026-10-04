@@ -435,6 +435,7 @@ async def test_subprocess_environment_pins_exact_worker_gpu_set(monkeypatch) -> 
     async def fake_create_subprocess_exec(*args, **kwargs):
         captured["args"] = args
         captured["env"] = dict(kwargs["env"])
+        captured["kwargs"] = dict(kwargs)
         return Process()
 
     monkeypatch.setattr(
@@ -450,6 +451,8 @@ async def test_subprocess_environment_pins_exact_worker_gpu_set(monkeypatch) -> 
     )
     await controller.start()
     assert captured["env"]["CUDA_VISIBLE_DEVICES"] == "GPU-a,GPU-b"
+    assert "stdout" not in captured["kwargs"]
+    assert "stderr" not in captured["kwargs"]
     await controller.stop()
 
 
