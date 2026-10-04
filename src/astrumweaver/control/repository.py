@@ -161,11 +161,26 @@ def _assert_worker_epoch(worker: WorkerRecord, runtime_instance_epoch: str | Non
         raise ConflictError("runtime instance epoch is stale")
 
 
-def _worker_supports_serving(worker: WorkerRecord, binding: ServingJobBinding | None) -> bool:
+def _worker_supports_serving(
+    worker: WorkerRecord,
+    capability: str,
+    binding: ServingJobBinding | None,
+) -> bool:
+    """Require a binding for capabilities covered by a serving contract.
+
+    A Worker without a serving advertisement keeps the legacy v1 behavior.
+    A serving-enabled Worker may also retain unrelated legacy capabilities,
+    but a capability named by its serving advertisement cannot be reached
+    through an unbound Job.
+    """
     if binding is None:
-        return True
+        return (
+            worker.serving is None
+            or capability not in worker.serving.contract_revisions
+        )
     return (
         worker.serving is not None
+        and binding.capability == capability
         and serving_worker_matches_binding(worker.serving, binding)
     )
 
@@ -394,7 +409,9 @@ class InMemoryControlRepository:
                     and worker.last_seen_at >= cutoff
                     and submission.capability in worker.spec.capabilities
                     and worker_matches(worker.spec, submission.requirements)
-                    and _worker_supports_serving(worker, submission.serving_binding)
+                    and _worker_supports_serving(
+                        worker, submission.capability, submission.serving_binding
+                    )
                 ]
                 if not compatible:
                     raise NoCompatibleDeployment("no compatible serving deployment")
@@ -467,7 +484,7 @@ class InMemoryControlRepository:
                 and job.attempts < job.max_attempts
                 and job.capability in worker.spec.capabilities
                 and worker_matches(worker.spec, job.requirements)
-                and _worker_supports_serving(worker, job.serving_binding)
+                and _worker_supports_serving(worker, job.capability, job.serving_binding)
             ]
             if not eligible:
                 return None
