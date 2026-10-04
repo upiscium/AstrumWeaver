@@ -791,3 +791,29 @@ def test_durable_job_record_rejects_inconsistent_serving_identity():
         replace(claimed, claimed_serving_contract_revision=digest("b"))
     with pytest.raises(ValueError, match="requires a serving binding"):
         replace(claimed, serving=None, deadline_at=None)
+
+
+def test_serving_lease_never_extends_past_request_deadline():
+    now = utc_now()
+    repo = InMemoryControlRepository(lease_seconds=300)
+    registration = serving_worker("worker")
+    repo.register_worker(registration, now=now)
+    request = replace(
+        serving_submission(now=now),
+        deadline_at=now + timedelta(seconds=5),
+    )
+    job = repo.submit_job(request, now=now)
+    claimed = claim_serving(repo, "worker", now=now)
+    assert claimed is not None and claimed.lease_token
+    assert claimed.lease_expires_at == request.deadline_at
+
+    repo.heartbeat_worker(
+        "worker",
+        WorkerHeartbeat(
+            active_job_id=job.job_id,
+            lease_token=claimed.lease_token,
+            runtime_instance_epoch=registration.serving.runtime_instance.epoch,
+        ),
+        now=now + timedelta(seconds=1),
+    )
+    assert repo.get_job(job.job_id).lease_expires_at == request.deadline_at
