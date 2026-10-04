@@ -30,7 +30,10 @@ from .models import (
 )
 from .repository import (
     ConflictError,
+    DeadlineExceededError,
+    NoCompatibleDeployment,
     NotFoundError,
+    OverloadedError,
     RepositoryError,
     StorageUnavailable,
     _aware,
@@ -615,11 +618,6 @@ class PostgresControlRepository:
         self, submission: JobSubmission, *, now: datetime | None = None
     ) -> JobRecord:
         timestamp = _aware(now)
-        if (
-            submission.deadline_at is not None
-            and _aware(submission.deadline_at) <= timestamp
-        ):
-            raise ConflictError("job deadline has expired")
         available_at = (
             _aware(submission.available_at)
             if submission.available_at is not None
@@ -629,6 +627,7 @@ class PostgresControlRepository:
         requirements = requirements_to_dict(submission.requirements)
 
         with self._transaction() as connection:
+            # Resolve durable idempotency before transient admission state.
             if submission.idempotency_key:
                 existing = connection.execute(
                     """
@@ -645,6 +644,43 @@ class PostgresControlRepository:
                             "idempotency key already belongs to a different job request"
                         )
                     return record
+
+            if (
+                submission.deadline_at is not None
+                and _aware(submission.deadline_at) <= timestamp
+            ):
+                raise DeadlineExceededError("job deadline has expired")
+
+            if submission.serving is not None:
+                cutoff = timestamp - timedelta(seconds=self.worker_ttl_seconds)
+                candidate_rows = connection.execute(
+                    """
+                    SELECT * FROM workers
+                    WHERE state = 'online'
+                      AND last_seen_at >= %s
+                      AND capabilities ? %s
+                    """,
+                    (cutoff, submission.capability),
+                ).fetchall()
+                compatible = [
+                    worker
+                    for worker in (self._worker(row) for row in candidate_rows)
+                    if worker_matches(worker.spec, submission.requirements)
+                    and worker_serving_accepts_job(
+                        worker.serving, submission.capability, submission.serving
+                    )
+                ]
+                if not compatible:
+                    raise NoCompatibleDeployment(
+                        "no compatible serving deployment is available"
+                    )
+                if all(
+                    worker.active_jobs >= worker.max_concurrency
+                    for worker in compatible
+                ):
+                    raise OverloadedError(
+                        "all compatible serving deployments are at capacity"
+                    )
 
             row = connection.execute(
                 """
