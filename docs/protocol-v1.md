@@ -48,6 +48,13 @@ identity. Client-facing serving adapters must apply the same negotiation rule
 before sending serving-bound v1 Jobs. Legacy Workers and legacy Jobs do not
 need this extension.
 
+Negotiation is per HTTP endpoint and is not a proof that every backend behind a
+load balancer runs the same Control binary. Do not enable `serving-v1` while a
+Control fleet is mixed-version. Upgrade all Control processes first, verify
+`serving-v1` on the serving endpoint, then enroll serving Workers/clients.
+This mirrors the existing requirement that ownership-sensitive Control changes
+must not be operated through a mixed-version fleet.
+
 Extension negotiation does not permit a breaking transport change. Breaking
 transport changes still require a new protocol namespace rather than silently
 changing v1 semantics.
