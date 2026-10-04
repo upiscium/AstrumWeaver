@@ -1,0 +1,160 @@
+diff --git a/src/astrumweaver/setup/first_run.py b/src/astrumweaver/setup/first_run.py
+index e1ab7a26e177c9f42a1767569b105e07ce5027cb..bae6d8ee3afcee5576b5f636f979eb7c0f9142b9 100644
+--- a/src/astrumweaver/setup/first_run.py
++++ b/src/astrumweaver/setup/first_run.py
+@@ -106,5 +106,27 @@ def _toml_string_list(values: tuple[str, ...] | frozenset[str]) -> str:
+ 
+ def _nix_string(value: str) -> str:
+-    return json.dumps(value, ensure_ascii=False)
++    # JSON and Nix share quote/backslash escapes, but only Nix interpolates
++    # ${...}. Operator/model data must remain literal, never acquire scope.
++    return json.dumps(value, ensure_ascii=False).replace("${", r"\${")
++
++
++def validate_nixos_runtime_package_expression(value: str) -> str:
++    """Accept only a package attribute path rooted in the bound module pkgs.
++
++    Custom packages belong in a nixpkgs overlay, not an undeclared myPkgs or
++    inputs root. This is deliberately not a general-purpose Nix expression
++    parser; attribute existence/package type is checked by Nix evaluation.
++    """
++    expression = value.strip()
++    if not re.fullmatch(r"pkgs(?:\.[A-Za-z_][A-Za-z0-9_'-]*)+", expression) or any(
++        part in {"if", "then", "else", "assert", "with", "let", "in", "rec", "inherit"}
++        for part in expression.split(".")[1:]
++    ):
++        raise ValueError(
++            "runtime package expression must be a simple attribute path rooted "
++            "in pkgs, such as pkgs.ollama or pkgs.vllm; expose custom packages "
++            "through a nixpkgs overlay"
++        )
++    return expression
+ 
+ 
+@@ -657,5 +679,5 @@ def render_nixos_bootstrap_snippet(
+     """Render deterministic Nix config without mutating operator Nix sources."""
+ 
+-    lines = ["{ config, ... }:", "", "{"]
++    lines = ["{ config, pkgs, ... }:", "", "{"]
+     if role in {FirstRunRole.CONTROL, FirstRunRole.BOTH}:
+         if control is None:
+@@ -723,13 +745,7 @@ def render_nixos_bootstrap_snippet(
+                     "data and an explicit Nix package expression"
+                 )
+-            package_expr = runtime_package_expression.strip()
+-            if not re.fullmatch(
+-                r"[A-Za-z_][A-Za-z0-9_'-]*(?:\.[A-Za-z0-9_+'-]+)*",
+-                package_expr,
+-            ):
+-                raise ValueError(
+-                    "runtime package expression must be a simple Nix attribute "
+-                    "path such as pkgs.ollama or myPkgs.vllm"
+-                )
++            package_expr = validate_nixos_runtime_package_expression(
++                runtime_package_expression
++            )
+             provider_id = str(runtime_deployment["provider_id"])
+             provider_config = dict(
+@@ -821,4 +837,5 @@ __all__ = [
+     "render_worker_env",
+     "render_worker_toml",
++    "validate_nixos_runtime_package_expression",
+     "write_protected_file",
+ ]
+diff --git a/src/astrumweaver/setup/tui.py b/src/astrumweaver/setup/tui.py
+index 826ffcdccf507b4b9f79fbdb53ce30b540176ccc..a7d3e6cab6585d81c93dd011dfefb4111a695df7 100644
+--- a/src/astrumweaver/setup/tui.py
++++ b/src/astrumweaver/setup/tui.py
+@@ -70,4 +70,5 @@ from .first_run import (
+     render_worker_env,
+     render_worker_toml,
++    validate_nixos_runtime_package_expression,
+     write_protected_file,
+ )
+@@ -1274,11 +1275,16 @@ def run_first_run_tui(
+                 return TuiRunResult(status=TuiRunStatus.CANCELLED)
+             if snapshot.deployment_path is DeploymentPath.NIXOS:
+-                nix_runtime_package_expression = _ask_nonblank(
+-                    io,
+-                    (
+-                        "Nix package expression for selected runtime "
+-                        "(example: pkgs.ollama)"
+-                    ),
+-                )
++                while True:
++                    expression = _ask_nonblank(
++                        io,
++                        "Nix runtime package attribute path (pkgs.ollama / pkgs.vllm)",
++                    )
++                    try:
++                        nix_runtime_package_expression = (
++                            validate_nixos_runtime_package_expression(expression)
++                        )
++                        break
++                    except ValueError as exc:
++                        io.write(str(exc))
+ 
+     digest = _first_run_review_token(
+diff --git a/tests/test_first_run_setup.py b/tests/test_first_run_setup.py
+index f1d4562659a51b6d8c480c54a4788263dab368e8..49485e9a82785568a5e84fc0e346669e621b9c7f 100644
+--- a/tests/test_first_run_setup.py
++++ b/tests/test_first_run_setup.py
+@@ -23,4 +23,5 @@ from astrumweaver.setup.first_run import (
+     render_control_toml,
+     render_nixos_bootstrap_snippet,
++    validate_nixos_runtime_package_expression,
+     render_worker_env,
+     render_worker_toml,
+@@ -227,4 +228,5 @@ def test_nixos_runtime_snippet_embeds_reviewed_provider_demand_and_package() ->
+     )
+ 
++    assert snippet.startswith("{ config, pkgs, ... }:")
+     assert "runtime = {" in snippet
+     assert 'provider = "vllm";' in snippet
+@@ -590,2 +592,29 @@ def test_explicit_dot_slash_invocation_resolves_siblings(tmp_path, monkeypatch):
+     monkeypatch.setenv("PATH", "")
+     assert SystemdFirstRunInstaller()._resolve_tool(helper.name) == str(helper)
++
++
++@pytest.mark.parametrize("expression", [
++    "pkgs.ollama", "pkgs.vllm", "pkgs.llama-cpp", "pkgs.custom.runtime",
++    " pkgs.ollama ",
++])
++def test_nixos_runtime_package_path_has_a_bound_root(expression):
++    assert validate_nixos_runtime_package_expression(expression) == expression.strip()
++
++
++@pytest.mark.parametrize("expression", [
++    "myPkgs.vllm", "inputs.runtime.packages", "builtins.derivation", "ollama",
++    "pkgs", "", "pkgs.", "pkgs..ollama", "pkgs.9foo", "pkgs.foo+bar",
++    'pkgs."ollama"', 'pkgs.${name}', "(pkgs.ollama)", "pkgs.ollama; abort 1",
++    "pkgs.let", "pkgs.ollama # comment", "pkgs.ollama\nother",
++])
++def test_nixos_runtime_package_path_rejects_unbound_or_arbitrary_expressions(expression):
++    with pytest.raises(ValueError, match="rooted in pkgs"):
++        validate_nixos_runtime_package_expression(expression)
++
++
++def test_nixos_data_does_not_create_free_interpolation_variables():
++    snippet = render_nixos_bootstrap_snippet(
++        role=FirstRunRole.CONTROL, control=ControlBootstrapSpec(),
++        control_env_path="/etc/${not_a_nix_binding}/control.env",
++    )
++    assert r"\${not_a_nix_binding}" in snippet
+diff --git a/tests/test_setup_tui.py b/tests/test_setup_tui.py
+index c3356d027bd4f0ddb220c108740d881deb1c028c..d2be6f324f1e4f6e9ac1e83f600e43f355afec85 100644
+--- a/tests/test_setup_tui.py
++++ b/tests/test_setup_tui.py
+@@ -766,4 +766,5 @@ def test_first_run_nixos_runtime_writes_reviewed_provider_snippet(
+             "",  # preferred RAM
+             "fake",
++            "myPkgs.fake",  # undeclared root: reprompt before review/write
+             "pkgs.fake",  # explicit Nix runtime package expression
+             str(output_path),
+@@ -793,3 +794,6 @@ def test_first_run_nixos_runtime_writes_reviewed_provider_snippet(
+     output = "\n".join(io.output)
+     assert "Nix runtime package: pkgs.fake" in output
++    assert "rooted in pkgs" in output
++    assert "myPkgs" not in rendered
++    assert rendered.startswith("{ config, pkgs, ... }:")
+     assert "worker-private-token" not in output
