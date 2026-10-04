@@ -593,7 +593,9 @@ class PostgresControlRepository:
                     worker
                     for worker in (self._worker(item) for item in candidate_rows)
                     if worker_matches(worker.spec, submission.requirements)
-                    and _worker_supports_serving(worker, submission.serving_binding)
+                    and _worker_supports_serving(
+                        worker, submission.capability, submission.serving_binding
+                    )
                 ]
                 if not compatible:
                     raise NoCompatibleDeployment("no compatible serving deployment")
@@ -787,7 +789,9 @@ class PostgresControlRepository:
             if (
                 selected.capability not in locked_worker.spec.capabilities
                 or not worker_matches(locked_worker.spec, selected.requirements)
-                or not _worker_supports_serving(locked_worker, selected.serving_binding)
+                or not _worker_supports_serving(
+                    locked_worker, selected.capability, selected.serving_binding
+                )
             ):
                 return None
 
