@@ -1,4 +1,4 @@
-{ lib, buildEnv, stdenv, stdenvNoCC, python312, python312Packages, astrumweaver, integration }:
+{ lib, buildEnv, stdenv, stdenvNoCC, python312, python312Packages, astrumweaver, integration, runtimeProfileSupport }:
 
 let
   pythonEnv = python312.withPackages (_: [
@@ -22,6 +22,7 @@ let
       pythonEnv
       migrations
       integration
+      runtimeProfileSupport
     ];
   };
 in
