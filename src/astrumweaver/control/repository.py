@@ -142,6 +142,15 @@ def _aware(value: datetime | None) -> datetime:
     return current.astimezone(UTC)
 
 
+def _lease_expiry(
+    timestamp: datetime,
+    lease_seconds: int,
+    deadline_at: datetime | None,
+) -> datetime:
+    expiry = timestamp + timedelta(seconds=lease_seconds)
+    return expiry if deadline_at is None else min(expiry, deadline_at)
+
+
 def _failure_payload(error: str | dict[str, object], *, retryable: bool) -> dict[str, object]:
     if isinstance(error, str):
         return {"message": error, "retryable": retryable}
@@ -325,7 +334,9 @@ class InMemoryControlRepository:
                     now=timestamp,
                 )
                 renewed = job.with_updates(
-                    lease_expires_at=timestamp + timedelta(seconds=self.lease_seconds),
+                    lease_expires_at=_lease_expiry(
+                        timestamp, self.lease_seconds, job.deadline_at
+                    ),
                     updated_at=timestamp,
                 )
                 self._jobs[job.job_id] = renewed
@@ -515,7 +526,9 @@ class InMemoryControlRepository:
                 attempts=selected.attempts + 1,
                 assigned_worker_id=worker_id,
                 lease_token=str(uuid4()),
-                lease_expires_at=timestamp + timedelta(seconds=self.lease_seconds),
+                lease_expires_at=_lease_expiry(
+                    timestamp, self.lease_seconds, selected.deadline_at
+                ),
                 started_at=timestamp,
                 finished_at=None,
                 updated_at=timestamp,
