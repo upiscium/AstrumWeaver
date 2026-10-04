@@ -354,8 +354,6 @@ class FreeTokenSubprocessController:
         try:
             self._process = await asyncio.create_subprocess_exec(
                 *self.command(),
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
             )
         except OSError as exc:
             raise RuntimeError("failed to start FreeToken server process") from exc
@@ -579,7 +577,14 @@ class FreeTokenManagedRuntime(ManagedRuntime):
                 asyncio.get_running_loop().time()
                 + self.startup_timeout_seconds
             )
-            while not await self._server_reachable():
+            while True:
+                if not self.process.running:
+                    raise RuntimeError(
+                        "FreeToken owned process exited before readiness; "
+                        "inspect Worker service logs"
+                    )
+                if await self._server_reachable():
+                    break
                 if asyncio.get_running_loop().time() >= deadline:
                     raise RuntimeError(
                         "FreeToken server did not become ready before timeout"
