@@ -82,6 +82,7 @@ class ControlRepository(Protocol):
         worker_id: str,
         state: WorkerState,
         *,
+        runtime_instance_epoch: str | None = None,
         now: datetime | None = None,
     ) -> WorkerRecord: ...
 
@@ -96,7 +97,11 @@ class ControlRepository(Protocol):
     def get_job(self, job_id: str) -> JobRecord: ...
 
     def claim_next_job(
-        self, worker_id: str, *, now: datetime | None = None
+        self,
+        worker_id: str,
+        *,
+        runtime_instance_epoch: str | None = None,
+        now: datetime | None = None,
     ) -> JobRecord | None: ...
 
     def complete_job(
@@ -143,6 +148,17 @@ def _failure_payload(error: str | dict[str, object], *, retryable: bool) -> dict
     payload = dict(error)
     payload["retryable"] = retryable
     return payload
+
+
+def _assert_worker_epoch(
+    worker: WorkerRecord, runtime_instance_epoch: str | None
+) -> None:
+    if worker.serving is None:
+        if runtime_instance_epoch is not None:
+            raise ConflictError("worker has no serving runtime instance")
+        return
+    if runtime_instance_epoch != worker.serving.runtime_instance.epoch:
+        raise ConflictError("worker runtime instance is stale")
 
 
 def _submission_matches(record: JobRecord, submission: JobSubmission) -> bool:
@@ -257,11 +273,13 @@ class InMemoryControlRepository:
         worker_id: str,
         state: WorkerState,
         *,
+        runtime_instance_epoch: str | None = None,
         now: datetime | None = None,
     ) -> WorkerRecord:
         timestamp = _aware(now)
         with self._lock:
             current = self.get_worker(worker_id)
+            _assert_worker_epoch(current, runtime_instance_epoch)
             if state is not WorkerState.OFFLINE:
                 registration = WorkerRegistration(
                     spec=current.spec,
@@ -287,6 +305,7 @@ class InMemoryControlRepository:
         heartbeat = heartbeat or WorkerHeartbeat()
         with self._lock:
             current = self.get_worker(worker_id)
+            _assert_worker_epoch(current, heartbeat.runtime_instance_epoch)
             if current.state is WorkerState.OFFLINE and heartbeat.state in {
                 WorkerState.ONLINE, WorkerState.DRAINING,
             }:
@@ -458,11 +477,16 @@ class InMemoryControlRepository:
             return sorted(self._jobs.values(), key=lambda item: item.sequence)
 
     def claim_next_job(
-        self, worker_id: str, *, now: datetime | None = None
+        self,
+        worker_id: str,
+        *,
+        runtime_instance_epoch: str | None = None,
+        now: datetime | None = None,
     ) -> JobRecord | None:
         timestamp = _aware(now)
         with self._lock:
             worker = self.get_worker(worker_id)
+            _assert_worker_epoch(worker, runtime_instance_epoch)
             if timestamp - worker.last_seen_at > timedelta(seconds=self.worker_ttl_seconds):
                 self._workers[worker_id] = replace(worker, state=WorkerState.OFFLINE)
                 return None
