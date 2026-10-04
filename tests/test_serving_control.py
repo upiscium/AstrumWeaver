@@ -27,7 +27,7 @@ from astrumweaver.serving import (
     WorkerServingAdvertisement,
     resolve_profile,
 )
-from astrumweaver.transport import PROTOCOL_VERSION
+from astrumweaver.transport import PROTOCOL_VERSION, SERVING_EXTENSION
 from astrumweaver.worker.client import ClaimedJob
 from astrumweaver.worker.runtime import WorkerRuntime
 
@@ -382,6 +382,7 @@ async def test_v1_transport_round_trips_serving_identity_and_fences_epoch():
                 "max_concurrency": 1,
                 "metadata": {},
                 "serving": registration.serving.to_dict(),
+                "extensions": [SERVING_EXTENSION],
             },
         )
         assert registered.status_code == 201
@@ -397,6 +398,7 @@ async def test_v1_transport_round_trips_serving_identity_and_fences_epoch():
                 "requirements": {},
                 "deadline_at": submission.deadline_at.isoformat(),
                 "serving": submission.serving.to_dict(),
+                "extensions": [SERVING_EXTENSION],
             },
         )
         assert created.status_code == 201
@@ -420,6 +422,7 @@ async def test_v1_transport_round_trips_serving_identity_and_fences_epoch():
                 "lease_token": body["lease_token"],
                 "runtime_instance_epoch":
                     "72345678-1234-4234-9234-123456789abc",
+                "extensions": [SERVING_EXTENSION],
                 "result": {"outputs": {"text": "stale"}, "text": "stale"},
             },
         )
@@ -433,8 +436,82 @@ async def test_v1_transport_round_trips_serving_identity_and_fences_epoch():
                 "lease_token": body["lease_token"],
                 "runtime_instance_epoch":
                     registration.serving.runtime_instance.epoch,
+                "extensions": [SERVING_EXTENSION],
                 "result": {"outputs": {"text": "ok"}, "text": "ok"},
             },
         )
         assert completed.status_code == 200
         assert completed.json()["status"] == "succeeded"
+
+
+
+@pytest.mark.asyncio
+async def test_v1_serving_fields_require_explicit_extension_marker():
+    now = utc_now()
+    repo = InMemoryControlRepository()
+    registration = serving_worker("extension-check")
+    submission = serving_submission(now=now)
+    app = create_app(
+        repo,
+        client_token="client-secret",
+        worker_token="worker-secret",
+        maintenance_interval_seconds=60,
+    )
+    transport = httpx.ASGITransport(app=app)
+    client_headers = {"authorization": "Bearer client-secret"}
+    worker_headers = {"authorization": "Bearer worker-secret"}
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://control") as client:
+        missing_worker = await client.post(
+            "/v1/workers/register",
+            headers=worker_headers,
+            json={
+                "protocol_version": PROTOCOL_VERSION,
+                "spec": {
+                    "worker_id": registration.spec.worker_id,
+                    "worker_class": registration.spec.worker_class,
+                    "gpu_uuids": [],
+                    "accelerators": [],
+                    "capabilities": ["llm.chat"],
+                    "labels": {},
+                    "resources": {
+                        "gpu_count": 0,
+                        "total_vram_mb": 0,
+                        "max_single_gpu_vram_mb": 0,
+                    },
+                },
+                "max_concurrency": 1,
+                "metadata": {},
+                "serving": registration.serving.to_dict(),
+            },
+        )
+        assert missing_worker.status_code == 422
+
+        unknown = await client.post(
+            "/v1/jobs",
+            headers=client_headers,
+            json={
+                "protocol_version": PROTOCOL_VERSION,
+                "capability": submission.capability,
+                "payload": {},
+                "requirements": {},
+                "deadline_at": submission.deadline_at.isoformat(),
+                "serving": submission.serving.to_dict(),
+                "extensions": ["unknown-extension-v1"],
+            },
+        )
+        assert unknown.status_code == 422
+
+        missing_job = await client.post(
+            "/v1/jobs",
+            headers=client_headers,
+            json={
+                "protocol_version": PROTOCOL_VERSION,
+                "capability": submission.capability,
+                "payload": {},
+                "requirements": {},
+                "deadline_at": submission.deadline_at.isoformat(),
+                "serving": submission.serving.to_dict(),
+            },
+        )
+        assert missing_job.status_code == 422
