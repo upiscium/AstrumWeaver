@@ -71,11 +71,16 @@ async def _optional_json_v1(request: Request) -> dict[str, Any]:
 
 
 def _serving_epoch(value: dict[str, Any]) -> str | None:
+    raw_extensions = value.get("extensions") or ()
+    if not isinstance(raw_extensions, list):
+        raise ValueError("extensions must be an array")
+    extensions = frozenset(str(item) for item in raw_extensions)
+    if extensions - {SERVING_EXTENSION}:
+        raise ValueError("unsupported protocol extension")
     epoch = value.get("runtime_instance_epoch")
     if epoch is None:
         return None
-    extensions = value.get("extensions") or ()
-    if not isinstance(extensions, list) or SERVING_EXTENSION not in extensions:
+    if SERVING_EXTENSION not in extensions:
         raise ValueError("serving-v1 extension is required")
     return str(epoch)
 
