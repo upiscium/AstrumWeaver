@@ -1,8 +1,7 @@
-{ lib, coreutils, nix, runtimeLlamaCpp, source, writeShellApplication }:
+{ lib, nix, python312, source, writeShellApplication }:
 
 let
   profile = "/nix/var/nix/profiles/astrumweaver-runtime-llama-cpp";
-  expectedExecutable = "${runtimeLlamaCpp}/bin/llama-server";
   candidateRef = "path:${source}";
   registryRef = "astrumweaver-runtime-candidate";
 in
@@ -10,11 +9,10 @@ writeShellApplication {
   name = "astrumweaver-runtime-profile";
   text = ''
     profile=${lib.escapeShellArg profile}
-    expected_executable=${lib.escapeShellArg expectedExecutable}
     candidate_ref=${lib.escapeShellArg candidateRef}
     registry_ref=${lib.escapeShellArg registryRef}
     nix_bin=${lib.escapeShellArg "${nix}/bin/nix"}
-    readlink_bin=${lib.escapeShellArg "${coreutils}/bin/readlink"}
+    python_bin=${lib.escapeShellArg "${python312}/bin/python3"}
 
     usage() {
       cat >&2 <<'EOF'
@@ -25,7 +23,7 @@ usage:
   astrumweaver-runtime-profile rollback llama-cpp
   astrumweaver-runtime-profile status llama-cpp
 EOF
-      exit 2
+      exit "${1:-2}"
     }
 
     require_llama_cpp() {
@@ -35,26 +33,72 @@ EOF
       fi
     }
 
-    resolved_executable() {
+    verify_llama_cpp() {
       if [ ! -x "$profile/bin/llama-server" ]; then
         return 1
       fi
-      "$readlink_bin" -f "$profile/bin/llama-server"
-    }
+      "$python_bin" - "$nix_bin" "$profile" "$candidate_ref" "$registry_ref" <<'PY'
+import json
+import subprocess
+import sys
 
-    verify_llama_cpp() {
-      actual="$(resolved_executable 2>/dev/null || true)"
-      [ -n "$actual" ] && [ "$actual" = "$expected_executable" ]
+nix_bin, profile, candidate_ref, registry_ref = sys.argv[1:]
+
+def run_json(args):
+    completed = subprocess.run(
+        args,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if completed.returncode != 0:
+        raise SystemExit(1)
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        raise SystemExit(1)
+
+profile_data = run_json(
+    [nix_bin, "profile", "list", "--profile", profile, "--json"]
+)
+candidate_data = run_json(
+    [nix_bin, "flake", "metadata", "--json", candidate_ref]
+)
+candidate_url = candidate_data.get("url") or candidate_data.get("lockedUrl")
+if not isinstance(candidate_url, str) or not candidate_url:
+    raise SystemExit(1)
+
+elements = profile_data.get("elements", {})
+if isinstance(elements, dict):
+    values = list(elements.values())
+elif isinstance(elements, list):
+    values = elements
+else:
+    raise SystemExit(1)
+
+expected_original = "flake:" + registry_ref
+expected_attr = "packages.x86_64-linux.runtime-llama-cpp"
+matches = [
+    element
+    for element in values
+    if isinstance(element, dict)
+    and element.get("active", True)
+    and element.get("originalUrl") == expected_original
+    and element.get("attrPath") == expected_attr
+    and (element.get("url") or element.get("uri")) == candidate_url
+]
+raise SystemExit(0 if len(matches) == 1 and len(values) == 1 else 1)
+PY
     }
 
     status_llama_cpp() {
       if verify_llama_cpp; then
-        echo "satisfied: $profile/bin/llama-server -> $expected_executable"
+        echo "satisfied: $profile is bound to this AstrumWeaver candidate"
         return 0
       fi
-      if [ -e "$profile/bin/llama-server" ] || [ -L "$profile/bin/llama-server" ]; then
-        actual="$(resolved_executable 2>/dev/null || true)"
-        echo "candidate-mismatch: $profile/bin/llama-server -> ${actual:-unresolved}" >&2
+      if [ -x "$profile/bin/llama-server" ]; then
+        echo "candidate-mismatch: $profile does not match this AstrumWeaver candidate" >&2
       else
         echo "missing: $profile/bin/llama-server" >&2
       fi
@@ -80,13 +124,16 @@ EOF
       fi
 
       if ! verify_llama_cpp; then
-        echo "astrumweaver-runtime-profile: Nix completed but the reviewed llama-server binding is not active" >&2
+        echo "astrumweaver-runtime-profile: Nix completed but the reviewed candidate binding is not active" >&2
         exit 1
       fi
       echo "runtime profile now matches this AstrumWeaver candidate"
     }
 
     case "${1-}" in
+      -h|--help)
+        usage 0
+        ;;
       verify)
         [ "${2-}" = "package" ] || usage
         require_llama_cpp "${3-}"
