@@ -723,6 +723,7 @@ async def test_ollama_subprocess_environment_pins_uuid_set_and_spread(
     async def fake_create_subprocess_exec(*args, **kwargs):
         captured["args"] = args
         captured["env"] = dict(kwargs["env"])
+        captured["kwargs"] = dict(kwargs)
         return Process()
 
     monkeypatch.setattr(
@@ -750,5 +751,7 @@ async def test_ollama_subprocess_environment_pins_uuid_set_and_spread(
     assert env["OLLAMA_NO_CLOUD"] == "true"
     assert env["OLLAMA_NUM_PARALLEL"] == "1"
     assert env["OLLAMA_MAX_LOADED_MODELS"] == "1"
+    assert "stdout" not in captured["kwargs"]
+    assert "stderr" not in captured["kwargs"]
 
     await controller.stop()
