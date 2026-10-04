@@ -11,7 +11,7 @@ import pytest
 psycopg = pytest.importorskip("psycopg")
 
 from astrumweaver import JobResult, ResourceShape, WorkerSpec
-from astrumweaver.control import JobStatus, JobSubmission, WorkerRegistration, utc_now
+from astrumweaver.control import JobStatus, JobSubmission, WorkerRegistration, WorkerState, utc_now
 from astrumweaver.control.migrate import apply_migrations
 from astrumweaver.control.postgres import PostgresControlRepository
 from astrumweaver.control.repository import ConflictError, NoCompatibleDeployment
@@ -181,6 +181,32 @@ def test_postgres_deadline_caps_lease_and_disables_retry():
     expired = repo.expire_deadline_jobs(now=later)
     assert [item.job_id for item in expired] == [second.job_id]
     assert repo.get_job(second.job_id).status is JobStatus.FAILED
+
+
+def test_postgres_serving_admission_excludes_draining_and_stale_workers():
+    assert DATABASE_URL is not None
+    now = utc_now()
+    binding, serving = serving_values()
+    repo = PostgresControlRepository(DATABASE_URL, worker_ttl_seconds=60)
+    repo.register_worker(worker("worker-a", serving), now=now)
+
+    repo.set_worker_state(
+        "worker-a",
+        WorkerState.DRAINING,
+        runtime_instance_epoch=serving.runtime_instance_epoch,
+        now=now,
+    )
+    with pytest.raises(NoCompatibleDeployment):
+        repo.submit_job(submission(binding, now), now=now)
+
+    # Re-register the same idle identity with an intentionally old last-seen
+    # timestamp to exercise the SQL TTL predicate independently of state.
+    repo.register_worker(
+        worker("worker-a", serving),
+        now=now - timedelta(seconds=61),
+    )
+    with pytest.raises(NoCompatibleDeployment):
+        repo.submit_job(submission(binding, now), now=now)
 
 
 def test_postgres_concurrent_compatible_workers_claim_only_one_attempt():
