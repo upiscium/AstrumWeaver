@@ -257,7 +257,16 @@ See [Privileged setup filesystem boundary](setup-filesystem-safety.md) for
 root-owned completion receipts, no-follow filesystem validation, prerequisite
 verifiers and the recovery boundary for older Worker-writable state.
 
-The generic systemd implementation is `SystemdSetupDriver`. It materializes reviewed runtime manifests/configuration and delegates package/model mutation only to explicit operator-configured argv commands. It never guesses a package manager or hidden installer.
+The generic systemd implementation is `SystemdSetupDriver`. It materializes
+reviewed runtime manifests/configuration. For the first-party llama.cpp path it
+uses the packaged AstrumWeaver Nix runtime-profile manager, bound to the same
+candidate as the installer, and verifies that dedicated profile rather than an
+ambient executable lookup. Other package/model mutation remains delegated only
+to explicit operator-configured argv commands. The driver never guesses a
+distribution package manager or evaluates shell command text.
+
+See [Installation — RuntimeBackend Nix profile](installation.md#runtimebackend-nix-profile)
+for the managed profile, explicit upgrade, and rollback boundary.
 
 For NVIDIA GPU Workers on generic-systemd hosts, the setup plan also contains an
 explicit `ensure_nvidia_driver_bridge` action. Nix CUDA packages normally carry
