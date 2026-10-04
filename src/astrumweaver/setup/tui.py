@@ -672,7 +672,12 @@ def _approval(io: TuiIO, plan) -> SetupApproval | None:
     )
 
 
-def recovery_guidance(result: SetupApplyResult) -> tuple[str, ...]:
+def recovery_guidance(
+    result: SetupApplyResult,
+    *,
+    deployment_path: DeploymentPath | None = None,
+    provider_id: str | None = None,
+) -> tuple[str, ...]:
     if result.succeeded:
         return ("Setup completed successfully.",)
     if any(action.status.value == "rollback_failed" for action in result.rollback_actions):
@@ -685,15 +690,18 @@ def recovery_guidance(result: SetupApplyResult) -> tuple[str, ...]:
         and action.status.value in {"blocked", "failed"}
         for action in result.actions
     ):
-        return (
-            "Runtime package provisioning did not complete.",
-            (
-                "For generic-systemd use the standard Nix RuntimeBackend path in "
-                "docs/installation.md#runtimebackend-nix-profile; custom installer "
-                "argv is an advanced override."
-            ),
-            "No provider substitution was performed.",
-        )
+        guidance = ["Runtime package provisioning did not complete."]
+        if (
+            deployment_path is DeploymentPath.SYSTEMD
+            and provider_id == "llama-cpp"
+        ):
+            guidance.append(
+                "Use the standard Nix RuntimeBackend path in "
+                "docs/installation.md#runtimebackend-nix-profile; custom "
+                "installer argv is an advanced override."
+            )
+        guidance.append("No provider substitution was performed.")
+        return tuple(guidance)
     if any(action.status.value == "blocked" for action in result.actions):
         return (
             "Resolve the blocked preflight/action and rerun the same reviewed setup flow.",
@@ -705,7 +713,7 @@ def recovery_guidance(result: SetupApplyResult) -> tuple[str, ...]:
     )
 
 
-def _render_result(io: TuiIO, result: SetupApplyResult) -> None:
+def _render_result(io: TuiIO, result: SetupApplyResult, plan) -> None:
     io.write(f"Apply result: {result.status.value}")
     for action in result.actions:
         detail = f" — {action.detail}" if action.detail else ""
@@ -713,7 +721,11 @@ def _render_result(io: TuiIO, result: SetupApplyResult) -> None:
     for action in result.rollback_actions:
         detail = f" — {action.detail}" if action.detail else ""
         io.write(f"  rollback {action.action_id} {action.status.value}{detail}")
-    for line in recovery_guidance(result):
+    for line in recovery_guidance(
+        result,
+        deployment_path=plan.deployment_path,
+        provider_id=plan.provider_id,
+    ):
         io.write(line)
 
 
@@ -833,7 +845,7 @@ def apply_runtime_tui_plan(
             f"  {action.action_id}: {action.status.value}"
         ),
     )
-    _render_result(io, result)
+    _render_result(io, result, plan)
     return TuiRunResult(
         status=TuiRunStatus.APPLIED if result.succeeded else TuiRunStatus.FAILED,
         provider_id=provider_id,
