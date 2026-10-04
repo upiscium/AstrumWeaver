@@ -13,7 +13,12 @@ import httpx
 from ..control.models import WorkerState
 from ..control.serde import job_result_to_dict, worker_spec_to_dict
 from ..execution import JobRequest, JobResult
-from ..transport import PROTOCOL_VERSION
+from ..serving import (
+    ServingJobBinding,
+    WorkerServingAdvertisement,
+    serving_job_binding_from_dict,
+)
+from ..transport import PROTOCOL_VERSION, SERVING_EXTENSION
 
 
 class ControlTransportError(RuntimeError):
@@ -29,6 +34,8 @@ class ClaimedJob:
     lease_token: str
     lease_expires_at: str | None
     attempts: int
+    serving_binding: ServingJobBinding | None = None
+    runtime_instance_epoch: str | None = None
 
 
 class ControlClient:
@@ -92,17 +99,22 @@ class ControlClient:
         *,
         spec,
         max_concurrency: int,
+        serving: WorkerServingAdvertisement | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
+        body = {
+            "protocol_version": PROTOCOL_VERSION,
+            "spec": worker_spec_to_dict(spec),
+            "max_concurrency": max_concurrency,
+            "metadata": dict(metadata or {}),
+        }
+        if serving is not None:
+            body["extensions"] = [SERVING_EXTENSION]
+            body["serving"] = serving.to_dict()
         response = await self._request(
             "POST",
             "/v1/workers/register",
-            json={
-                "protocol_version": PROTOCOL_VERSION,
-                "spec": worker_spec_to_dict(spec),
-                "max_concurrency": max_concurrency,
-                "metadata": dict(metadata or {}),
-            },
+            json=body,
         )
         return self._object(response)
 
@@ -113,37 +125,70 @@ class ControlClient:
         active_job_id: str | None = None,
         lease_token: str | None = None,
         state: WorkerState | None = None,
+        runtime_instance_epoch: str | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
+        body = {
+            "protocol_version": PROTOCOL_VERSION,
+            "active_job_id": active_job_id,
+            "lease_token": lease_token,
+            "state": None if state is None else state.value,
+            "metadata": dict(metadata or {}),
+        }
+        if runtime_instance_epoch is not None:
+            body["extensions"] = [SERVING_EXTENSION]
+            body["runtime_instance_epoch"] = runtime_instance_epoch
         response = await self._request(
             "POST",
             f"/v1/workers/{worker_id}/heartbeat",
-            json={
-                "protocol_version": PROTOCOL_VERSION,
-                "active_job_id": active_job_id,
-                "lease_token": lease_token,
-                "state": None if state is None else state.value,
-                "metadata": dict(metadata or {}),
-            },
+            json=body,
         )
         return self._object(response)
 
-    async def set_state(self, worker_id: str, state: WorkerState) -> dict[str, Any]:
+    async def set_state(
+        self,
+        worker_id: str,
+        state: WorkerState,
+        *,
+        runtime_instance_epoch: str | None = None,
+    ) -> dict[str, Any]:
+        body = {"protocol_version": PROTOCOL_VERSION, "state": state.value}
+        if runtime_instance_epoch is not None:
+            body["extensions"] = [SERVING_EXTENSION]
+            body["runtime_instance_epoch"] = runtime_instance_epoch
         response = await self._request(
             "POST",
             f"/v1/workers/{worker_id}/state",
-            json={"protocol_version": PROTOCOL_VERSION, "state": state.value},
+            json=body,
         )
         return self._object(response)
 
-    async def claim(self, worker_id: str) -> ClaimedJob | None:
-        response = await self._request("POST", f"/v1/workers/{worker_id}/jobs/claim")
+    async def claim(
+        self, worker_id: str, *, runtime_instance_epoch: str | None = None
+    ) -> ClaimedJob | None:
+        kwargs: dict[str, Any] = {}
+        if runtime_instance_epoch is not None:
+            kwargs["json"] = {
+                "protocol_version": PROTOCOL_VERSION,
+                "extensions": [SERVING_EXTENSION],
+                "runtime_instance_epoch": runtime_instance_epoch,
+            }
+        response = await self._request(
+            "POST", f"/v1/workers/{worker_id}/jobs/claim", **kwargs
+        )
         if response.status_code == 204:
             return None
         body = self._object(response)
         lease_token = body.get("lease_token")
         if not isinstance(lease_token, str) or not lease_token:
             raise ControlTransportError(502, "claim response lacks lease token")
+        serving_value = body.get("serving_binding")
+        serving_binding = (
+            None if serving_value is None else serving_job_binding_from_dict(serving_value)
+        )
+        attempt_epoch = body.get("attempt_runtime_instance_epoch")
+        if serving_binding is not None and not isinstance(attempt_epoch, str):
+            raise ControlTransportError(502, "serving claim lacks runtime instance epoch")
         return ClaimedJob(
             request=JobRequest(
                 job_id=str(body["job_id"]),
@@ -157,6 +202,8 @@ class ControlClient:
             lease_token=lease_token,
             lease_expires_at=body.get("lease_expires_at"),
             attempts=int(body.get("attempts", 0)),
+            serving_binding=serving_binding,
+            runtime_instance_epoch=attempt_epoch,
         )
 
     async def inspect_job(self, worker_id: str, job_id: str) -> dict[str, Any]:
@@ -171,15 +218,21 @@ class ControlClient:
         job_id: str,
         lease_token: str,
         result: JobResult,
+        *,
+        runtime_instance_epoch: str | None = None,
     ) -> dict[str, Any]:
+        body = {
+            "protocol_version": PROTOCOL_VERSION,
+            "lease_token": lease_token,
+            "result": job_result_to_dict(result),
+        }
+        if runtime_instance_epoch is not None:
+            body["extensions"] = [SERVING_EXTENSION]
+            body["runtime_instance_epoch"] = runtime_instance_epoch
         response = await self._request(
             "POST",
             f"/v1/workers/{worker_id}/jobs/{job_id}/complete",
-            json={
-                "protocol_version": PROTOCOL_VERSION,
-                "lease_token": lease_token,
-                "result": job_result_to_dict(result),
-            },
+            json=body,
         )
         return self._object(response)
 
@@ -191,15 +244,20 @@ class ControlClient:
         *,
         error: str | Mapping[str, Any],
         retryable: bool,
+        runtime_instance_epoch: str | None = None,
     ) -> dict[str, Any]:
+        body = {
+            "protocol_version": PROTOCOL_VERSION,
+            "lease_token": lease_token,
+            "error": dict(error) if isinstance(error, Mapping) else error,
+            "retryable": retryable,
+        }
+        if runtime_instance_epoch is not None:
+            body["extensions"] = [SERVING_EXTENSION]
+            body["runtime_instance_epoch"] = runtime_instance_epoch
         response = await self._request(
             "POST",
             f"/v1/workers/{worker_id}/jobs/{job_id}/fail",
-            json={
-                "protocol_version": PROTOCOL_VERSION,
-                "lease_token": lease_token,
-                "error": dict(error) if isinstance(error, Mapping) else error,
-                "retryable": retryable,
-            },
+            json=body,
         )
         return self._object(response)
