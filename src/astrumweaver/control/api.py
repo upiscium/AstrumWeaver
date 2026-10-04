@@ -86,6 +86,7 @@ def create_app(
             await asyncio.sleep(maintenance_interval_seconds)
             try:
                 await asyncio.to_thread(repository.expire_stale_workers)
+                await asyncio.to_thread(repository.expire_deadline_jobs)
                 await asyncio.to_thread(repository.recover_expired_jobs)
             except Exception:
                 # Repository/API calls still expose current storage failures.
@@ -233,6 +234,9 @@ def create_app(
         try:
             body = await _json_v1(request)
             lease_token = str(body["lease_token"])
+            runtime_instance_epoch = body.get("runtime_instance_epoch")
+            if runtime_instance_epoch is not None:
+                runtime_instance_epoch = str(runtime_instance_epoch)
             result = job_result_from_dict(body["result"])
             if result is None:
                 raise ValueError("result is required")
@@ -244,6 +248,7 @@ def create_app(
             result,
             worker_id=worker_id,
             lease_token=lease_token,
+            runtime_instance_epoch=runtime_instance_epoch,
         )
         return job_record_to_dict(record)
 
@@ -255,6 +260,9 @@ def create_app(
         try:
             body = await _json_v1(request)
             lease_token = str(body["lease_token"])
+            runtime_instance_epoch = body.get("runtime_instance_epoch")
+            if runtime_instance_epoch is not None:
+                runtime_instance_epoch = str(runtime_instance_epoch)
             error = body.get("error", "executor failed")
             if not isinstance(error, (str, dict)):
                 raise TypeError("error must be a string or object")
@@ -268,6 +276,7 @@ def create_app(
             retryable=retryable,
             worker_id=worker_id,
             lease_token=lease_token,
+            runtime_instance_epoch=runtime_instance_epoch,
         )
         return job_record_to_dict(record)
 
