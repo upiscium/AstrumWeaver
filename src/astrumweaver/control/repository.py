@@ -15,7 +15,7 @@ from uuid import uuid4
 
 from ..execution import JobResult
 from ..scheduling import worker_matches
-from ..serving import worker_serving_matches
+from ..serving import worker_serving_accepts_job
 from .models import (
     JobRecord,
     JobStatus,
@@ -441,7 +441,7 @@ class InMemoryControlRepository:
                 and job.attempts < job.max_attempts
                 and job.capability in worker.spec.capabilities
                 and worker_matches(worker.spec, job.requirements)
-                and worker_serving_matches(worker.serving, job.serving)
+                and worker_serving_accepts_job(worker.serving, job.capability, job.serving)
             ]
             if not eligible:
                 return None
