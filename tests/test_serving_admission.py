@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import timedelta
+import json
 from uuid import uuid4
 
 import httpx
@@ -22,10 +23,12 @@ from astrumweaver.serving import (
     ServingContract,
     ServingJobBinding,
     WorkerServingAdvertisement,
+    WorkerServingManifest,
     resolve_profile,
 )
 from astrumweaver.transport import PROTOCOL_VERSION, SERVING_EXTENSION
 from astrumweaver.worker import ControlClient, WorkerRuntime
+from astrumweaver.worker.daemon import _load_serving_manifest
 from astrumweaver.control.models import utc_now
 
 
@@ -357,3 +360,37 @@ async def test_serving_worker_transport_round_trip_binds_exact_runtime_epoch():
             )
         assert fetched.json()["status"] == "succeeded"
         assert fetched.json()["serving_binding"] == binding.to_dict()
+
+
+
+def test_worker_serving_manifest_round_trip_and_epoch_is_process_owned(tmp_path):
+    deployment, contract, _, _, _ = serving_values()
+    manifest = WorkerServingManifest(
+        deployment=deployment,
+        contracts=(contract,),
+    )
+    path = tmp_path / "serving.json"
+    path.write_text(json.dumps(manifest.to_dict()), encoding="utf-8")
+
+    loaded = _load_serving_manifest(str(path))
+    assert loaded == manifest
+    epoch_a = str(uuid4())
+    epoch_b = str(uuid4())
+    first = loaded.advertisement(epoch_a)
+    second = loaded.advertisement(epoch_b)
+    assert first.deployment_revision == deployment.revision
+    assert first.contract_revisions["llm.chat"] == contract.revision
+    assert first.runtime_instance_epoch == epoch_a
+    assert second.runtime_instance_epoch == epoch_b
+    assert first.runtime_instance_epoch != second.runtime_instance_epoch
+
+
+def test_worker_serving_manifest_rejects_contract_from_other_deployment():
+    deployment, contract, _, _, _ = serving_values()
+    with pytest.raises(ValueError, match="deployment-revision-mismatch"):
+        WorkerServingManifest(
+            deployment=deployment,
+            contracts=(
+                replace(contract, deployment_revision=digest("9")),
+            ),
+        )
