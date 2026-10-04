@@ -72,3 +72,4 @@ def test_runtime_package_output_is_cuda_pinned_but_installer_remains_lazy() -> N
     assert "runtimeLlamaCpp" not in helper
     assert "profile upgrade" in helper
     assert "--override-flake" in helper
+    assert "refusing to mutate unmanaged or mixed runtime profile" in helper
