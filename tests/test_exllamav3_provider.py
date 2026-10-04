@@ -598,9 +598,16 @@ class FakeApi:
 
 
 class FakeProcess:
-    def __init__(self, api: FakeApi, *, running: bool = False) -> None:
+    def __init__(
+        self,
+        api: FakeApi,
+        *,
+        running: bool = False,
+        exit_on_start: bool = False,
+    ) -> None:
         self.api = api
         self._running = running
+        self.exit_on_start = exit_on_start
         self.starts = 0
         self.stops = 0
 
@@ -610,6 +617,10 @@ class FakeProcess:
 
     async def start(self) -> None:
         self.starts += 1
+        if self.exit_on_start:
+            self._running = False
+            self.api.reachable = False
+            return
         self._running = True
         self.api.reachable = True
 
