@@ -138,11 +138,19 @@ def test_systemd_driver_runs_only_explicit_package_installer(
         encoding="utf-8",
     )
     installer.chmod(0o755)
+    verifier = tmp_path / "verify.sh"
+    verifier.write_text(
+        "#!/usr/bin/env bash\n"
+        f"test -f {str(log)!r}\n",
+        encoding="utf-8",
+    )
+    verifier.chmod(0o755)
     driver = SystemdSetupDriver(
         root=tmp_path / "root",
         installers={
             "custom-provider": (str(installer),),
         },
+        verifiers={"custom-provider": (str(verifier),)},
     )
     install = action(
         SetupActionKind.ENSURE_PACKAGE,

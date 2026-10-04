@@ -1,32 +1,88 @@
 # Privileged setup filesystem boundary
 
-Implementation tracker: #81 (release review #79, finding F4).
+Generic-systemd `SystemdSetupDriver` keeps installer authority separate from
+Worker data. This is the F4 fix tracked by #81 / release review #79.
 
-## Required separation
+## Locations and authority
 
-Runtime data is writable by the Worker. Installer completion receipts are not
-runtime data and must live in a separate root-owned directory. Legacy receipts
-under the Worker home/state must not become trusted setup evidence.
+- `/var/lib/astrumweaver-setup` is root-owned, mode `0700`. Per-action receipts
+  are root-owned regular files, mode `0600`, below this directory.
+- `/var/lib/astrumweaver` remains the Worker's writable home/state. Runtime
+  state/cache directories remain service-owned with mode `0750`.
+- `/etc/astrumweaver/runtime` contains root-managed runtime configuration and
+  the NVIDIA driver bridge. Configuration files retain Worker-group read access.
+- The default TabbyAPI configuration is now
+  `/etc/astrumweaver/runtime/exllamav3/config.yml`, not Worker-writable state.
+  An explicitly configured alternative must also have safe root-owned ancestry.
 
-An installer receipt records that a reviewed action completed; it is not proof
-that the runtime executable or model still exists. Repeat setup must inspect
-the current prerequisite, rather than accept marker presence alone.
+Legacy `packages/*.installed` and `model-preparation/*` markers below Worker
+state are neither trusted nor migrated. They can remain in place without being
+read or written by the new bookkeeping path. A receipt is only a record of a
+completed action; its existence never proves that a prerequisite still exists.
 
-## Filesystem contract
+## Prerequisite checks
 
-Privileged setup must refuse symlinks (including dangling links), unsafe
-ownership/permissions and unexpected file types at authoritative locations.
-Directory traversal and atomic writes must be tied to verified directory file
-descriptors rather than a check followed by an unprotected pathname write.
-Unrelated targets must remain unchanged when validation fails.
+For known single-command providers, package inspection checks the current
+runtime command. Package installation must make that check pass before a
+completion receipt is written. This is availability checking, not a claim that
+CUDA, the model, or runtime health has already passed the later startup gate.
 
-Existing unsafe objects must not be silently adopted by changing their owner
-or mode. Recovery must be an explicit operator decision described by the final
-implementation documentation.
+A custom/package-group installation (including ExLlamaV3) and native remote
+model preparation need an explicit read-only verifier when no built-in check
+can establish the prerequisite. Configure a provider-keyed argv map alongside
+the existing installer/downloader/converter maps:
 
-## Release boundary
+```sh
+export ASTRUMWEAVER_RUNTIME_VERIFIERS_JSON='{"exllamav3":["/usr/local/sbin/verify-reviewed-exllamav3"]}'
+```
 
-This document establishes the intended contract, not acceptance evidence.
-The implementation and its adversarial regression tests are in progress in
-#81. #79 remains HOLD. #80 is a separate documentation-only real-hardware
-installation and operation gate whose acceptance authority is upiscium.
+The driver appends `package <package_reference>` or `model <model_ref>` to this
+prefix, without a shell. The verifier must check the selected installation or
+prepared model using deployment-owned configuration and return:
+
+- `0`: prerequisite currently exists and is usable according to the check;
+- `1`: prerequisite is absent, so its reviewed preparation is needed;
+- any other exit status, an execution error or a 10-second timeout: blocked.
+
+Verifiers are operator-reviewed, read-only commands. They may run during
+planning/dry-run and must never install, download, convert or repair anything.
+They must not merely check a completion marker. Their output is discarded and
+is not copied to public evidence. Existing package/model commands still run
+only during approved apply. Preparation is checked again after those commands
+return; exit code zero from an installer alone cannot create a success receipt.
+
+An absolute local download destination can be checked for existence. Conversion
+always needs a verifier for the converted output: existence of the source
+model is not evidence that conversion completed. Ordinary local model
+`reference_only` selection does not need an additional verifier.
+
+## Unsafe files and recovery
+
+Authoritative files and their parent directories are opened without following
+symlinks, using directory descriptors. Regular/dangling links, multiply-linked
+files, non-regular files, untrusted owners and group/world-writable ancestors
+are refused. A root-owned sticky system temporary ancestor may be traversed,
+but every descendant is still checked. Staged roots are owned by the invoking
+user and their ancestry is checked too; staging never bypasses link checks.
+
+New files use exclusive random temporary names and descriptor-relative atomic
+replacement. Configuration rollback uses the same checks and refuses to
+replace an object whose contents changed after apply. A failure does not
+silently adopt an existing object by changing its owner or permissions.
+
+If setup is blocked by old or operator-managed state, stop at the reported
+boundary. Inspect the affected ownership/path locally and make an explicit
+recovery decision; do not recursively chmod/chown a Worker-writable tree to
+turn it into trusted installer state, and do not copy legacy markers into the
+new directory. Preserve unrelated files and the running deployment. An existing
+TabbyAPI deployment using the former writable config path needs a separately
+reviewed migration; this change does not rewrite it behind the operator's back.
+
+## Validation and release boundary
+
+Regression tests cover linked targets/ancestors, wrong ownership/permissions,
+forged/stale markers, temporary-name collisions and replacement races, partial
+render failure, safe rollback and ordinary idempotent setup. These regressions
+are not real-host release acceptance. #79 stays HOLD until its other blockers
+and candidate checks pass; #80 remains the separate documentation-only Real
+Smoke requiring upiscium's explicit acceptance.

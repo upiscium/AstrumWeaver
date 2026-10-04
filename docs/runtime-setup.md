@@ -253,6 +253,10 @@ apply(action) -> ActionReceipt
 rollback(action, receipt) -> ActionReceipt
 ```
 
+See [Privileged setup filesystem boundary](setup-filesystem-safety.md) for
+root-owned completion receipts, no-follow filesystem validation, prerequisite
+verifiers and the recovery boundary for older Worker-writable state.
+
 The generic systemd implementation is `SystemdSetupDriver`. It materializes reviewed runtime manifests/configuration and delegates package/model mutation only to explicit operator-configured argv commands. It never guesses a package manager or hidden installer.
 
 For NVIDIA GPU Workers on generic-systemd hosts, the setup plan also contains an

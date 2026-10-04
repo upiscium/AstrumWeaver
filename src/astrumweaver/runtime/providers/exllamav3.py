@@ -76,7 +76,7 @@ class ExLlamaV3ProviderConfig:
     base_url: str = "http://127.0.0.1:5000"
     executable: str = "python"
     entrypoint: str = "/opt/tabbyAPI/main.py"
-    config_path: str = "/var/lib/astrumweaver/runtime/exllamav3/config.yml"
+    config_path: str = "/etc/astrumweaver/runtime/exllamav3/config.yml"
     package_references: tuple[str, ...] = ("tabbyAPI[cu12]", "exllamav3")
     startup_timeout_seconds: float = 300.0
     request_timeout_seconds: float = 300.0
