@@ -705,7 +705,12 @@ class PostgresControlRepository:
                   AND (j.deadline_at IS NULL OR j.deadline_at > %s)
                   AND j.attempts < j.max_attempts
                   AND (
-                      j.serving_binding IS NULL
+                      (
+                          j.serving_binding IS NULL
+                          AND NOT (
+                              COALESCE(%s::jsonb, '{}'::jsonb) ? j.capability
+                          )
+                      )
                       OR (
                           %s::text IS NOT NULL
                           AND j.serving_binding->>'deployment_revision' = %s
@@ -754,6 +759,7 @@ class PostgresControlRepository:
                 (
                     timestamp,
                     timestamp,
+                    _json({} if worker.serving is None else dict(worker.serving.contract_revisions)),
                     None if worker.serving is None else worker.serving.deployment_revision,
                     None if worker.serving is None else worker.serving.deployment_revision,
                     _json({} if worker.serving is None else dict(worker.serving.contract_revisions)),
