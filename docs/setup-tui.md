@@ -296,10 +296,15 @@ export ASTRUMWEAVER_RUNTIME_INSTALLERS_JSON='{"vllm":["/usr/local/sbin/install-r
 export ASTRUMWEAVER_RUNTIME_DOWNLOADERS_JSON='{"vllm":["/usr/local/sbin/fetch-reviewed-vllm-model"]}'
 ```
 
-A custom entry for the same provider overrides the first-party package argv for
-that process. The driver appends the reviewed package/model reference as the
-final argument. It does not invoke a shell or guess `apt`, `pip`, `curl`,
-or another distribution installer.
+For a provider with a first-party managed package path, a deliberate custom
+replacement must supply both a package installer and its matching read-only
+verifier. Overriding only the installer leaves the first-party verifier in
+authority and therefore fails closed after the custom command runs. This keeps
+an ambient or unrelated executable from becoming package evidence accidentally.
+
+The driver appends the reviewed package/model reference as the final argument.
+It does not invoke a shell or guess `apt`, `pip`, `curl`, or another
+distribution installer.
 
 NixOS normally uses `services.astrumweaver.worker.runtime` instead. The
 runtime provider and demand are persisted as an immutable Nix-store deployment
