@@ -278,3 +278,21 @@ def test_postgres_competing_matching_workers_claim_serving_job_once():
     assert len(claims) == 1
     assert claims[0].job_id == job.job_id
     assert repo.get_job(job.job_id).status is JobStatus.RUNNING
+
+
+
+def test_postgres_legacy_job_keeps_sql_null_serving_metadata():
+    assert DATABASE_URL is not None
+    now = utc_now()
+    repo = PostgresControlRepository(DATABASE_URL)
+    legacy = JobSubmission(capability="llm.chat")
+    job = repo.submit_job(legacy, now=now)
+
+    with psycopg.connect(DATABASE_URL) as connection:
+        row = connection.execute(
+            "SELECT serving, deadline_at FROM jobs WHERE id::text = %s",
+            (job.job_id,),
+        ).fetchone()
+
+    assert row[0] is None
+    assert row[1] is None
