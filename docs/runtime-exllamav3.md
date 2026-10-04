@@ -77,7 +77,7 @@ exllamav3
 and the default launcher contract is:
 
 ```text
-python /opt/tabbyAPI/main.py --config /var/lib/astrumweaver/runtime/exllamav3/config.yml
+python /opt/tabbyAPI/main.py --config /etc/astrumweaver/runtime/exllamav3/config.yml
 ```
 
 Those paths are deployment inputs, not hidden installation actions.

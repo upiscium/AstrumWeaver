@@ -36,6 +36,7 @@ from astrumweaver.setup.first_run import (
     FirstRunExecutionMode,
     render_worker_toml,
 )
+from astrumweaver.setup.filesystem import SetupFilesystem
 from astrumweaver.setup.migration import (
     DEFAULT_RUNTIME_MANIFEST,
     NVIDIA_DRIVER_BRIDGE_DIRECTORY,
@@ -368,6 +369,8 @@ def test_active_prior_runtime_requires_stop_before_bridge_upgrade(
         worker_unit_path=unit_path,
         runtime_manifest_path=manifest_path,
     )
+    # systemctl is simulated as live; filesystem authority is explicitly staged.
+    monkeypatch.setattr(driver, "filesystem", SetupFilesystem(staged_root))
     monkeypatch.setattr(driver, "_service_active", lambda: True)
 
     stop = SetupAction(
@@ -439,6 +442,8 @@ def test_worker_restart_stays_blocked_when_reconcile_daemon_reload_fails(
         worker_unit_path=unit_path,
         runtime_manifest_path=manifest_path,
     )
+    # systemctl is simulated as live; filesystem authority is explicitly staged.
+    monkeypatch.setattr(driver, "filesystem", SetupFilesystem(staged_root))
     monkeypatch.setattr(driver, "_service_active", lambda: active["value"])
 
     def fake_run(argv, *, check, **kwargs):
@@ -507,6 +512,8 @@ def test_worker_restart_stays_blocked_when_rollback_reload_fails(
         worker_unit_path=unit_path,
         runtime_manifest_path=manifest_path,
     )
+    # systemctl is simulated as live; filesystem authority is explicitly staged.
+    monkeypatch.setattr(driver, "filesystem", SetupFilesystem(staged_root))
     monkeypatch.setattr(driver, "_service_active", lambda: active["value"])
 
     def fake_run(argv, *, check, **kwargs):
