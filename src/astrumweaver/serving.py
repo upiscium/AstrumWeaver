@@ -336,3 +336,137 @@ def resolve_profile(
     return ResolvedServingProfile(
         profile.revision, deployment, contract, profile, effective,
     )
+
+
+def validate_runtime_instance_epoch(value: object) -> str:
+    """Return one canonical non-zero UUID epoch or fail closed."""
+    if type(value) is not str:
+        raise ServingContractError("invalid-epoch", "runtime_instance_epoch")
+    try:
+        parsed = UUID(value)
+    except ValueError:
+        raise ServingContractError("invalid-epoch", "runtime_instance_epoch") from None
+    if str(parsed) != value or parsed.int == 0:
+        raise ServingContractError("invalid-epoch", "runtime_instance_epoch")
+    return value
+
+
+def _contract_revisions(values: object) -> Mapping[str, str]:
+    if not isinstance(values, Mapping) or not values:
+        raise ServingContractError("invalid-contract-revisions", "contract_revisions")
+    result: dict[str, str] = {}
+    for capability, revision in values.items():
+        _identifier(capability, "contract_revisions")
+        _digest(revision, "contract_revisions")
+        result[capability] = revision
+    return MappingProxyType(result)
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerServingAdvertisement:
+    """Serving identity bound to one registered Worker process instance."""
+
+    deployment_revision: str
+    runtime_instance_epoch: str
+    contract_revisions: Mapping[str, str]
+    schema_version: str = "worker-serving-v1"
+
+    def __post_init__(self) -> None:
+        _version(self.schema_version, "worker-serving-v1")
+        _digest(self.deployment_revision, "deployment_revision")
+        object.__setattr__(
+            self,
+            "runtime_instance_epoch",
+            validate_runtime_instance_epoch(self.runtime_instance_epoch),
+        )
+        object.__setattr__(
+            self, "contract_revisions", _contract_revisions(self.contract_revisions)
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "deployment_revision": self.deployment_revision,
+            "runtime_instance_epoch": self.runtime_instance_epoch,
+            "contract_revisions": dict(self.contract_revisions),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ServingJobBinding:
+    """Immutable serving intent snapshotted into one durable Job."""
+
+    profile_revision: str
+    deployment_revision: str
+    serving_contract_revision: str
+    capability: str
+    operation_schema: str
+    schema_version: str = "serving-job-binding-v1"
+
+    def __post_init__(self) -> None:
+        _version(self.schema_version, "serving-job-binding-v1")
+        for name in (
+            "profile_revision", "deployment_revision", "serving_contract_revision",
+        ):
+            _digest(getattr(self, name), name)
+        _identifier(self.capability, "capability")
+        _identifier(self.operation_schema, "operation_schema")
+
+    @classmethod
+    def from_resolved(cls, value: ResolvedServingProfile) -> "ServingJobBinding":
+        if not isinstance(value, ResolvedServingProfile):
+            raise ServingContractError("invalid-type", "resolved_profile")
+        return cls(
+            profile_revision=value.profile_revision,
+            deployment_revision=value.deployment.revision,
+            serving_contract_revision=value.contract.revision,
+            capability=value.contract.capability,
+            operation_schema=value.contract.operation_schema,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "profile_revision": self.profile_revision,
+            "deployment_revision": self.deployment_revision,
+            "serving_contract_revision": self.serving_contract_revision,
+            "capability": self.capability,
+            "operation_schema": self.operation_schema,
+        }
+
+
+def worker_serving_from_dict(value: Mapping[str, object]) -> WorkerServingAdvertisement:
+    data = dict(value)
+    return WorkerServingAdvertisement(
+        schema_version=data.get("schema_version", ""),
+        deployment_revision=data["deployment_revision"],
+        runtime_instance_epoch=data["runtime_instance_epoch"],
+        contract_revisions=data["contract_revisions"],
+    )
+
+
+def serving_job_binding_from_dict(value: Mapping[str, object]) -> ServingJobBinding:
+    data = dict(value)
+    return ServingJobBinding(
+        schema_version=data.get("schema_version", ""),
+        profile_revision=data["profile_revision"],
+        deployment_revision=data["deployment_revision"],
+        serving_contract_revision=data["serving_contract_revision"],
+        capability=data["capability"],
+        operation_schema=data["operation_schema"],
+    )
+
+
+def serving_worker_matches_binding(
+    worker: WorkerServingAdvertisement,
+    binding: ServingJobBinding,
+) -> bool:
+    if not isinstance(worker, WorkerServingAdvertisement):
+        raise ServingContractError("invalid-type", "worker_serving")
+    if not isinstance(binding, ServingJobBinding):
+        raise ServingContractError("invalid-type", "serving_binding")
+    return (
+        worker.deployment_revision == binding.deployment_revision
+        and worker.contract_revisions.get(binding.capability)
+        == binding.serving_contract_revision
+    )
