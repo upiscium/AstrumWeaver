@@ -9,7 +9,12 @@ let
     integration = integrationPackage;
   };
   toml = pkgs.formats.toml { };
-  generatedConfig = toml.generate "astrumweaver-control.toml" cfg.settings;
+  effectiveSettings = lib.recursiveUpdate cfg.settings (
+    lib.optionalAttrs (cfg.clientAuth != null) {
+      control.client_auth = cfg.clientAuth;
+    }
+  );
+  generatedConfig = toml.generate "astrumweaver-control.toml" effectiveSettings;
   effectiveCommand =
     if cfg.command == null
     then "${cfg.package}/bin/astrumweaver-control"
@@ -38,6 +43,17 @@ in
       type = lib.types.attrs;
       default = { };
       description = "Non-secret TOML settings. Secrets must not be placed here because Nix store paths are world-readable.";
+    };
+
+    clientAuth = lib.mkOption {
+      type = lib.types.nullOr (lib.types.enum [ "bearer" "none" ]);
+      default = null;
+      description = ''
+        Optional explicit Client API authentication mode. null preserves the
+        TOML/default contract, where an absent client_auth setting means bearer.
+        Use "none" only when the deployment/network boundary supplies the
+        intended Client API access control.
+      '';
     };
 
     environmentFile = lib.mkOption {
