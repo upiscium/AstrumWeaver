@@ -825,6 +825,27 @@ async def test_managed_runtime_starts_checks_alias_and_stops() -> None:
 
 
 @pytest.mark.asyncio
+async def test_managed_runtime_fails_fast_when_owned_process_exits_before_readiness() -> None:
+    api = FakeApi(reachable=False)
+    process = FakeProcess(api, exit_on_start=True)
+    runtime = FreeTokenManagedRuntime(
+        api=api,
+        process=process,
+        context=context(),
+        model_ref="Qwen/Qwen3-30B-A3B",
+        served_model_name="astrumweaver",
+        startup_timeout_seconds=60.0,
+        launch_policy=launch_policy(),
+    )
+
+    with pytest.raises(RuntimeError, match="owned process exited before readiness"):
+        await runtime.start()
+
+    assert process.starts == 1
+    assert process.stops == 1
+
+
+@pytest.mark.asyncio
 async def test_managed_runtime_rejects_external_server() -> None:
     api = FakeApi(reachable=True)
     process = FakeProcess(api, running=False)
