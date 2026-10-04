@@ -725,6 +725,8 @@ async def test_subprocess_invokes_command_without_cuda_visible_devices(
 
     assert "--device-ids" in captured["args"]
     assert "env" not in captured["kwargs"]
+    assert "stdout" not in captured["kwargs"]
+    assert "stderr" not in captured["kwargs"]
 
     await controller.stop()
 
