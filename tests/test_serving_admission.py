@@ -517,3 +517,77 @@ def test_recovered_serving_job_can_move_to_new_epoch_of_same_deployment():
             runtime_instance_epoch=old.runtime_instance_epoch,
             now=recovered_at,
         )
+
+def test_serving_worker_cannot_claim_unbound_covered_capability():
+    now = utc_now()
+    repo = InMemoryControlRepository()
+    _, _, _, binding, advertisement = serving_values()
+    repo.register_worker(registration("serving-worker", advertisement), now=now)
+
+    legacy = repo.submit_job(
+        JobSubmission(
+            capability="llm.chat",
+            payload={"legacy": True},
+            priority=100,
+        ),
+        now=now,
+    )
+    bound = repo.submit_job(
+        replace(serving_submission(binding, now=now), priority=10),
+        now=now,
+    )
+
+    claimed = repo.claim_next_job(
+        "serving-worker",
+        runtime_instance_epoch=advertisement.runtime_instance_epoch,
+        now=now,
+    )
+    assert claimed is not None
+    assert claimed.job_id == bound.job_id
+    assert repo.get_job(legacy.job_id).status is JobStatus.QUEUED
+
+    legacy_worker = WorkerRegistration(
+        spec=WorkerSpec(
+            worker_id="legacy-worker",
+            worker_class="cpu-test",
+            resources=ResourceShape(),
+            capabilities=frozenset({"llm.chat"}),
+        )
+    )
+    repo.register_worker(legacy_worker, now=now)
+    legacy_claim = repo.claim_next_job("legacy-worker", now=now)
+    assert legacy_claim is not None
+    assert legacy_claim.job_id == legacy.job_id
+    assert legacy_claim.serving_binding is None
+
+
+def test_serving_worker_preserves_unrelated_legacy_capability():
+    now = utc_now()
+    repo = InMemoryControlRepository()
+    _, _, _, _, advertisement = serving_values()
+    base = registration("worker-a", advertisement)
+    repo.register_worker(
+        replace(
+            base,
+            spec=replace(
+                base.spec,
+                capabilities=frozenset({"llm.chat", "debug.echo"}),
+            ),
+        ),
+        now=now,
+    )
+    legacy = repo.submit_job(
+        JobSubmission(capability="debug.echo", payload={"value": 1}),
+        now=now,
+    )
+
+    claimed = repo.claim_next_job(
+        "worker-a",
+        runtime_instance_epoch=advertisement.runtime_instance_epoch,
+        now=now,
+    )
+    assert claimed is not None
+    assert claimed.job_id == legacy.job_id
+    assert claimed.serving_binding is None
+    assert claimed.attempt_runtime_instance_epoch is None
+
