@@ -38,6 +38,7 @@ from ..runtime.providers import (
     FreeTokenMoeStrategy,
     FreeTokenProvider,
     LlamaCppProvider,
+    LlamaCppProviderConfig,
     LlamaCppSplitMode,
     OllamaProvider,
     VllmProvider,
@@ -55,7 +56,11 @@ from .contracts import (
 from .discovery import DiscoveredGpu, discover_local_gpus, discover_local_host
 from .migration import DEFAULT_RUNTIME_MANIFEST, InstalledWorkerContract
 from .planner import build_runtime_setup_plan
-from .systemd import SystemdSetupDriver, create_systemd_driver
+from .systemd import (
+    GENERIC_SYSTEMD_LLAMA_CPP_EXECUTABLE,
+    SystemdSetupDriver,
+    create_systemd_driver,
+)
 from .first_run import (
     ControlBootstrapSpec,
     control_url_for_bind_host,
@@ -256,11 +261,21 @@ _PROVIDER_OPTIONS: Mapping[str, tuple[TuiOptionSpec, ...]] = {
 }
 
 
-def default_runtime_catalog() -> RuntimeCatalog:
+def default_runtime_catalog(
+    *,
+    deployment_path: DeploymentPath | None = None,
+) -> RuntimeCatalog:
+    llama_cpp = LlamaCppProvider(
+        LlamaCppProviderConfig(
+            executable=GENERIC_SYSTEMD_LLAMA_CPP_EXECUTABLE,
+        )
+        if deployment_path is DeploymentPath.SYSTEMD
+        else None
+    )
     return RuntimeCatalog(
         (
             OllamaProvider(),
-            LlamaCppProvider(),
+            llama_cpp,
             VllmProvider(),
             FreeTokenProvider(),
             ExLlamaV3Provider(),
@@ -651,6 +666,20 @@ def recovery_guidance(result: SetupApplyResult) -> tuple[str, ...]:
             "Rollback was incomplete. Reconcile the reported action before retrying.",
             "Do not switch runtime providers implicitly; keep the explicit selection or edit it.",
         )
+    if any(
+        action.kind is SetupActionKind.ENSURE_PACKAGE
+        and action.status.value in {"blocked", "failed"}
+        for action in result.actions
+    ):
+        return (
+            "Runtime package provisioning did not complete.",
+            (
+                "For generic-systemd use the standard Nix RuntimeBackend path in "
+                "docs/installation.md#runtimebackend-nix-profile; custom installer "
+                "argv is an advanced override."
+            ),
+            "No provider substitution was performed.",
+        )
     if any(action.status.value == "blocked" for action in result.actions):
         return (
             "Resolve the blocked preflight/action and rerun the same reviewed setup flow.",
@@ -682,7 +711,9 @@ def plan_runtime_for_worker(
     catalog: RuntimeCatalog | None = None,
     reconcile_existing_worker: bool = False,
 ) -> RuntimeTuiPlan | None:
-    catalog = catalog or default_runtime_catalog()
+    catalog = catalog or default_runtime_catalog(
+        deployment_path=snapshot.deployment_path
+    )
     demand = _prompt_demand(io, worker)
 
     while True:
@@ -856,7 +887,9 @@ def run_setup_tui(
     existing_worker: InstalledWorkerContract | None = None,
     reconcile_existing_worker: bool = False,
 ) -> TuiRunResult:
-    catalog = catalog or default_runtime_catalog()
+    catalog = catalog or default_runtime_catalog(
+        deployment_path=snapshot.deployment_path
+    )
     io.clear()
     io.write("AstrumWeaver Worker/runtime setup")
     io.write("=" * 34)
