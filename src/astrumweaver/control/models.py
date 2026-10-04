@@ -180,15 +180,45 @@ class JobRecord:
             raise ValueError("deadline_at must be timezone-aware")
         if self.serving is not None and not isinstance(self.serving, ServingJobBinding):
             raise TypeError("serving must be ServingJobBinding")
+        if self.serving is None:
+            if self.deadline_at is not None:
+                raise ValueError("deadline_at requires a serving binding")
+        else:
+            if self.deadline_at is None:
+                raise ValueError("serving jobs require deadline_at")
+            if self.serving.capability != self.capability:
+                raise ValueError("serving binding capability must match job capability")
+
         claimed = (
             self.claimed_deployment_revision,
             self.claimed_serving_contract_revision,
             self.claimed_runtime_instance_epoch,
         )
-        if any(value is not None for value in claimed) and not all(
-            value is not None for value in claimed
-        ):
+        any_claimed = any(value is not None for value in claimed)
+        all_claimed = all(value is not None for value in claimed)
+        if any_claimed and not all_claimed:
             raise ValueError("claimed serving identity fields must be all set or all unset")
+        if all_claimed:
+            if self.serving is None:
+                raise ValueError("claimed serving identity requires a serving binding")
+            if self.claimed_deployment_revision != self.serving.deployment_revision:
+                raise ValueError("claimed deployment revision must match serving binding")
+            if (
+                self.claimed_serving_contract_revision
+                != self.serving.serving_contract_revision
+            ):
+                raise ValueError(
+                    "claimed serving contract revision must match serving binding"
+                )
+            if not str(self.claimed_runtime_instance_epoch).strip():
+                raise ValueError("claimed runtime instance epoch must not be blank")
+        if (
+            self.status is JobStatus.RUNNING
+            and self.serving is not None
+            and not all_claimed
+        ):
+            raise ValueError("running serving job requires claimed attempt identity")
+
         object.__setattr__(self, "payload", _mapping(self.payload))
         if self.error is not None:
             object.__setattr__(self, "error", _mapping(self.error))
