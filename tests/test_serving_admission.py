@@ -10,7 +10,7 @@ import pytest
 
 from astrumweaver import JobResult, ResourceShape, WorkerSpec
 from astrumweaver.control.api import create_app
-from astrumweaver.control.models import JobStatus, JobSubmission, WorkerRegistration
+from astrumweaver.control.models import JobStatus, JobSubmission, WorkerRegistration, WorkerState
 from astrumweaver.control.repository import (
     ConflictError,
     InMemoryControlRepository,
@@ -627,9 +627,7 @@ def test_serving_admission_excludes_draining_and_stale_workers():
     )
     draining_repo.set_worker_state(
         "draining-worker",
-        JobStatus.__mro__[1] if False else __import__(
-            "astrumweaver.control.models", fromlist=["WorkerState"]
-        ).WorkerState.DRAINING,
+        WorkerState.DRAINING,
         runtime_instance_epoch=advertisement.runtime_instance_epoch,
         now=now,
     )
