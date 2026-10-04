@@ -121,6 +121,13 @@ New serving fields without `serving-v1`, unknown protocol extensions,
 malformed epochs and stale epochs fail closed on both Control requests and
 Worker-side Control responses.
 
+Before a serving-enabled Worker registers, it requires the Control readiness
+response to advertise `serving-v1`. This prevents a newer Worker from mutating
+an older v1 Control that would otherwise ignore unknown serving fields. The
+official client-facing serving adapters must negotiate the same extension before
+sending serving-bound generic Jobs. Legacy non-serving Workers do not perform
+this extra negotiation.
+
 The generic WorkerRuntime can carry and locally recheck a
 `WorkerServingAdvertisement`. The production daemon optionally reads a
 `worker-serving-manifest-v1` from `[serving].manifest` or the explicit
