@@ -107,10 +107,20 @@ behavior. New serving fields without `serving-v1`, unknown protocol
 extensions, malformed epochs and stale epochs fail closed.
 
 The generic WorkerRuntime can carry and locally recheck a
-`WorkerServingAdvertisement`. Production provider adapters still have to
-construct that advertisement from verified prepared artifacts/evidence. #99
-does not turn an arbitrary label, mutable model tag or private path into trusted
-deployment evidence, and does not add a user-facing model-serving endpoint.
+`WorkerServingAdvertisement`. The production daemon optionally reads a
+`worker-serving-manifest-v1` from `[serving].manifest` or the explicit
+`--serving-manifest` override. The manifest contains one
+`DeploymentIdentity` and one or more `ServingContract` values; their
+deployment revisions and capability uniqueness are checked before
+registration. The daemon creates a fresh runtime-instance epoch for every
+process invocation.
+
+Provider/operation adapters still have to prove that manifest artifact and
+evidence digests correspond to the runtime/model actually prepared on that
+Worker. Loading a syntactically valid manifest is therefore not model
+attestation. #99 does not turn an arbitrary label, mutable model tag or private
+path into trusted deployment evidence, and does not add a user-facing
+model-serving endpoint.
 
 ## Acceptance scope
 
