@@ -59,17 +59,26 @@ class HTTPAcceptanceControl:
     def __init__(
         self,
         base_url: str,
-        client_token: str,
+        client_token: str | None,
         *,
+        client_auth: ClientAuthMode | str = ClientAuthMode.BEARER,
         timeout_seconds: float = 10.0,
     ) -> None:
         if not base_url:
             raise ValueError("control base_url is required")
-        if not client_token:
-            raise ValueError("client token is required")
+        mode = ClientAuthMode(client_auth)
+        if mode is ClientAuthMode.BEARER and not client_token:
+            raise ValueError(
+                "client token is required when client_auth=bearer"
+            )
+        headers = (
+            {}
+            if mode is ClientAuthMode.NONE
+            else {"authorization": f"Bearer {client_token}"}
+        )
         self._client = httpx.Client(
             base_url=base_url.rstrip("/"),
-            headers={"authorization": f"Bearer {client_token}"},
+            headers=headers,
             timeout=timeout_seconds,
         )
 
@@ -446,6 +455,15 @@ def main() -> None:
     )
     parser.add_argument("--capability", default="debug.echo")
     parser.add_argument(
+        "--client-auth",
+        choices=tuple(mode.value for mode in ClientAuthMode),
+        default=ClientAuthMode.BEARER.value,
+        help=(
+            "Control Client API authentication mode; defaults to bearer "
+            "for secure compatibility"
+        ),
+    )
+    parser.add_argument(
         "--health-url",
         default="http://127.0.0.1:9100",
     )
@@ -467,11 +485,13 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    client_auth = ClientAuthMode(args.client_auth)
     client_token = os.environ.get("ASTRUMWEAVER_CLIENT_TOKEN", "")
-    if not client_token:
+    if client_auth is ClientAuthMode.BEARER and not client_token:
         parser.exit(
             2,
-            "astrumweaver-hardware-accept: ASTRUMWEAVER_CLIENT_TOKEN is required\n",
+            "astrumweaver-hardware-accept: ASTRUMWEAVER_CLIENT_TOKEN is "
+            "required when --client-auth=bearer\n",
         )
 
     gpu_uuids = tuple(str(value).strip() for value in args.gpu_uuids)
@@ -481,7 +501,11 @@ def main() -> None:
             "astrumweaver-hardware-accept: at least one --gpu-uuid is required\n",
         )
 
-    control = HTTPAcceptanceControl(args.control_url, client_token)
+    control = HTTPAcceptanceControl(
+        args.control_url,
+        client_token or None,
+        client_auth=client_auth,
+    )
     try:
         service = SystemdServiceManager(
             args.service,
