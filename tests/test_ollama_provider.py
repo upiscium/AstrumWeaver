@@ -588,6 +588,26 @@ async def test_managed_runtime_multi_gpu_does_not_invent_per_device_proof() -> N
 
 
 @pytest.mark.asyncio
+async def test_managed_runtime_fails_fast_when_owned_process_exits_before_readiness() -> None:
+    api = FakeApi(reachable=False)
+    process = FakeProcess(api, exit_on_start=True)
+    runtime = OllamaManagedRuntime(
+        api=api,
+        process=process,
+        context=context(),
+        model="qwen3:8b",
+        keep_alive="5m",
+        startup_timeout_seconds=60.0,
+    )
+
+    with pytest.raises(RuntimeError, match="owned process exited before readiness"):
+        await runtime.start()
+
+    assert process.starts == 1
+    assert process.stops == 1
+
+
+@pytest.mark.asyncio
 async def test_managed_runtime_rejects_unowned_external_ollama_server() -> None:
     api = FakeApi(reachable=True)
     process = FakeProcess(api, running=False)
