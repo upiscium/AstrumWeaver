@@ -345,6 +345,7 @@ def test_check_storage_rejects_legacy_001_only_schema_until_migrated() -> None:
         "000_schema_migrations.sql",
         "001_control_plane.sql",
         "002_worker_accelerators.sql",
+        "003_serving_bindings.sql",
     ]
     repo.check_storage()
 
@@ -415,6 +416,7 @@ def test_packaged_migration_entrypoint_is_idempotent() -> None:
     assert "000_schema_migrations.sql" in applied
     assert "001_control_plane.sql" in applied
     assert "002_worker_accelerators.sql" in applied
+    assert "003_serving_bindings.sql" in applied
 
     repo = PostgresControlRepository(DATABASE_URL)
     repo.check_storage()
