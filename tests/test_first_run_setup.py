@@ -363,6 +363,7 @@ def test_packaging_check_exposes_only_the_explicit_tool_authority(
         "astrumweaver-control",
         "astrumweaver-worker",
         "astrumweaver-migrate",
+        "astrumweaver-runtime-profile",
     ):
         executable = profile_bin / name
         executable.write_text("#!/bin/sh\n", encoding="utf-8")
