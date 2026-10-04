@@ -25,6 +25,7 @@ from ..gpu_mapping import (
     verify_isolated_gpu_access,
 )
 from .client import ClaimedJob, ControlClient, ControlTransportError
+from .supervision import RuntimeHealthSupervisor, RuntimeUnavailable
 
 
 _LOG = logging.getLogger(__name__)
@@ -150,6 +151,7 @@ class WorkerRuntime:
         client: ControlClient,
         poll_interval_seconds: float = 1.0,
         heartbeat_interval_seconds: float = 5.0,
+        runtime_supervisor: RuntimeHealthSupervisor | None = None,
     ) -> None:
         if max_concurrency != 1:
             raise ValueError("v1 WorkerRuntime currently requires max_concurrency=1")
@@ -162,6 +164,7 @@ class WorkerRuntime:
         self.max_concurrency = max_concurrency
         self.executor = executor
         self.client = client
+        self.runtime_supervisor = runtime_supervisor
         self.poll_interval_seconds = poll_interval_seconds
         self.heartbeat_interval_seconds = heartbeat_interval_seconds
         self._stop = asyncio.Event()
@@ -189,7 +192,24 @@ class WorkerRuntime:
             and not self.draining
             and self.control_available
             and self._control_state is WorkerState.ONLINE
+            and self.runtime_available
         )
+
+    @property
+    def runtime_available(self) -> bool:
+        return self.runtime_supervisor is None or self.runtime_supervisor.available
+
+    @property
+    def runtime_state(self) -> str:
+        return "unmanaged" if self.runtime_supervisor is None else self.runtime_supervisor.state
+
+    @property
+    def runtime_failure(self) -> str | None:
+        return None if self.runtime_supervisor is None else self.runtime_supervisor.failure_reason
+
+    def _require_runtime(self) -> None:
+        if not self.runtime_available:
+            raise RuntimeUnavailable("RuntimeProvider health is unconfirmed")
 
     @property
     def registered(self) -> bool:
@@ -197,7 +217,10 @@ class WorkerRuntime:
 
     @property
     def draining(self) -> bool:
-        return self._draining or self._control_state is WorkerState.DRAINING
+        return (
+            self._draining or self._control_state is WorkerState.DRAINING
+            or (self.runtime_supervisor is not None and self.runtime_supervisor.failed.is_set())
+        )
 
     @property
     def active_job_id(self) -> str | None:
@@ -269,7 +292,9 @@ class WorkerRuntime:
         # rejects an ONLINE/DRAINING promotion from OFFLINE, including races.
         state = (
             WorkerState.DRAINING
-            if self._draining and self.control_available
+            if (self._draining or (
+                self.runtime_supervisor is not None and self.runtime_supervisor.failed.is_set()
+            )) and self.control_available
             and self._control_state is not WorkerState.OFFLINE
             else None
         )
@@ -304,6 +329,12 @@ class WorkerRuntime:
         try:
             if self._stop.is_set():
                 return
+            if self.runtime_supervisor is not None:
+                await self.runtime_supervisor.start()
+                if not self.runtime_available:
+                    # Stay not-ready without an automatic service restart loop.
+                    await self._stop.wait()
+                    return
             await self.register()
             while not self._stop.is_set():
                 try:
@@ -327,9 +358,16 @@ class WorkerRuntime:
                         await self._wait_for_poll()
                         continue
                     try:
+                        # A claim may have been admitted before a failed probe
+                        # while its response was in flight. Do not execute it.
+                        self._require_runtime()
                         await self._execute_claim(claimed)
                     finally:
                         self._active = None
+                except RuntimeUnavailable:
+                    # Do not manufacture a failure for an unconfirmed attempt.
+                    # Server lease expiry/recovery remains authoritative.
+                    await self._wait_for_poll()
                 except ControlTransportError as exc:
                     # Stay live but not ready. Retry a state-less heartbeat,
                     # never enrollment or automatic ownership reacquisition.
@@ -338,6 +376,12 @@ class WorkerRuntime:
         finally:
             self.request_stop()
             self._control_valid_until = 0.0
+            if self.runtime_supervisor is not None:
+                await self.runtime_supervisor.close()
+                # Do not release an idle GPU's Control reservation before its
+                # owned process is stopped. Failed cleanup keeps ownership
+                # fail-closed; daemon fallback/service-manager cleanup follows.
+                await self.runtime_supervisor.shutdown_owned()
             async with self._control_lock:
                 if self._registered:
                     with contextlib.suppress(ControlTransportError):
@@ -357,18 +401,26 @@ class WorkerRuntime:
         # normal callers install it under the claim lock before reaching here.
         if self._active is not None and self._active is not claimed:
             raise RuntimeError("Worker already owns a different local attempt")
+        self._require_runtime()
         self._active = claimed
+        runtime_failure = (
+            asyncio.create_task(self.runtime_supervisor.failed.wait(), name="astrumweaver-runtime-failure")
+            if self.runtime_supervisor is not None else None
+        )
         execution = asyncio.create_task(
             self.executor.execute(claimed.request), name="astrumweaver-job-execution"
         )
         try:
             while not execution.done():
+                self._require_runtime()
                 await self._heartbeat_if_due()
+                self._require_runtime()
                 await asyncio.wait(
-                    {execution},
+                    {execution} if runtime_failure is None else {execution, runtime_failure},
                     timeout=max(0.0, self._next_heartbeat_at - time.monotonic()),
                 )
 
+            self._require_runtime()
             error: dict[str, str] | None = None
             retryable = False
             try:
@@ -376,6 +428,12 @@ class WorkerRuntime:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                if self.runtime_supervisor is not None:
+                    # Detect a dead runtime before consuming another queued
+                    # job. Job validation errors on a healthy runtime retain
+                    # the ordinary fenced failure path.
+                    await self.runtime_supervisor.check()
+                    self._require_runtime()
                 error = {"type": type(exc).__name__, "message": str(exc)}
                 retryable = True
             else:
@@ -390,6 +448,7 @@ class WorkerRuntime:
                 # immediately. No terminal write races a lease heartbeat.
                 if time.monotonic() >= self._next_heartbeat_at:
                     await self._heartbeat_locked()
+                self._require_runtime()
                 if not self.control_available:
                     raise ControlTransportError(0, "Worker authority is unconfirmed")
                 if error is not None:
@@ -426,4 +485,11 @@ class WorkerRuntime:
                         with contextlib.suppress(asyncio.CancelledError, Exception):
                             await execution
             finally:
+                if runtime_failure is not None:
+                    runtime_failure.cancel()
+                    await asyncio.gather(runtime_failure, return_exceptions=True)
+                # Retrieve a completed task's exception even if health failed
+                # before the normal result path. No unobserved task leaks.
+                if execution.done() and not execution.cancelled():
+                    execution.exception()
                 self._active = None

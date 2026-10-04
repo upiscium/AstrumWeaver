@@ -1,8 +1,8 @@
 # Worker liveness and Control acknowledgement
 
-This contract covers Worker heartbeats and job-attempt authority. Post-start
-RuntimeProvider health supervision is a separate release obligation in #79/F3;
-Control liveness is not proof that an owned model process is still healthy.
+This contract covers Worker heartbeats and job-attempt authority.
+[Post-start RuntimeProvider supervision](runtime-supervision.md) adds a separate
+health gate; Control liveness is not proof that an owned model process is healthy.
 
 ## Cadence
 
@@ -46,7 +46,8 @@ fencing; Worker heartbeats never disable those checks.
 The Worker validates registration/heartbeat acknowledgements against its
 protocol version, Worker specification and concurrency contract. `/ready`
 requires a fresh matching acknowledgement with Control state ONLINE, no local
-stop/drain request, and a known registration. The freshness budget is the
+stop/drain request, a known registration and (for RuntimeProvider-backed Workers)
+a fresh runtime-health gate. The freshness budget is the
 heartbeat interval plus the request timeout, measured from request start,
 not from delayed response arrival. This is a local fail-closed freshness
 budget, not a replacement for the server's independently configured TTL.
