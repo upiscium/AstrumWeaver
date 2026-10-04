@@ -498,9 +498,8 @@ class OllamaManagedRuntime(ManagedRuntime):
             raise
 
     async def stop(self) -> None:
-        if await self._server_reachable():
-            with contextlib.suppress(Exception):
-                await self.api.unload(self.model)
+        # Terminating the owned server releases its models. Do not make process
+        # cleanup conditional on HTTP health/unload: that endpoint may be hung.
         await self.process.stop()
 
     async def health(self) -> RuntimeHealth:
@@ -542,6 +541,13 @@ class OllamaManagedRuntime(ManagedRuntime):
                 metadata={"runtime_provider": OLLAMA_PROVIDER_ID},
             )
 
+        # An owned process may exit during the awaited inventory request.
+        if not self.process.running:
+            return RuntimeHealth(
+                state=RuntimeHealthState.STOPPED,
+                ready=False,
+                metadata={"runtime_provider": OLLAMA_PROVIDER_ID},
+            )
         return RuntimeHealth(
             state=RuntimeHealthState.READY,
             ready=True,
@@ -560,7 +566,7 @@ class OllamaManagedRuntime(ManagedRuntime):
     async def release(self) -> None:
         if self._closed:
             return
-        if await self._server_reachable():
+        if self.process.running and await self._server_reachable() and self.process.running:
             with contextlib.suppress(Exception):
                 await self.api.unload(self.model)
         await self.api.close()

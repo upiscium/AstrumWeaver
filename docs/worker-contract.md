@@ -178,5 +178,5 @@ This keeps the control plane usable for workload types that did not exist when A
 
 Heartbeat cadence, Control acknowledgement/readiness, lease-safe cancellation,
 and explicit OFFLINE recovery are specified in
-[Worker liveness](worker-liveness.md). That operational contract does not replace
-the separately tracked RuntimeProvider health-supervision release gate.
+[Worker liveness](worker-liveness.md). Runtime-backed Workers also require
+[post-start RuntimeProvider supervision](runtime-supervision.md).

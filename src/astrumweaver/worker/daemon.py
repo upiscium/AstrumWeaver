@@ -22,6 +22,7 @@ from ..runtime import (
 )
 from .client import ControlClient
 from .health import create_health_app
+from .supervision import RuntimeHealthSupervisor
 from .runtime import (
     WorkerRuntime,
     load_executor,
@@ -168,6 +169,7 @@ async def run_worker(
         timeout_seconds=float(worker_section.get("request_timeout_seconds", 10.0)),
     )
     runtime_manager: RuntimeLifecycleManager | None = None
+    supervisor: RuntimeHealthSupervisor | None = None
 
     try:
         if runtime_manifest:
@@ -184,6 +186,11 @@ async def run_worker(
                 )
             )
             executor = managed_runtime.executor()
+            supervisor = RuntimeHealthSupervisor(
+                managed_runtime,
+                lifecycle=runtime_manager,
+                shutdown_timeout_seconds=float(runtime_section.get("shutdown_timeout_seconds", 60.0)),
+            )
         else:
             executor = load_executor(
                 executor_factory,
@@ -197,6 +204,7 @@ async def run_worker(
             max_concurrency=int(worker_section.get("max_concurrency", 1)),
             executor=executor,
             client=client,
+            runtime_supervisor=supervisor,
             poll_interval_seconds=float(
                 worker_section.get("poll_interval_seconds", 1.0)
             ),
@@ -321,17 +329,13 @@ async def run_worker(
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
     finally:
-        await client.aclose()
-        if runtime_manager is not None:
-            await runtime_manager.ensure_stopped(
-                timeout_seconds=float(
-                    runtime_section.get(
-                        "shutdown_timeout_seconds",
-                        60.0,
-                    )
-                ),
-                release=True,
-            )
+        try:
+            await client.aclose()
+        finally:
+            if runtime_manager is not None:
+                await runtime_manager.shutdown_owned(
+                    timeout_seconds=float(runtime_section.get("shutdown_timeout_seconds", 60.0))
+                )
 
 
 def main() -> None:

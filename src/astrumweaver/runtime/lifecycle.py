@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from dataclasses import dataclass, field
 
 from .contracts import (
@@ -97,6 +98,25 @@ class RuntimeLifecycleManager:
             self._released = True
 
         return health
+
+    async def shutdown_owned(self, *, timeout_seconds: float = 60.0) -> None:
+        """Stop owned processes even if their health endpoint is hung/foreign.
+
+        Called after the Worker and supervisor are joined. stop() only targets
+        owned processes and must be idempotent; a failing diagnostic endpoint
+        must not prevent process cleanup. Budget covers stop plus release.
+        """
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError("shutdown timeout must be finite and positive")
+        if self._released:
+            return
+        try:
+            async with asyncio.timeout(timeout_seconds):
+                await self.runtime.stop()
+                await self.runtime.release()
+                self._released = True
+        except Exception:
+            raise RuntimeLifecycleError("owned runtime shutdown failed; inspect Worker logs") from None
 
     async def restart(
         self,

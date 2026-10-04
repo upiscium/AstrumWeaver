@@ -365,3 +365,12 @@ The packaged `astrumweaver-runtime-deployment-accept` command validates the
 evidence.
 
 See [Runtime Deployment GPU Isolation Acceptance](runtime-deployment-acceptance.md).
+
+## Post-start health and recovery
+
+Successful setup/startup is not a permanent readiness grant. Runtime-backed
+Workers continuously monitor their owned provider and stop admitting work after
+a health failure. See [RuntimeProvider supervision](runtime-supervision.md) for
+the latched quarantine policy, diagnostic fields, in-flight attempt boundary
+and operator-controlled restart procedure. Reapplying setup alone does not
+clear a runtime fault.

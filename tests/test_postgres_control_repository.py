@@ -730,3 +730,39 @@ async def test_postgres_runtime_observes_offline_without_implicit_gpu_reacquisit
         finally:
             runtime.request_stop()
             await asyncio.wait_for(task, 3)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("active", [False, True])
+async def test_postgres_post_start_runtime_failure_quarantines_worker(active):
+    """Real Worker/API/PostgreSQL; provider health is a bounded test double."""
+    from test_runtime_supervision import Managed, supervised
+    from test_worker_liveness import SPEC, Executor, eventually, submit
+    from astrumweaver.runtime import RuntimeHealth, RuntimeHealthState
+
+    assert DATABASE_URL is not None
+    repo = PostgresControlRepository(DATABASE_URL)
+    managed = Managed(Executor(gate=asyncio.Event()) if active else Executor())
+    async with supervised(managed, repo, interval=0.05, timeout=0.8) as (_, _, supervisor, client, runtime, task):
+        claimed = None
+        if active:
+            first = (await asyncio.to_thread(submit, repo))[0]
+            await asyncio.wait_for(managed.executor().started.wait(), 2)
+            claimed = await asyncio.to_thread(repo.get_job, first.job_id)
+        managed.value = RuntimeHealth(state=RuntimeHealthState.STOPPED, ready=False)
+        await asyncio.wait_for(supervisor.failed.wait(), 2)
+        await eventually(lambda: runtime.active_job_id is None and client.in_flight == 0)
+        count = client.count("claim")
+        second = (await asyncio.to_thread(submit, repo))[0]
+        await asyncio.sleep(0.15)
+        assert not runtime.ready and not task.done()
+        assert client.count("claim") == count
+        assert (await asyncio.to_thread(repo.get_job, second.job_id)).attempts == 0
+        assert client.count("register") == 1
+        if claimed is not None:
+            assert managed.executor().cancelled == [claimed.job_id]
+            assert client.count("complete") == client.count("fail") == 0
+            await asyncio.to_thread(repo.recover_expired_jobs, now=claimed.lease_expires_at + timedelta(seconds=1))
+            with pytest.raises(ConflictError):
+                await asyncio.to_thread(repo.complete_job, claimed.job_id, JobResult(text="stale"),
+                                        worker_id=SPEC.worker_id, lease_token=claimed.lease_token)
