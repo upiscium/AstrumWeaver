@@ -33,8 +33,12 @@ from astrumweaver.setup import (
     DeploymentPath,
     DiscoveredGpu,
     PrivilegeMode,
+    SetupAction,
+    SetupActionKind,
     SetupActionState,
     SetupHostSnapshot,
+    SetupPlan,
+    SetupPlanGoal,
     discover_local_gpus,
 )
 from astrumweaver.runtime import ModelPreparationPolicy, RuntimeHostFacts
@@ -42,6 +46,7 @@ from astrumweaver.setup.migration import InstalledWorkerContract
 from astrumweaver.setup.systemd import GENERIC_SYSTEMD_LLAMA_CPP_EXECUTABLE
 from astrumweaver.setup.tui import (
     TuiRunStatus,
+    _render_preview,
     default_runtime_catalog,
     build_worker_spec,
     configure_provider,
@@ -240,6 +245,32 @@ def wizard_responses(*, runtime: str = "fake") -> list[Response]:
         "",  # preferred host RAM
         runtime,
     ]
+
+
+def test_systemd_llama_preview_points_to_runtimebackend_recovery_docs() -> None:
+    io = ScriptedIO([])
+    plan = SetupPlan(
+        provider_id="llama-cpp",
+        deployment_path=DeploymentPath.SYSTEMD,
+        goal=SetupPlanGoal.ACTIVATE,
+        actions=(
+            SetupAction(
+                action_id="01-runtime-package",
+                kind=SetupActionKind.ENSURE_PACKAGE,
+                description="Ensure llama.cpp runtime package",
+                payload={
+                    "provider_id": "llama-cpp",
+                    "package_reference": "llama-cpp",
+                },
+            ),
+        ),
+    )
+
+    assert _render_preview(io, plan, FakeDriver())
+    assert any(
+        "docs/installation.md#runtimebackend-nix-profile" in line
+        for line in io.output
+    )
 
 
 def test_systemd_catalog_binds_llama_cpp_to_managed_profile() -> None:
