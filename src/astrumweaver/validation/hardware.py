@@ -15,6 +15,7 @@ from uuid import uuid4
 
 import httpx
 
+from ..control.auth import ClientAuthMode
 from ..transport import PROTOCOL_VERSION
 from ..worker.mode import (
     BorrowableWorkerController,
