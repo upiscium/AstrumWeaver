@@ -297,9 +297,15 @@ SetupPlan, shows the exact digest, performs a dry run, stops the smoke Worker
 before execution-authority migration, and applies only explicitly authorized
 actions. Unknown/mixed installed execution state fails closed.
 
-Package/model installation commands are not guessed automatically. See
-[Interactive Worker/runtime Setup TUI](setup-tui.md) for the required
-deployment-driver environment when an action needs an installer/downloader.
+For `llama-cpp`, generic systemd has a standard Nix RuntimeBackend path:
+the reviewed apply reconciles the dedicated
+`/nix/var/nix/profiles/astrumweaver-runtime-llama-cpp` profile and persists
+its absolute `llama-server` path. No custom installer JSON is required.
+
+Providers without a first-party managed RuntimeBackend still fail closed when
+package/model mutation is required. Advanced deployments may supply explicit
+argv hooks; see [Interactive Worker/runtime Setup TUI](setup-tui.md) and the
+[RuntimeBackend Nix profile](installation.md#runtimebackend-nix-profile).
 
 ## 5. GPU subset deployments
 
