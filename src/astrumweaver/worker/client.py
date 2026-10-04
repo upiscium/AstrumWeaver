@@ -153,20 +153,30 @@ class ControlClient:
         lease_token = body.get("lease_token")
         if not isinstance(lease_token, str) or not lease_token:
             raise ControlTransportError(502, "claim response lacks lease token")
-        return ClaimedJob(
-            request=JobRequest(
-                job_id=str(body["job_id"]),
-                capability=str(body["capability"]),
-                payload=body.get("payload") or {},
-                metadata={
-                    "attempt": int(body.get("attempts", 0)),
-                    "lease_expires_at": body.get("lease_expires_at"),
+        metadata: dict[str, Any] = {
+            "attempt": int(body.get("attempts", 0)),
+            "lease_expires_at": body.get("lease_expires_at"),
+        }
+        if body.get("serving") is not None:
+            if SERVING_EXTENSION not in set(body.get("extensions") or ()):
+                raise ControlTransportError(
+                    502, "claim response lacks serving extension marker"
+                )
+            metadata.update(
+                {
                     "deadline_at": body.get("deadline_at"),
                     "serving": body.get("serving"),
                     "claimed_deployment_revision": body.get("claimed_deployment_revision"),
                     "claimed_serving_contract_revision": body.get("claimed_serving_contract_revision"),
                     "claimed_runtime_instance_epoch": body.get("claimed_runtime_instance_epoch"),
-                },
+                }
+            )
+        return ClaimedJob(
+            request=JobRequest(
+                job_id=str(body["job_id"]),
+                capability=str(body["capability"]),
+                payload=body.get("payload") or {},
+                metadata=metadata,
             ),
             lease_token=lease_token,
             lease_expires_at=body.get("lease_expires_at"),
