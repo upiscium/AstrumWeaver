@@ -261,6 +261,42 @@ def test_worker_client_rejects_unnegotiated_or_unknown_serving_response():
         ControlClient._object(unknown_extension)
 
 
+@pytest.mark.asyncio
+async def test_serving_worker_negotiates_before_mutating_legacy_control():
+    _, _, _, _, advertisement = serving_values()
+    spec = registration("worker-a", advertisement).spec
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path == "/v1/ready":
+            # Exact legacy-v1 shape: no serving extension advertisement.
+            return httpx.Response(
+                200,
+                json={"ready": True, "protocol_version": PROTOCOL_VERSION},
+            )
+        if request.url.path == "/v1/workers/register":
+            pytest.fail("serving registration reached an unnegotiated Control")
+        return httpx.Response(404)
+
+    async with ControlClient(
+        "http://legacy-control",
+        WORKER_TOKEN,
+        transport=httpx.MockTransport(handler),
+    ) as control:
+        with pytest.raises(
+            ControlTransportError,
+            match="does not support required extension",
+        ):
+            await control.register(
+                spec=spec,
+                max_concurrency=1,
+                serving=advertisement,
+            )
+
+    assert calls == ["/v1/ready"]
+
+
 def test_serving_transport_requires_explicit_extension():
     from astrumweaver.transport import (
         job_submission_from_dict,
