@@ -59,70 +59,6 @@ class ControlRepository(Protocol):
         now: datetime | None = None,
     ) -> WorkerRecord: ...
 
-    def expire_deadline_jobs(
-        self, *, now: datetime | None = None
-    ) -> list[JobRecord]:
-        timestamp = _aware(now)
-        expired: list[JobRecord] = []
-        with self._lock:
-            for job_id, job in list(self._jobs.items()):
-                if (
-                    job.status not in {JobStatus.QUEUED, JobStatus.RUNNING}
-                    or job.deadline_at is None
-                    or job.deadline_at > timestamp
-                ):
-                    continue
-                if job.status is JobStatus.RUNNING:
-                    self._release_worker_capacity(job.assigned_worker_id)
-                updated = job.with_updates(
-                    status=JobStatus.FAILED,
-                    error={
-                        "type": "deadline_expired",
-                        "message": "job deadline expired",
-                        "retryable": False,
-                    },
-                    assigned_worker_id=None,
-                    lease_token=None,
-                    lease_expires_at=None,
-                    finished_at=timestamp,
-                    updated_at=timestamp,
-                )
-                self._jobs[job_id] = updated
-                expired.append(updated)
-        return expired
-
-    def expire_deadline_jobs(
-        self, *, now: datetime | None = None
-    ) -> list[JobRecord]:
-        timestamp = _aware(now)
-        expired: list[JobRecord] = []
-        with self._lock:
-            for job_id, job in list(self._jobs.items()):
-                if (
-                    job.status not in {JobStatus.QUEUED, JobStatus.RUNNING}
-                    or job.deadline_at is None
-                    or job.deadline_at > timestamp
-                ):
-                    continue
-                if job.status is JobStatus.RUNNING:
-                    self._release_worker_capacity(job.assigned_worker_id)
-                updated = job.with_updates(
-                    status=JobStatus.FAILED,
-                    error={
-                        "type": "deadline_expired",
-                        "message": "job deadline expired",
-                        "retryable": False,
-                    },
-                    assigned_worker_id=None,
-                    lease_token=None,
-                    lease_expires_at=None,
-                    finished_at=timestamp,
-                    updated_at=timestamp,
-                )
-                self._jobs[job_id] = updated
-                expired.append(updated)
-        return expired
-
     def submit_job(
         self, submission: JobSubmission, *, now: datetime | None = None
     ) -> JobRecord: ...
@@ -181,7 +117,6 @@ class ControlRepository(Protocol):
     def recover_expired_jobs(
         self, *, now: datetime | None = None
     ) -> list[JobRecord]: ...
-
 
 def _aware(value: datetime | None) -> datetime:
     current = value or utc_now()
@@ -388,6 +323,38 @@ class InMemoryControlRepository:
                     continue
                 updated = replace(worker, state=WorkerState.OFFLINE)
                 self._workers[worker_id] = updated
+                expired.append(updated)
+        return expired
+
+    def expire_deadline_jobs(
+        self, *, now: datetime | None = None
+    ) -> list[JobRecord]:
+        timestamp = _aware(now)
+        expired: list[JobRecord] = []
+        with self._lock:
+            for job_id, job in list(self._jobs.items()):
+                if (
+                    job.status not in {JobStatus.QUEUED, JobStatus.RUNNING}
+                    or job.deadline_at is None
+                    or job.deadline_at > timestamp
+                ):
+                    continue
+                if job.status is JobStatus.RUNNING:
+                    self._release_worker_capacity(job.assigned_worker_id)
+                updated = job.with_updates(
+                    status=JobStatus.FAILED,
+                    error={
+                        "type": "deadline_expired",
+                        "message": "job deadline expired",
+                        "retryable": False,
+                    },
+                    assigned_worker_id=None,
+                    lease_token=None,
+                    lease_expires_at=None,
+                    finished_at=timestamp,
+                    updated_at=timestamp,
+                )
+                self._jobs[job_id] = updated
                 expired.append(updated)
         return expired
 
