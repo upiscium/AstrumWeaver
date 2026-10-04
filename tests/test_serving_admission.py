@@ -1,0 +1,359 @@
+from __future__ import annotations
+
+from dataclasses import replace
+from datetime import timedelta
+from uuid import uuid4
+
+import httpx
+import pytest
+
+from astrumweaver import JobResult, ResourceShape, WorkerSpec
+from astrumweaver.control.api import create_app
+from astrumweaver.control.models import JobStatus, JobSubmission, WorkerRegistration
+from astrumweaver.control.repository import (
+    ConflictError,
+    InMemoryControlRepository,
+    NoCompatibleDeployment,
+    OverloadedError,
+)
+from astrumweaver.serving import (
+    DeploymentIdentity,
+    LogicalServingProfile,
+    ServingContract,
+    ServingJobBinding,
+    WorkerServingAdvertisement,
+    resolve_profile,
+)
+from astrumweaver.transport import PROTOCOL_VERSION, SERVING_EXTENSION
+from astrumweaver.worker import ControlClient, WorkerRuntime
+from astrumweaver.control.models import utc_now
+
+
+CLIENT_TOKEN = "client-secret"
+WORKER_TOKEN = "worker-secret"
+
+
+def digest(ch: str) -> str:
+    return "sha256:" + ch * 64
+
+
+def serving_values(*, model: str = "3", epoch: str | None = None):
+    deployment = DeploymentIdentity(
+        provider_id="llama-cpp",
+        runtime_artifact_sha256=digest("1"),
+        adapter_artifact_sha256=digest("2"),
+        model_artifact_sha256=digest(model),
+        execution_config_sha256=digest("4"),
+        quantization="Q6_K",
+    )
+    contract = ServingContract(
+        deployment_revision=deployment.revision,
+        capability="llm.chat",
+        operation_schema="chat-v1",
+        validation_evidence_sha256=digest("7"),
+        features=frozenset({"tools"}),
+        limits={"input_tokens": 8192, "output_tokens": 2048},
+    )
+    profile = LogicalServingProfile(
+        profile_id="local-code-v1",
+        deployment_revision=deployment.revision,
+        serving_contract_revision=contract.revision,
+        capability="llm.chat",
+        operation_schema="chat-v1",
+        required_features=frozenset({"tools"}),
+        limits={"input_tokens": 4096},
+    )
+    resolved = resolve_profile(profile, contract, deployment)
+    binding = ServingJobBinding.from_resolved(resolved)
+    advertisement = WorkerServingAdvertisement(
+        deployment_revision=deployment.revision,
+        runtime_instance_epoch=epoch or str(uuid4()),
+        contract_revisions={"llm.chat": contract.revision},
+    )
+    return deployment, contract, profile, binding, advertisement
+
+
+def registration(worker_id: str, advertisement: WorkerServingAdvertisement):
+    return WorkerRegistration(
+        spec=WorkerSpec(
+            worker_id=worker_id,
+            worker_class="cpu-test",
+            resources=ResourceShape(),
+            capabilities=frozenset({"llm.chat"}),
+        ),
+        serving=advertisement,
+    )
+
+
+def serving_submission(binding: ServingJobBinding, *, now, key: str | None = None):
+    return JobSubmission(
+        capability="llm.chat",
+        payload={"messages": [{"role": "user", "content": "ping"}]},
+        serving_binding=binding,
+        deadline_at=now + timedelta(seconds=10),
+        idempotency_key=key,
+    )
+
+
+def test_serving_bound_submission_requires_deadline():
+    _, _, _, binding, _ = serving_values()
+    with pytest.raises(ValueError, match="require deadline_at"):
+        JobSubmission(capability="llm.chat", serving_binding=binding)
+
+
+def test_reference_admission_capacity_and_epoch_fencing():
+    now = utc_now()
+    repo = InMemoryControlRepository(lease_seconds=30)
+    _, _, _, binding, advertisement = serving_values()
+
+    with pytest.raises(NoCompatibleDeployment):
+        repo.submit_job(serving_submission(binding, now=now), now=now)
+
+    worker = repo.register_worker(registration("worker-a", advertisement), now=now)
+    job = repo.submit_job(serving_submission(binding, now=now), now=now)
+    claimed = repo.claim_next_job(
+        worker.worker_id,
+        runtime_instance_epoch=advertisement.runtime_instance_epoch,
+        now=now,
+    )
+    assert claimed is not None
+    assert claimed.serving_binding == binding
+    assert claimed.attempt_runtime_instance_epoch == advertisement.runtime_instance_epoch
+
+    with pytest.raises(OverloadedError):
+        repo.submit_job(serving_submission(binding, now=now), now=now)
+
+    with pytest.raises(ConflictError, match="runtime instance epoch"):
+        repo.complete_job(
+            job.job_id,
+            JobResult(outputs={"ok": False}),
+            worker_id=worker.worker_id,
+            lease_token=claimed.lease_token or "",
+            runtime_instance_epoch=str(uuid4()),
+            now=now,
+        )
+
+    done = repo.complete_job(
+        job.job_id,
+        JobResult(outputs={"ok": True}),
+        worker_id=worker.worker_id,
+        lease_token=claimed.lease_token or "",
+        runtime_instance_epoch=advertisement.runtime_instance_epoch,
+        now=now,
+    )
+    assert done.status is JobStatus.SUCCEEDED
+
+
+def test_active_attempt_blocks_runtime_epoch_replacement_then_old_epoch_is_stale():
+    now = utc_now()
+    repo = InMemoryControlRepository()
+    _, _, _, binding, old = serving_values()
+    spec = registration("worker-a", old)
+    repo.register_worker(spec, now=now)
+    job = repo.submit_job(serving_submission(binding, now=now), now=now)
+    claimed = repo.claim_next_job(
+        "worker-a", runtime_instance_epoch=old.runtime_instance_epoch, now=now
+    )
+    assert claimed is not None
+
+    new = replace(old, runtime_instance_epoch=str(uuid4()))
+    with pytest.raises(ConflictError, match="serving identity"):
+        repo.register_worker(registration("worker-a", new), now=now)
+
+    repo.cancel_job(job.job_id, now=now)
+    repo.register_worker(registration("worker-a", new), now=now)
+
+    with pytest.raises(ConflictError, match="epoch is stale"):
+        repo.claim_next_job(
+            "worker-a", runtime_instance_epoch=old.runtime_instance_epoch, now=now
+        )
+
+
+def test_job_snapshot_and_idempotency_include_resolved_binding_and_deadline():
+    now = utc_now()
+    repo = InMemoryControlRepository()
+    _, _, profile, binding, advertisement = serving_values()
+    repo.register_worker(registration("worker-a", advertisement), now=now)
+
+    submission = serving_submission(binding, now=now, key="same-request")
+    first = repo.submit_job(submission, now=now)
+    replay = repo.submit_job(submission, now=now)
+    assert replay.job_id == first.job_id
+
+    changed_profile = replace(profile, profile_id="local-code-v2")
+    assert changed_profile.revision != binding.profile_revision
+    assert repo.get_job(first.job_id).serving_binding == binding
+
+    changed_binding = replace(binding, profile_revision=changed_profile.revision)
+    with pytest.raises(ConflictError, match="idempotency"):
+        repo.submit_job(
+            replace(submission, serving_binding=changed_binding),
+            now=now,
+        )
+
+    with pytest.raises(ConflictError, match="idempotency"):
+        repo.submit_job(
+            replace(submission, deadline_at=submission.deadline_at + timedelta(seconds=1)),
+            now=now,
+        )
+
+
+def test_deadline_caps_lease_and_prevents_retry_or_queued_execution():
+    now = utc_now()
+    repo = InMemoryControlRepository(lease_seconds=300)
+    _, _, _, binding, advertisement = serving_values()
+    repo.register_worker(registration("worker-a", advertisement), now=now)
+
+    deadline = now + timedelta(seconds=1)
+    first = repo.submit_job(
+        replace(serving_submission(binding, now=now), deadline_at=deadline),
+        now=now,
+    )
+    second = repo.submit_job(
+        replace(serving_submission(binding, now=now), deadline_at=deadline),
+        now=now,
+    )
+    claimed = repo.claim_next_job(
+        "worker-a",
+        runtime_instance_epoch=advertisement.runtime_instance_epoch,
+        now=now,
+    )
+    assert claimed is not None
+    assert claimed.lease_expires_at == deadline
+
+    later = now + timedelta(seconds=2)
+    recovered = repo.recover_expired_jobs(now=later)
+    assert recovered[0].status is JobStatus.FAILED
+    assert recovered[0].error["code"] == "deadline-exceeded"
+    assert recovered[0].error["retryable"] is False
+
+    expired = repo.expire_deadline_jobs(now=later)
+    assert [item.job_id for item in expired] == [second.job_id]
+    assert repo.get_job(second.job_id).status is JobStatus.FAILED
+    assert repo.get_job(first.job_id).status is JobStatus.FAILED
+
+
+def test_serving_transport_requires_explicit_extension():
+    from astrumweaver.transport import (
+        job_submission_from_dict,
+        worker_registration_from_dict,
+    )
+
+    now = utc_now()
+    _, _, _, binding, advertisement = serving_values()
+    job = {
+        "protocol_version": PROTOCOL_VERSION,
+        "capability": "llm.chat",
+        "payload": {},
+        "requirements": {},
+        "serving_binding": binding.to_dict(),
+        "deadline_at": (now + timedelta(seconds=10)).isoformat(),
+    }
+    with pytest.raises(ValueError, match="serving-v1"):
+        job_submission_from_dict(job)
+    parsed = job_submission_from_dict(
+        {**job, "extensions": [SERVING_EXTENSION]}
+    )
+    assert parsed.serving_binding == binding
+
+    worker = {
+        "protocol_version": PROTOCOL_VERSION,
+        "spec": {
+            "worker_id": "worker-a",
+            "worker_class": "cpu-test",
+            "gpu_uuids": [],
+            "capabilities": ["llm.chat"],
+            "labels": {},
+            "resources": {
+                "gpu_count": 0,
+                "total_vram_mb": 0,
+                "max_single_gpu_vram_mb": 0,
+            },
+        },
+        "serving": advertisement.to_dict(),
+    }
+    with pytest.raises(ValueError, match="serving-v1"):
+        worker_registration_from_dict(worker)
+    parsed_worker = worker_registration_from_dict(
+        {**worker, "extensions": [SERVING_EXTENSION]}
+    )
+    assert parsed_worker.serving == advertisement
+
+
+class EchoExecutor:
+    capabilities = frozenset({"llm.chat"})
+
+    async def execute(self, job):
+        return JobResult(outputs={"echo": dict(job.payload)})
+
+    async def cancel(self, job_id: str) -> None:
+        return None
+
+    async def residency(self):
+        from astrumweaver import ResidencyReport
+        return ResidencyReport()
+
+
+@pytest.mark.asyncio
+async def test_serving_worker_transport_round_trip_binds_exact_runtime_epoch():
+    now = utc_now()
+    repository = InMemoryControlRepository()
+    app = create_app(
+        repository,
+        client_token=CLIENT_TOKEN,
+        worker_token=WORKER_TOKEN,
+        maintenance_interval_seconds=60,
+    )
+    transport = httpx.ASGITransport(app=app)
+    _, _, _, binding, advertisement = serving_values()
+    spec = registration("worker-a", advertisement).spec
+
+    async with ControlClient(
+        "http://control", WORKER_TOKEN, transport=transport
+    ) as control:
+        runtime = WorkerRuntime(
+            spec=spec,
+            max_concurrency=1,
+            executor=EchoExecutor(),
+            client=control,
+            serving=advertisement,
+        )
+        await runtime.register()
+
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://control"
+        ) as client:
+            response = await client.post(
+                "/v1/jobs",
+                headers={"authorization": f"Bearer {CLIENT_TOKEN}"},
+                json={
+                    "protocol_version": PROTOCOL_VERSION,
+                    "extensions": [SERVING_EXTENSION],
+                    "capability": "llm.chat",
+                    "payload": {"value": 7},
+                    "requirements": {},
+                    "serving_binding": binding.to_dict(),
+                    "deadline_at": (now + timedelta(seconds=10)).isoformat(),
+                },
+            )
+            assert response.status_code == 201
+            job_id = response.json()["job_id"]
+
+        claimed = await control.claim(
+            spec.worker_id,
+            runtime_instance_epoch=advertisement.runtime_instance_epoch,
+        )
+        assert claimed is not None
+        assert claimed.serving_binding == binding
+        assert claimed.runtime_instance_epoch == advertisement.runtime_instance_epoch
+        await runtime._execute_claim(claimed)
+
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://control"
+        ) as client:
+            fetched = await client.get(
+                f"/v1/jobs/{job_id}",
+                headers={"authorization": f"Bearer {CLIENT_TOKEN}"},
+            )
+        assert fetched.json()["status"] == "succeeded"
+        assert fetched.json()["serving_binding"] == binding.to_dict()
