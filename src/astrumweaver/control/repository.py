@@ -15,6 +15,7 @@ from uuid import uuid4
 
 from ..execution import JobResult
 from ..scheduling import worker_matches
+from ..serving import ServingJobBinding, serving_worker_matches_binding
 from .models import (
     JobRecord,
     JobStatus,
@@ -43,6 +44,18 @@ class StorageUnavailable(RepositoryError):
     """Durable storage cannot be reached safely."""
 
 
+class NoCompatibleDeployment(RepositoryError):
+    """No healthy Worker currently matches a deployment-bound request."""
+
+
+class OverloadedError(RepositoryError):
+    """Compatible serving Workers exist but all are at capacity."""
+
+
+class DeadlineExceededError(RepositoryError):
+    """A bounded serving request can no longer execute before its deadline."""
+
+
 class ControlRepository(Protocol):
     def check_storage(self) -> None: ...
 
@@ -69,6 +82,7 @@ class ControlRepository(Protocol):
         worker_id: str,
         state: WorkerState,
         *,
+        runtime_instance_epoch: str | None = None,
         now: datetime | None = None,
     ) -> WorkerRecord: ...
 
@@ -79,7 +93,11 @@ class ControlRepository(Protocol):
     def get_job(self, job_id: str) -> JobRecord: ...
 
     def claim_next_job(
-        self, worker_id: str, *, now: datetime | None = None
+        self,
+        worker_id: str,
+        *,
+        runtime_instance_epoch: str | None = None,
+        now: datetime | None = None,
     ) -> JobRecord | None: ...
 
     def complete_job(
@@ -89,6 +107,7 @@ class ControlRepository(Protocol):
         *,
         worker_id: str,
         lease_token: str,
+        runtime_instance_epoch: str | None = None,
         now: datetime | None = None,
     ) -> JobRecord: ...
 
@@ -100,6 +119,7 @@ class ControlRepository(Protocol):
         retryable: bool,
         worker_id: str,
         lease_token: str,
+        runtime_instance_epoch: str | None = None,
         now: datetime | None = None,
     ) -> JobRecord: ...
 
@@ -108,6 +128,10 @@ class ControlRepository(Protocol):
     ) -> JobRecord: ...
 
     def recover_expired_jobs(
+        self, *, now: datetime | None = None
+    ) -> list[JobRecord]: ...
+
+    def expire_deadline_jobs(
         self, *, now: datetime | None = None
     ) -> list[JobRecord]: ...
 
@@ -127,6 +151,30 @@ def _failure_payload(error: str | dict[str, object], *, retryable: bool) -> dict
     return payload
 
 
+def _assert_worker_epoch(worker: WorkerRecord, runtime_instance_epoch: str | None) -> None:
+    serving = worker.serving
+    if serving is None:
+        if runtime_instance_epoch is not None:
+            raise ConflictError("worker has no serving runtime instance")
+        return
+    if runtime_instance_epoch != serving.runtime_instance_epoch:
+        raise ConflictError("runtime instance epoch is stale")
+
+
+def _worker_supports_serving(worker: WorkerRecord, binding: ServingJobBinding | None) -> bool:
+    if binding is None:
+        return True
+    return (
+        worker.serving is not None
+        and serving_worker_matches_binding(worker.serving, binding)
+    )
+
+
+def _lease_expiry(timestamp: datetime, lease_seconds: int, deadline_at: datetime | None) -> datetime:
+    expiry = timestamp + timedelta(seconds=lease_seconds)
+    return expiry if deadline_at is None else min(expiry, deadline_at)
+
+
 def _submission_matches(record: JobRecord, submission: JobSubmission) -> bool:
     if record.capability != submission.capability:
         return False
@@ -137,6 +185,12 @@ def _submission_matches(record: JobRecord, submission: JobSubmission) -> bool:
     if record.priority != submission.priority:
         return False
     if record.max_attempts != submission.max_attempts:
+        return False
+    if record.serving_binding != submission.serving_binding:
+        return False
+    if record.deadline_at != (
+        None if submission.deadline_at is None else _aware(submission.deadline_at)
+    ):
         return False
     if submission.available_at is not None:
         return record.available_at == _aware(submission.available_at)
@@ -191,9 +245,9 @@ class InMemoryControlRepository:
         with self._lock:
             existing = self._workers.get(registration.spec.worker_id)
             if existing and existing.active_jobs > 0:
-                if registration.spec != existing.spec:
+                if registration.spec != existing.spec or registration.serving != existing.serving:
                     raise ConflictError(
-                        "worker resource/topology cannot change while jobs are active"
+                        "worker resource/topology/serving identity cannot change while jobs are active"
                     )
                 if registration.max_concurrency < existing.active_jobs:
                     raise ConflictError(
@@ -210,6 +264,7 @@ class InMemoryControlRepository:
                 active_jobs=self._active_job_count(registration.spec.worker_id),
                 registered_at=registered_at,
                 last_seen_at=timestamp,
+                serving=registration.serving,
                 metadata=registration.metadata,
             )
             self._workers[record.worker_id] = record
@@ -227,15 +282,18 @@ class InMemoryControlRepository:
         worker_id: str,
         state: WorkerState,
         *,
+        runtime_instance_epoch: str | None = None,
         now: datetime | None = None,
     ) -> WorkerRecord:
         timestamp = _aware(now)
         with self._lock:
             current = self.get_worker(worker_id)
+            _assert_worker_epoch(current, runtime_instance_epoch)
             if state is not WorkerState.OFFLINE:
                 registration = WorkerRegistration(
                     spec=current.spec,
                     max_concurrency=current.max_concurrency,
+                    serving=current.serving,
                     metadata=current.metadata,
                 )
                 self._assert_gpu_ownership_available(
@@ -256,6 +314,7 @@ class InMemoryControlRepository:
         heartbeat = heartbeat or WorkerHeartbeat()
         with self._lock:
             current = self.get_worker(worker_id)
+            _assert_worker_epoch(current, heartbeat.runtime_instance_epoch)
             if current.state is WorkerState.OFFLINE and heartbeat.state in {
                 WorkerState.ONLINE, WorkerState.DRAINING,
             }:
@@ -271,10 +330,13 @@ class InMemoryControlRepository:
                     job,
                     worker_id=worker_id,
                     lease_token=heartbeat.lease_token,
+                    runtime_instance_epoch=heartbeat.runtime_instance_epoch,
                     now=timestamp,
                 )
                 renewed = job.with_updates(
-                    lease_expires_at=timestamp + timedelta(seconds=self.lease_seconds),
+                    lease_expires_at=_lease_expiry(
+                        timestamp, self.lease_seconds, job.deadline_at
+                    ),
                     updated_at=timestamp,
                 )
                 self._jobs[job.job_id] = renewed
@@ -321,6 +383,24 @@ class InMemoryControlRepository:
                         )
                     return existing
 
+            if submission.deadline_at is not None and _aware(submission.deadline_at) <= timestamp:
+                raise DeadlineExceededError("job deadline has already expired")
+            if submission.serving_binding is not None:
+                cutoff = timestamp - timedelta(seconds=self.worker_ttl_seconds)
+                compatible = [
+                    worker
+                    for worker in self._workers.values()
+                    if worker.state is WorkerState.ONLINE
+                    and worker.last_seen_at >= cutoff
+                    and submission.capability in worker.spec.capabilities
+                    and worker_matches(worker.spec, submission.requirements)
+                    and _worker_supports_serving(worker, submission.serving_binding)
+                ]
+                if not compatible:
+                    raise NoCompatibleDeployment("no compatible serving deployment")
+                if all(worker.active_jobs >= worker.max_concurrency for worker in compatible):
+                    raise OverloadedError("all compatible serving workers are busy")
+
             self._sequence += 1
             record = JobRecord(
                 job_id=str(uuid4()),
@@ -338,6 +418,10 @@ class InMemoryControlRepository:
                 if submission.available_at is not None
                 else timestamp,
                 updated_at=timestamp,
+                serving_binding=submission.serving_binding,
+                deadline_at=(
+                    None if submission.deadline_at is None else _aware(submission.deadline_at)
+                ),
             )
             self._jobs[record.job_id] = record
             if submission.idempotency_key:
@@ -356,11 +440,16 @@ class InMemoryControlRepository:
             return sorted(self._jobs.values(), key=lambda item: item.sequence)
 
     def claim_next_job(
-        self, worker_id: str, *, now: datetime | None = None
+        self,
+        worker_id: str,
+        *,
+        runtime_instance_epoch: str | None = None,
+        now: datetime | None = None,
     ) -> JobRecord | None:
         timestamp = _aware(now)
         with self._lock:
             worker = self.get_worker(worker_id)
+            _assert_worker_epoch(worker, runtime_instance_epoch)
             if timestamp - worker.last_seen_at > timedelta(seconds=self.worker_ttl_seconds):
                 self._workers[worker_id] = replace(worker, state=WorkerState.OFFLINE)
                 return None
@@ -374,9 +463,11 @@ class InMemoryControlRepository:
                 for job in self._jobs.values()
                 if job.status is JobStatus.QUEUED
                 and job.available_at <= timestamp
+                and (job.deadline_at is None or job.deadline_at > timestamp)
                 and job.attempts < job.max_attempts
                 and job.capability in worker.spec.capabilities
                 and worker_matches(worker.spec, job.requirements)
+                and _worker_supports_serving(worker, job.serving_binding)
             ]
             if not eligible:
                 return None
@@ -387,7 +478,13 @@ class InMemoryControlRepository:
                 attempts=selected.attempts + 1,
                 assigned_worker_id=worker_id,
                 lease_token=str(uuid4()),
-                lease_expires_at=timestamp + timedelta(seconds=self.lease_seconds),
+                lease_expires_at=_lease_expiry(
+                    timestamp, self.lease_seconds, selected.deadline_at
+                ),
+                attempt_runtime_instance_epoch=(
+                    None if selected.serving_binding is None
+                    else worker.serving.runtime_instance_epoch
+                ),
                 started_at=timestamp,
                 finished_at=None,
                 updated_at=timestamp,
@@ -405,6 +502,7 @@ class InMemoryControlRepository:
         *,
         worker_id: str,
         lease_token: str,
+        runtime_instance_epoch: str | None,
         now: datetime,
     ) -> None:
         if job.status is not JobStatus.RUNNING:
@@ -413,6 +511,11 @@ class InMemoryControlRepository:
             raise ConflictError(f"job {job.job_id} is assigned to another worker")
         if not lease_token or job.lease_token != lease_token:
             raise ConflictError(f"job {job.job_id} lease token is stale")
+        if (
+            job.serving_binding is not None
+            and job.attempt_runtime_instance_epoch != runtime_instance_epoch
+        ):
+            raise ConflictError(f"job {job.job_id} runtime instance epoch is stale")
         if job.lease_expires_at is None or job.lease_expires_at <= now:
             raise ConflictError(f"job {job.job_id} lease has expired")
 
@@ -433,6 +536,7 @@ class InMemoryControlRepository:
         *,
         worker_id: str,
         lease_token: str,
+        runtime_instance_epoch: str | None = None,
         now: datetime | None = None,
     ) -> JobRecord:
         timestamp = _aware(now)
@@ -441,7 +545,11 @@ class InMemoryControlRepository:
         with self._lock:
             job = self.get_job(job_id)
             self._assert_running(
-                job, worker_id=worker_id, lease_token=lease_token, now=timestamp
+                job,
+                worker_id=worker_id,
+                lease_token=lease_token,
+                runtime_instance_epoch=runtime_instance_epoch,
+                now=timestamp,
             )
             completed = job.with_updates(
                 status=JobStatus.SUCCEEDED,
@@ -450,6 +558,7 @@ class InMemoryControlRepository:
                 assigned_worker_id=None,
                 lease_token=None,
                 lease_expires_at=None,
+                attempt_runtime_instance_epoch=None,
                 finished_at=timestamp,
                 updated_at=timestamp,
             )
@@ -465,21 +574,31 @@ class InMemoryControlRepository:
         retryable: bool,
         worker_id: str,
         lease_token: str,
+        runtime_instance_epoch: str | None = None,
         now: datetime | None = None,
     ) -> JobRecord:
         timestamp = _aware(now)
         with self._lock:
             job = self.get_job(job_id)
             self._assert_running(
-                job, worker_id=worker_id, lease_token=lease_token, now=timestamp
+                job,
+                worker_id=worker_id,
+                lease_token=lease_token,
+                runtime_instance_epoch=runtime_instance_epoch,
+                now=timestamp,
             )
-            should_retry = retryable and job.attempts < job.max_attempts
+            should_retry = (
+                retryable
+                and job.attempts < job.max_attempts
+                and (job.deadline_at is None or job.deadline_at > timestamp)
+            )
             failed = job.with_updates(
                 status=JobStatus.QUEUED if should_retry else JobStatus.FAILED,
                 error=_failure_payload(error, retryable=should_retry),
                 assigned_worker_id=None,
                 lease_token=None,
                 lease_expires_at=None,
+                attempt_runtime_instance_epoch=None,
                 started_at=None if should_retry else job.started_at,
                 finished_at=None if should_retry else timestamp,
                 available_at=timestamp if should_retry else job.available_at,
@@ -508,6 +627,7 @@ class InMemoryControlRepository:
                 assigned_worker_id=None,
                 lease_token=None,
                 lease_expires_at=None,
+                attempt_runtime_instance_epoch=None,
                 finished_at=timestamp,
                 updated_at=timestamp,
             )
@@ -528,16 +648,26 @@ class InMemoryControlRepository:
                 ):
                     continue
                 self._release_worker_capacity(job.assigned_worker_id)
-                should_retry = job.attempts < job.max_attempts
+                deadline_exceeded = (
+                    job.deadline_at is not None and job.deadline_at <= timestamp
+                )
+                should_retry = (
+                    not deadline_exceeded and job.attempts < job.max_attempts
+                )
                 updated = job.with_updates(
                     status=JobStatus.QUEUED if should_retry else JobStatus.FAILED,
                     error={
-                        "message": "worker lease expired",
+                        "code": "deadline-exceeded" if deadline_exceeded else "lease-expired",
+                        "message": (
+                            "job deadline exceeded"
+                            if deadline_exceeded else "worker lease expired"
+                        ),
                         "retryable": should_retry,
                     },
                     assigned_worker_id=None,
                     lease_token=None,
                     lease_expires_at=None,
+                    attempt_runtime_instance_epoch=None,
                     started_at=None if should_retry else job.started_at,
                     finished_at=None if should_retry else timestamp,
                     available_at=timestamp if should_retry else job.available_at,
@@ -547,12 +677,42 @@ class InMemoryControlRepository:
                 recovered.append(updated)
         return recovered
 
+    def expire_deadline_jobs(
+        self, *, now: datetime | None = None
+    ) -> list[JobRecord]:
+        timestamp = _aware(now)
+        expired: list[JobRecord] = []
+        with self._lock:
+            for job_id, job in list(self._jobs.items()):
+                if (
+                    job.status is not JobStatus.QUEUED
+                    or job.deadline_at is None
+                    or job.deadline_at > timestamp
+                ):
+                    continue
+                updated = job.with_updates(
+                    status=JobStatus.FAILED,
+                    error={
+                        "code": "deadline-exceeded",
+                        "message": "job deadline exceeded",
+                        "retryable": False,
+                    },
+                    finished_at=timestamp,
+                    updated_at=timestamp,
+                )
+                self._jobs[job_id] = updated
+                expired.append(updated)
+        return expired
+
 
 __all__ = [
     "ConflictError",
+    "DeadlineExceededError",
     "ControlRepository",
     "InMemoryControlRepository",
+    "NoCompatibleDeployment",
     "NotFoundError",
+    "OverloadedError",
     "RepositoryError",
     "StorageUnavailable",
 ]
