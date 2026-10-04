@@ -1027,6 +1027,33 @@ async def test_managed_runtime_starts_checks_alias_and_stops() -> None:
 
 
 @pytest.mark.asyncio
+async def test_managed_runtime_fails_fast_when_owned_process_exits_before_readiness() -> None:
+    api = FakeApi(reachable=False)
+    process = FakeProcess(api, exit_on_start=True)
+    runtime = VllmManagedRuntime(
+        api=api,
+        process=process,
+        context=context(),
+        model_ref="Qwen/Qwen3-8B",
+        served_model_name="astrumweaver",
+        startup_timeout_seconds=60.0,
+        launch_policy=VllmLaunchPolicy(
+            tensor_parallel_size=1,
+            enable_expert_parallel=False,
+            gpu_memory_utilization=0.92,
+            cpu_offload_gb=0,
+            device_ids=("GPU-example-one",),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="owned process exited before readiness"):
+        await runtime.start()
+
+    assert process.starts == 1
+    assert process.stops == 1
+
+
+@pytest.mark.asyncio
 async def test_managed_runtime_rejects_external_server() -> None:
     api = FakeApi(reachable=True)
     process = FakeProcess(api, running=False)
