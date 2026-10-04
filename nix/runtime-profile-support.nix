@@ -33,10 +33,55 @@ EOF
       fi
     }
 
-    verify_llama_cpp() {
+    managed_llama_cpp_profile() {
       if [ ! -x "$profile/bin/llama-server" ]; then
         return 1
       fi
+      "$python_bin" - "$nix_bin" "$profile" "$registry_ref" <<'PY'
+import json
+import subprocess
+import sys
+
+nix_bin, profile, registry_ref = sys.argv[1:]
+
+completed = subprocess.run(
+    [nix_bin, "profile", "list", "--profile", profile, "--json"],
+    check=False,
+    capture_output=True,
+    text=True,
+    timeout=30,
+)
+if completed.returncode != 0:
+    raise SystemExit(1)
+try:
+    profile_data = json.loads(completed.stdout)
+except json.JSONDecodeError:
+    raise SystemExit(1)
+
+elements = profile_data.get("elements", {})
+if isinstance(elements, dict):
+    values = list(elements.values())
+elif isinstance(elements, list):
+    values = elements
+else:
+    raise SystemExit(1)
+
+expected_original = "flake:" + registry_ref
+expected_attr = "packages.x86_64-linux.runtime-llama-cpp"
+matches = [
+    element
+    for element in values
+    if isinstance(element, dict)
+    and element.get("active", True)
+    and element.get("originalUrl") == expected_original
+    and element.get("attrPath") == expected_attr
+]
+raise SystemExit(0 if len(matches) == 1 and len(values) == 1 else 1)
+PY
+    }
+
+    verify_llama_cpp() {
+      managed_llama_cpp_profile || return 1
       "$python_bin" - "$nix_bin" "$profile" "$candidate_ref" "$registry_ref" <<'PY'
 import json
 import subprocess
@@ -97,8 +142,10 @@ PY
         echo "satisfied: $profile is bound to this AstrumWeaver candidate"
         return 0
       fi
-      if [ -x "$profile/bin/llama-server" ]; then
-        echo "candidate-mismatch: $profile does not match this AstrumWeaver candidate" >&2
+      if managed_llama_cpp_profile; then
+        echo "candidate-mismatch: $profile is an AstrumWeaver llama.cpp profile from another candidate" >&2
+      elif [ -e "$profile" ] || [ -L "$profile" ]; then
+        echo "invalid-profile: refusing unmanaged or mixed content at $profile" >&2
       else
         echo "missing: $profile/bin/llama-server" >&2
       fi
@@ -112,6 +159,10 @@ PY
       fi
 
       if [ -e "$profile" ] || [ -L "$profile" ]; then
+        if ! managed_llama_cpp_profile; then
+          echo "astrumweaver-runtime-profile: refusing to mutate unmanaged or mixed runtime profile: $profile" >&2
+          exit 1
+        fi
         "$nix_bin" profile upgrade \
           --profile "$profile" \
           --all \
