@@ -245,3 +245,49 @@ def test_postgres_concurrent_idempotency_preserves_serving_intent():
             replace(request, deadline_at=request.deadline_at + timedelta(seconds=1)),
             now=now,
         )
+
+
+
+def test_postgres_deadline_cancel_recovery_race_has_one_terminal_owner():
+    assert DATABASE_URL is not None
+    now = utc_now()
+    binding, serving = serving_values()
+    setup = PostgresControlRepository(DATABASE_URL, lease_seconds=1)
+    setup.register_worker(worker("worker-a", serving), now=now)
+    deadline = now + timedelta(seconds=1)
+    job = setup.submit_job(
+        replace(submission(binding, now), deadline_at=deadline),
+        now=now,
+    )
+    claimed = setup.claim_next_job(
+        "worker-a",
+        runtime_instance_epoch=serving.runtime_instance_epoch,
+        now=now,
+    )
+    assert claimed is not None
+
+    later = now + timedelta(seconds=2)
+    cancel_repo = PostgresControlRepository(DATABASE_URL, lease_seconds=1)
+    recover_repo = PostgresControlRepository(DATABASE_URL, lease_seconds=1)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        cancel_future = pool.submit(cancel_repo.cancel_job, job.job_id, now=later)
+        recover_future = pool.submit(recover_repo.recover_expired_jobs, now=later)
+        cancelled_view = cancel_future.result(timeout=10)
+        recovered_view = recover_future.result(timeout=10)
+
+    final = setup.get_job(job.job_id)
+    assert final.status in {JobStatus.CANCELLED, JobStatus.FAILED}
+    assert final.attempt_runtime_instance_epoch is None
+    assert setup.get_worker("worker-a").active_jobs == 0
+    assert cancelled_view.status in {JobStatus.CANCELLED, JobStatus.FAILED}
+    assert all(item.status is JobStatus.FAILED for item in recovered_view)
+
+    with pytest.raises(ConflictError):
+        setup.complete_job(
+            job.job_id,
+            JobResult(outputs={"stale": True}),
+            worker_id="worker-a",
+            lease_token=claimed.lease_token or "",
+            runtime_instance_epoch=serving.runtime_instance_epoch,
+            now=later,
+        )
