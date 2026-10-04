@@ -10,10 +10,12 @@ import os
 import signal
 import tomllib
 from typing import Any
+from uuid import uuid4
 
 import uvicorn
 
 from ..contracts import AcceleratorDevice, ResourceShape, WorkerSpec
+from ..serving import WorkerServingManifest
 from ..runtime import (
     RuntimeDeploymentSpec,
     RuntimeLifecycleManager,
@@ -51,6 +53,20 @@ def _load_runtime_deployment(path: str) -> RuntimeDeploymentSpec:
         return RuntimeDeploymentSpec.from_dict(value)
     except (KeyError, TypeError, ValueError) as exc:
         raise RuntimeError("runtime deployment manifest is invalid") from exc
+
+
+def _load_serving_manifest(path: str) -> WorkerServingManifest:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            value = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("cannot load serving manifest") from exc
+    if not isinstance(value, dict):
+        raise RuntimeError("serving manifest must contain an object")
+    try:
+        return WorkerServingManifest.from_dict(value)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("serving manifest is invalid") from exc
 
 
 def _build_spec(section: dict[str, Any]) -> WorkerSpec:
@@ -133,11 +149,13 @@ def _run_gpu_preflight(
 async def run_worker(
     config_path: str,
     runtime_manifest_path: str | None = None,
+    serving_manifest_path: str | None = None,
 ) -> None:
     config = _load_toml(config_path)
     worker_section = dict(config.get("worker") or {})
     executor_section = dict(config.get("executor") or {})
     runtime_section = dict(config.get("runtime") or {})
+    serving_section = dict(config.get("serving") or {})
 
     required = ("id", "class", "control_url")
     missing = [name for name in required if not worker_section.get(name)]
@@ -154,6 +172,14 @@ async def run_worker(
         raise RuntimeError(
             "configure exactly one of executor.factory or runtime.manifest"
         )
+    serving_manifest = (
+        str(serving_manifest_path).strip()
+        if serving_manifest_path is not None
+        else str(serving_section.get("manifest", "")).strip()
+    )
+    serving_contract = (
+        None if not serving_manifest else _load_serving_manifest(serving_manifest)
+    )
 
     worker_token = os.environ.get("ASTRUMWEAVER_WORKER_TOKEN", "")
     if not worker_token:
@@ -174,6 +200,13 @@ async def run_worker(
     try:
         if runtime_manifest:
             deployment = _load_runtime_deployment(runtime_manifest)
+            if (
+                serving_contract is not None
+                and serving_contract.deployment.provider_id != deployment.provider_id
+            ):
+                raise RuntimeError(
+                    "serving manifest provider does not match runtime deployment"
+                )
             managed_runtime = managed_runtime_from_deployment(
                 deployment,
                 worker=spec,
@@ -198,6 +231,16 @@ async def run_worker(
             )
 
         require_executor_capabilities(executor, spec.capabilities)
+        serving = None
+        if serving_contract is not None:
+            contract_capabilities = frozenset(
+                contract.capability for contract in serving_contract.contracts
+            )
+            if not contract_capabilities <= spec.capabilities:
+                raise RuntimeError(
+                    "serving manifest capability is not advertised by Worker"
+                )
+            serving = serving_contract.advertisement(str(uuid4()))
 
         worker_runtime = WorkerRuntime(
             spec=spec,
@@ -205,6 +248,7 @@ async def run_worker(
             executor=executor,
             client=client,
             runtime_supervisor=supervisor,
+            serving=serving,
             poll_interval_seconds=float(
                 worker_section.get("poll_interval_seconds", 1.0)
             ),
@@ -348,11 +392,19 @@ def main() -> None:
             "[runtime].manifest in worker configuration"
         ),
     )
+    parser.add_argument(
+        "--serving-manifest",
+        help=(
+            "optional reviewed serving manifest; overrides "
+            "[serving].manifest in worker configuration"
+        ),
+    )
     args = parser.parse_args()
     asyncio.run(
         run_worker(
             args.config,
             runtime_manifest_path=args.runtime_manifest,
+            serving_manifest_path=args.serving_manifest,
         )
     )
 
