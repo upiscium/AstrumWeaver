@@ -1,0 +1,75 @@
+diff --git a/src/astrumweaver/worker/daemon.py b/src/astrumweaver/worker/daemon.py
+index a8094ee9f3ae36ea7b7b249ed075f877d767bd24..e91d094393f32abaf37fef9866f0d490a4b3aa32 100644
+--- a/src/astrumweaver/worker/daemon.py
++++ b/src/astrumweaver/worker/daemon.py
+@@ -295,9 +295,9 @@ async def run_worker(
+                     await asyncio.sleep(0.1)
+ 
+                 if worker_runtime.active_job_id is not None:
++                    # WorkerRuntime owns cancellation and joins the execution
++                    # task; invoking the hook here too would cancel twice.
+                     forced_cancel = True
+-                    with contextlib.suppress(Exception):
+-                        await executor.cancel(worker_runtime.active_job_id)
+ 
+             worker_runtime.request_stop()
+             health_server.should_exit = True
+diff --git a/tests/test_worker_liveness.py b/tests/test_worker_liveness.py
+index 14c528c465b3dd09113ae78cd7777481f4eac1d7..9015600ea628ccc69d7928fbef3722da11c3993e 100644
+--- a/tests/test_worker_liveness.py
++++ b/tests/test_worker_liveness.py
+@@ -570,3 +570,54 @@ async def test_daemon_failure_cleans_up_sibling_health_and_signal_tasks(monkeypa
+         await asyncio.wait_for(daemon.run_worker("unused"), 1)
+     assert stopped.is_set() and health_stopped.is_set()
+     assert not any(t.get_name().startswith("astrumweaver-worker") for t in asyncio.all_tasks())
++
++
++@pytest.mark.asyncio
++async def test_daemon_forced_shutdown_invokes_executor_cancel_exactly_once(monkeypatch):
++    from astrumweaver.worker import daemon
++
++    repo = InMemoryControlRepository()
++    job = submit(repo)[0]
++    executor = Executor(gate=asyncio.Event())
++    handlers = {}
++    config = {
++        "worker": {
++            "id": "forced-stop", "class": "cpu", "control_url": "http://control",
++            "capabilities": ["test.work"], "shutdown_grace_seconds": 0,
++            "heartbeat_interval_seconds": 0.02, "poll_interval_seconds": 0.01,
++        },
++        "executor": {"factory": "test:factory"},
++    }
++
++    class HealthServer:
++        should_exit = False
++
++        def __init__(self, config):
++            pass
++
++        async def serve(self):
++            while not self.should_exit:
++                await asyncio.sleep(0.005)
++
++    monkeypatch.setenv("ASTRUMWEAVER_WORKER_TOKEN", "worker-test-token")
++    monkeypatch.setattr(daemon, "_load_toml", lambda _: config)
++    monkeypatch.setattr(daemon, "ControlClient", lambda *_args, **_kwargs: ObservedClient(repo))
++    monkeypatch.setattr(daemon, "load_executor", lambda *_: executor)
++    monkeypatch.setattr(daemon.uvicorn, "Config", lambda *_args, **_kwargs: object())
++    monkeypatch.setattr(daemon.uvicorn, "Server", HealthServer)
++    monkeypatch.setattr(
++        asyncio.get_running_loop(), "add_signal_handler",
++        lambda name, callback: handlers.__setitem__(name, callback),
++    )
++    task = asyncio.create_task(daemon.run_worker("unused"))
++    try:
++        await asyncio.wait_for(executor.started.wait(), 1)
++        handlers[daemon.signal.SIGTERM]()
++        await asyncio.wait_for(task, 1)
++        assert executor.cancelled == [job.job_id]
++        assert executor.finished.is_set()
++        assert repo.get_worker("forced-stop").state is WorkerState.OFFLINE
++    finally:
++        if not task.done():
++            task.cancel()
++            await asyncio.gather(task, return_exceptions=True)
