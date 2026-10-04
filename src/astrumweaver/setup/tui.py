@@ -1586,6 +1586,7 @@ def _check_packaging(tool_dir: Path | None) -> int:
         "astrumweaver-control",
         "astrumweaver-worker",
         "astrumweaver-migrate",
+        "astrumweaver-runtime-profile",
     )
     print(f"packaged tool authority: {tool_dir}")
     for name in names:
