@@ -493,6 +493,8 @@ class InMemoryControlRepository:
             raise ConflictError(f"job {job.job_id} lease token is stale")
         if job.lease_expires_at is None or job.lease_expires_at <= now:
             raise ConflictError(f"job {job.job_id} lease has expired")
+        if job.deadline_at is not None and job.deadline_at <= now:
+            raise ConflictError(f"job {job.job_id} deadline has expired")
         if (
             job.claimed_runtime_instance_epoch is not None
             and runtime_instance_epoch != job.claimed_runtime_instance_epoch
@@ -566,7 +568,11 @@ class InMemoryControlRepository:
                 runtime_instance_epoch=runtime_instance_epoch,
                 now=timestamp,
             )
-            should_retry = retryable and job.attempts < job.max_attempts
+            should_retry = (
+                retryable
+                and job.attempts < job.max_attempts
+                and (job.deadline_at is None or job.deadline_at > timestamp)
+            )
             failed = job.with_updates(
                 status=JobStatus.QUEUED if should_retry else JobStatus.FAILED,
                 error=_failure_payload(error, retryable=should_retry),
@@ -630,7 +636,10 @@ class InMemoryControlRepository:
                 ):
                     continue
                 self._release_worker_capacity(job.assigned_worker_id)
-                should_retry = job.attempts < job.max_attempts
+                should_retry = (
+                    job.attempts < job.max_attempts
+                    and (job.deadline_at is None or job.deadline_at > timestamp)
+                )
                 updated = job.with_updates(
                     status=JobStatus.QUEUED if should_retry else JobStatus.FAILED,
                     error={
