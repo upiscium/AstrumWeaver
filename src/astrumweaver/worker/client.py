@@ -116,6 +116,17 @@ class ControlClient:
             )
         return body
 
+    async def require_extension(self, extension: str) -> None:
+        response = await self._request("GET", "/v1/ready")
+        body = self._object(response)
+        if body.get("protocol_version") != PROTOCOL_VERSION:
+            raise ControlTransportError(502, "Control protocol version is invalid")
+        extensions = frozenset(str(item) for item in body.get("extensions") or ())
+        if extension not in extensions:
+            raise ControlTransportError(
+                409, f"Control does not support required extension: {extension}"
+            )
+
     async def register(
         self,
         *,
@@ -124,6 +135,8 @@ class ControlClient:
         serving: WorkerServingAdvertisement | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if serving is not None:
+            await self.require_extension(SERVING_EXTENSION)
         body = {
             "protocol_version": PROTOCOL_VERSION,
             "spec": worker_spec_to_dict(spec),
