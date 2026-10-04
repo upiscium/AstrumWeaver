@@ -15,6 +15,10 @@ does not require you to modify `PATH` when using the absolute profile path.
 
 The default mode is now **first-run**. It wraps the common Control/Worker host
 bootstrap and then reuses the existing deterministic RuntimeProvider setup
+backend. Client API auth defaults to `bearer` for secure compatibility. Choosing
+`none` is explicit and means the TUI omits the Client token from protected
+environment material while leaving Worker bearer authentication mandatory.
+
 backend when requested.
 
 ## First-run flow
@@ -26,8 +30,10 @@ choose role: Control / Worker / Control+Worker
     ↓
 Control phase (when selected)
   - Control bind settings
+  - explicit Client API auth choice: bearer or none
   - hidden PostgreSQL URL input
-  - generate or enter client/Worker authority tokens
+  - bearer mode: generate or enter distinct Client/Worker authority tokens
+  - none mode: generate or enter only the Worker authority token
   - write canonical config/env
   - run migration
   - install/start Control

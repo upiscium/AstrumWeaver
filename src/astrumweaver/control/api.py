@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 
+from ..control.auth import ClientAuthMode
 from ..control.models import WorkerState
 from ..control.repository import (
     ConflictError,
@@ -62,14 +63,21 @@ async def _json_v1(request: Request) -> dict[str, Any]:
 def create_app(
     repository: ControlRepository,
     *,
-    client_token: str,
+    client_token: str | None,
     worker_token: str,
+    client_auth: ClientAuthMode | str = ClientAuthMode.BEARER,
     maintenance_interval_seconds: float = 5.0,
 ) -> FastAPI:
-    if not client_token or not worker_token:
-        raise ValueError("client_token and worker_token are required")
-    if secrets.compare_digest(client_token, worker_token):
-        raise ValueError("client_token and worker_token must be distinct")
+    mode = ClientAuthMode(client_auth)
+    if not worker_token:
+        raise ValueError("worker_token is required")
+    if mode is ClientAuthMode.BEARER:
+        if not client_token:
+            raise ValueError(
+                "client_token is required when client_auth=bearer"
+            )
+        if secrets.compare_digest(client_token, worker_token):
+            raise ValueError("client_token and worker_token must be distinct")
     if maintenance_interval_seconds <= 0:
         raise ValueError("maintenance_interval_seconds must be positive")
 
@@ -103,6 +111,9 @@ def create_app(
     )
 
     def require_client(request: Request) -> None:
+        if mode is ClientAuthMode.NONE:
+            return
+        assert client_token is not None
         _require_token(request, client_token, "client")
 
     def require_worker(request: Request) -> None:

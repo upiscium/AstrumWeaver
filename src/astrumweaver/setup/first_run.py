@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Iterator, Mapping
 
 from ..contracts import WorkerSpec
+from ..control.auth import ClientAuthMode
 
 
 class FirstRunRole(StrEnum):
@@ -42,6 +43,7 @@ class FirstRunExecutionMode(StrEnum):
 class ControlBootstrapSpec:
     bind_host: str = "127.0.0.1"
     port: int = 9000
+    client_auth: ClientAuthMode = ClientAuthMode.BEARER
     worker_ttl_seconds: int = 60
     lease_seconds: int = 300
     maintenance_interval_seconds: float = 5.0
@@ -52,6 +54,11 @@ class ControlBootstrapSpec:
             raise ValueError("Control bind host must not be blank")
         if not 1 <= self.port <= 65535:
             raise ValueError("Control port must be between 1 and 65535")
+        object.__setattr__(
+            self,
+            "client_auth",
+            ClientAuthMode(self.client_auth),
+        )
         if self.worker_ttl_seconds <= 0 or self.lease_seconds <= 0:
             raise ValueError("Control TTL/lease must be positive")
         if self.maintenance_interval_seconds <= 0:
@@ -77,11 +84,15 @@ class FirstRunSecrets:
             raise ValueError("client and Worker authority tokens must differ")
 
 
+def generate_worker_token() -> str:
+    return secrets_module.token_hex(32)
+
+
 def generate_authority_tokens() -> tuple[str, str]:
     client = secrets_module.token_hex(32)
-    worker = secrets_module.token_hex(32)
+    worker = generate_worker_token()
     while worker == client:
-        worker = secrets_module.token_hex(32)
+        worker = generate_worker_token()
     return client, worker
 
 
@@ -107,6 +118,7 @@ def render_control_toml(spec: ControlBootstrapSpec) -> str:
         "[control]\n"
         f"host = {_toml_string(spec.bind_host)}\n"
         f"port = {spec.port}\n"
+        f"client_auth = {_toml_string(spec.client_auth.value)}\n"
         f"worker_ttl_seconds = {spec.worker_ttl_seconds}\n"
         f"lease_seconds = {spec.lease_seconds}\n"
         f"maintenance_interval_seconds = {spec.maintenance_interval_seconds}\n"
@@ -114,28 +126,38 @@ def render_control_toml(spec: ControlBootstrapSpec) -> str:
     )
 
 
-def render_control_env(secrets: FirstRunSecrets) -> str:
-    if not all(
-        (
-            secrets.database_url,
-            secrets.client_token,
-            secrets.worker_token,
+def render_control_env(
+    secrets: FirstRunSecrets,
+    *,
+    client_auth: ClientAuthMode | str = ClientAuthMode.BEARER,
+) -> str:
+    mode = ClientAuthMode(client_auth)
+    if not secrets.database_url or not secrets.worker_token:
+        raise ValueError(
+            "Control bootstrap requires database and Worker secrets"
         )
-    ):
-        raise ValueError("Control bootstrap requires database/client/Worker secrets")
-    return "".join(
-        (
-            _render_systemd_environment_line(
-                "ASTRUMWEAVER_DATABASE_URL", secrets.database_url
-            ),
+    if mode is ClientAuthMode.BEARER and not secrets.client_token:
+        raise ValueError(
+            "Control bearer client auth requires a Client secret"
+        )
+
+    lines = [
+        _render_systemd_environment_line(
+            "ASTRUMWEAVER_DATABASE_URL", secrets.database_url
+        ),
+        _render_systemd_environment_line(
+            "ASTRUMWEAVER_WORKER_TOKEN", secrets.worker_token
+        ),
+    ]
+    if mode is ClientAuthMode.BEARER:
+        assert secrets.client_token is not None
+        lines.insert(
+            1,
             _render_systemd_environment_line(
                 "ASTRUMWEAVER_CLIENT_TOKEN", secrets.client_token
             ),
-            _render_systemd_environment_line(
-                "ASTRUMWEAVER_WORKER_TOKEN", secrets.worker_token
-            ),
         )
-    )
+    return "".join(lines)
 
 
 def render_worker_env(worker_token: str) -> str:
@@ -502,7 +524,10 @@ class SystemdFirstRunInstaller:
             render_control_toml(spec),
             suffix=".toml",
         ) as config_path, self._temporary_file(
-            render_control_env(secrets),
+            render_control_env(
+                secrets,
+                client_auth=spec.client_auth,
+            ),
             suffix=".env",
         ) as env_path:
             self._run_service(
@@ -639,6 +664,7 @@ def render_nixos_bootstrap_snippet(
             [
                 "  services.astrumweaver.control = {",
                 "    enable = true;",
+                f"    clientAuth = {_nix_string(control.client_auth.value)};",
                 "    settings.control = {",
                 f"      host = {_nix_string(control.bind_host)};",
                 f"      port = {control.port};",
@@ -788,6 +814,7 @@ __all__ = [
     "SystemdFirstRunInstaller",
     "control_url_for_bind_host",
     "generate_authority_tokens",
+    "generate_worker_token",
     "render_control_env",
     "render_control_toml",
     "render_nixos_bootstrap_snippet",

@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from astrumweaver import AcceleratorDevice, ResourceShape, WorkerSpec
+from astrumweaver.control import ClientAuthMode
 from astrumweaver.setup.first_run import (
     ControlBootstrapSpec,
     control_url_for_bind_host,
@@ -82,6 +83,44 @@ def test_control_rendering_keeps_secret_values_out_of_toml() -> None:
     assert 'ASTRUMWEAVER_WORKER_TOKEN="worker-secret"' in env_text
 
 
+def test_control_client_auth_none_omits_client_secret_from_env() -> None:
+    spec = ControlBootstrapSpec(
+        client_auth=ClientAuthMode.NONE,
+    )
+    secrets = FirstRunSecrets(
+        database_url="postgresql://secret@db/astrumweaver",
+        worker_token="worker-secret",
+    )
+
+    toml_text = render_control_toml(spec)
+    env_text = render_control_env(
+        secrets,
+        client_auth=spec.client_auth,
+    )
+
+    parsed = tomllib.loads(toml_text)
+    assert parsed["control"]["client_auth"] == "none"
+    assert "ASTRUMWEAVER_CLIENT_TOKEN" not in env_text
+    assert 'ASTRUMWEAVER_WORKER_TOKEN="worker-secret"' in env_text
+
+
+def test_control_bearer_is_secure_first_run_default() -> None:
+    spec = ControlBootstrapSpec()
+    parsed = tomllib.loads(render_control_toml(spec))
+
+    assert spec.client_auth is ClientAuthMode.BEARER
+    assert parsed["control"]["client_auth"] == "bearer"
+
+    with pytest.raises(ValueError, match="Client secret"):
+        render_control_env(
+            FirstRunSecrets(
+                database_url="postgresql://secret@db/astrumweaver",
+                worker_token="worker-secret",
+            ),
+            client_auth=spec.client_auth,
+        )
+
+
 def test_systemd_environment_values_are_quoted_and_control_characters_rejected() -> None:
     env = render_worker_env('token"with\\slashes')
     assert env == 'ASTRUMWEAVER_WORKER_TOKEN="token\\"with\\\\slashes"\n'
@@ -139,6 +178,18 @@ def test_smoke_worker_toml_uses_built_in_echo_executor() -> None:
         "astrumweaver.executors.structured_echo:create_executor"
     )
     assert "runtime" not in parsed
+
+
+def test_nixos_control_snippet_carries_explicit_client_auth() -> None:
+    snippet = render_nixos_bootstrap_snippet(
+        role=FirstRunRole.CONTROL,
+        control=ControlBootstrapSpec(
+            client_auth=ClientAuthMode.NONE,
+        ),
+    )
+
+    assert 'clientAuth = "none";' in snippet
+    assert "environmentFile" in snippet
 
 
 def test_nixos_runtime_snippet_embeds_reviewed_provider_demand_and_package() -> None:

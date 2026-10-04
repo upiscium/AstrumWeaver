@@ -28,9 +28,22 @@ Breaking transport changes require a new protocol namespace rather than silently
 
 ## Authorities
 
-v1 distinguishes two bearer-token authorities.
+v1 keeps the Worker trust domain bearer-authenticated and makes Client API
+bearer authentication an explicit deployment choice.
 
-### Client authority
+### Client API authentication
+
+Control uses:
+
+```toml
+[control]
+client_auth = "bearer" # or "none"
+```
+
+If `client_auth` is omitted, the effective mode is `bearer`. This is the
+secure upgrade/default behavior.
+
+#### `client_auth = "bearer"`
 
 Configured with:
 
@@ -44,7 +57,28 @@ Client authority may:
 - inspect full jobs/results
 - cancel jobs
 
-It may not register Workers, claim work, heartbeat a Worker, or write fenced terminal results.
+The Client token may not register Workers, claim work, heartbeat a Worker, or
+write fenced terminal results.
+
+#### `client_auth = "none"`
+
+The Client job endpoints do not require an AstrumWeaver bearer token:
+
+```text
+POST /v1/jobs
+GET  /v1/jobs/{job_id}
+POST /v1/jobs/{job_id}/cancel
+```
+
+`ASTRUMWEAVER_CLIENT_TOKEN` is not required or consulted in this mode. The
+operator is explicitly delegating Client API access control to the deployment
+boundary, for example a trusted network, VPN, reverse proxy, or upstream
+identity layer.
+
+This does **not** weaken Worker authorization. Supplying the Worker token on an
+otherwise unauthenticated Client endpoint does not create a new cross-domain
+authority; those endpoints are simply open according to the selected
+`client_auth = "none"` policy.
 
 ### Worker authority
 
@@ -54,7 +88,7 @@ Configured on Control and Worker with:
 ASTRUMWEAVER_WORKER_TOKEN
 ```
 
-Worker authority may:
+Worker authority is always mandatory and may:
 
 - register Workers
 - heartbeat and renew an active lease
@@ -63,11 +97,16 @@ Worker authority may:
 - inspect restricted status for a Worker-visible job
 - submit fenced completion/failure
 
-It may not submit or cancel client jobs and may not use the full client job-read endpoint.
+Worker endpoints always require Worker authority regardless of Client auth
+mode. A Client token cannot call Worker endpoints. In bearer mode, the Worker
+token cannot submit, fully inspect, or cancel Client jobs.
 
-v1 uses one Worker authority token for the Worker trust domain. This means possession of that token grants Worker-plane authority across the deployment. Per-Worker cryptographic identities are outside the v1 scope and may be introduced by a later protocol version.
+v1 uses one Worker authority token for the Worker trust domain. This means
+possession of that token grants Worker-plane authority across the deployment.
+Per-Worker cryptographic identities are outside the v1 scope and may be
+introduced by a later protocol version.
 
-The client and Worker tokens must be distinct.
+When Client auth is `bearer`, the Client and Worker tokens must be distinct.
 
 ## TLS boundary
 
@@ -105,7 +144,8 @@ GET  /v1/jobs/{job_id}
 POST /v1/jobs/{job_id}/cancel
 ```
 
-These require client authority.
+These require Client authority only when `control.client_auth = "bearer"`.
+They are unauthenticated by AstrumWeaver when `client_auth = "none"`.
 
 ### Worker registration/lifecycle
 
@@ -207,6 +247,7 @@ Example non-secret TOML:
 [control]
 host = "127.0.0.1"
 port = 9000
+client_auth = "bearer"
 worker_ttl_seconds = 60
 lease_seconds = 300
 maintenance_interval_seconds = 5
@@ -217,9 +258,11 @@ Secrets/authority are environment variables:
 
 ```text
 ASTRUMWEAVER_DATABASE_URL
-ASTRUMWEAVER_CLIENT_TOKEN
 ASTRUMWEAVER_WORKER_TOKEN
+ASTRUMWEAVER_CLIENT_TOKEN   # required only for client_auth = "bearer"
 ```
+
+`ASTRUMWEAVER_WORKER_TOKEN` remains mandatory in both Client auth modes.
 
 Production Control never falls back to an in-memory repository.
 

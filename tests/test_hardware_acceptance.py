@@ -4,12 +4,35 @@ from dataclasses import dataclass
 
 import pytest
 
+from astrumweaver.control import ClientAuthMode
 from astrumweaver.validation.hardware import (
+    HTTPAcceptanceControl,
     HardwareAcceptanceError,
     HardwareAcceptanceRunner,
     render_markdown,
 )
 from astrumweaver.worker.mode import GPUProcess
+
+
+def test_http_acceptance_control_supports_client_auth_none() -> None:
+    control = HTTPAcceptanceControl(
+        "http://control.invalid",
+        None,
+        client_auth=ClientAuthMode.NONE,
+    )
+    try:
+        assert "authorization" not in control._client.headers
+    finally:
+        control.close()
+
+
+def test_http_acceptance_control_bearer_still_requires_token() -> None:
+    with pytest.raises(ValueError, match="client token is required"):
+        HTTPAcceptanceControl(
+            "http://control.invalid",
+            None,
+            client_auth=ClientAuthMode.BEARER,
+        )
 
 
 class FakeControl:

@@ -11,7 +11,7 @@ The validation is intentionally designed so private site details remain local.
 The command needs local deployment values such as:
 
 - Control URL
-- Client token
+- Client token when Control uses `client_auth = "bearer"`
 - actual GPU UUIDs
 - systemd/NVIDIA command paths when non-default
 
@@ -89,7 +89,8 @@ No Proxmox API access is required.
 
 ## Run
 
-Set the **Client** authority locally:
+For the default `client_auth = "bearer"`, set the **Client**
+authority locally:
 
 ```sh
 export ASTRUMWEAVER_CLIENT_TOKEN='...'
@@ -116,6 +117,15 @@ For generic non-NixOS systemd deployment:
 ```text
 --deployment-path systemd
 ```
+
+If Control explicitly uses `client_auth = "none"`, no Client token is needed.
+Do not export `ASTRUMWEAVER_CLIENT_TOKEN`; add:
+
+```text
+--client-auth none
+```
+
+Worker authentication remains unchanged and mandatory.
 
 ## What the harness does
 

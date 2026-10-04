@@ -614,6 +614,7 @@ def test_first_run_systemd_wraps_control_migration_gpu_and_worker(
             "",  # role: both
             "",  # Control bind host
             "",  # Control port
+            "",  # Client API auth: bearer
             "postgresql://db-private/astrumweaver",  # hidden
             "",  # generate tokens
             "",  # all GPUs
@@ -653,6 +654,55 @@ def test_first_run_systemd_wraps_control_migration_gpu_and_worker(
     assert "worker-private-generated" not in output
     assert "Control migration applied" in output
     assert "Worker is registered and ready" in output
+
+
+def test_first_run_control_none_generates_only_worker_authority(
+    monkeypatch,
+) -> None:
+    from astrumweaver.setup import tui as tui_module
+
+    FakeFirstRunInstaller.instances.clear()
+    monkeypatch.setattr(
+        tui_module,
+        "SystemdFirstRunInstaller",
+        FakeFirstRunInstaller,
+    )
+    monkeypatch.setattr(
+        tui_module,
+        "generate_worker_token",
+        lambda: "worker-only-generated",
+    )
+
+    io = ScriptedIO(
+        [
+            "1",  # control only
+            "",  # bind host
+            "",  # port
+            "none",  # Client API auth
+            "postgresql://db-private/astrumweaver",  # hidden
+            "",  # generate Worker token
+            _exact_first_run_apply,
+        ]
+    )
+
+    result = run_first_run_tui(
+        io=io,
+        snapshot=systemd_snapshot(),
+        gpus=(),
+        packaged_tool_dir=Path("/profile/bin"),
+    )
+
+    assert result.status is TuiRunStatus.APPLIED
+    installer = FakeFirstRunInstaller.instances[-1]
+    spec, secrets = installer.control_calls[0]
+    assert spec.client_auth.value == "none"
+    assert secrets.client_token is None
+    assert secrets.worker_token == "worker-only-generated"
+
+    output = "\n".join(io.output)
+    assert "Client API auth: none" in output
+    assert "deployment/network boundary" in output
+    assert "worker-only-generated" not in output
 
 
 def test_first_run_nixos_writes_reviewable_smoke_snippet(

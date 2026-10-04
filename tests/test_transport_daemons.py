@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from astrumweaver import ArtifactRef, JobResult, ResourceShape, WorkerSpec
+from astrumweaver.control import ClientAuthMode
 from astrumweaver.control.api import create_app
 from astrumweaver.control.daemon import build_app
 from astrumweaver.control.repository import InMemoryControlRepository, StorageUnavailable
@@ -102,6 +103,100 @@ async def test_auth_boundaries_and_protocol_version(app) -> None:
     assert wrong_version.status_code == 409
     assert health.status_code == 200
     assert health.json()["protocol_version"] == "v1"
+
+
+@pytest.mark.asyncio
+async def test_client_auth_bearer_rejects_missing_authority(app) -> None:
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://control",
+    ) as client:
+        missing_client = await client.post(
+            "/v1/jobs",
+            json=job_submission(),
+        )
+        missing_worker = await client.post(
+            "/v1/workers/register",
+            json=worker_registration(),
+        )
+
+    assert missing_client.status_code == 401
+    assert missing_worker.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_client_auth_none_opens_only_client_endpoints(
+    repository: InMemoryControlRepository,
+) -> None:
+    app = create_app(
+        repository,
+        client_token=None,
+        worker_token=WORKER_TOKEN,
+        client_auth=ClientAuthMode.NONE,
+        maintenance_interval_seconds=60.0,
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://control",
+    ) as client:
+        missing_worker_auth = await client.post(
+            "/v1/workers/register",
+            json=worker_registration(),
+        )
+        client_header_on_worker = await client.post(
+            "/v1/workers/register",
+            headers=auth(CLIENT_TOKEN),
+            json=worker_registration(),
+        )
+        registered = await client.post(
+            "/v1/workers/register",
+            headers=auth(WORKER_TOKEN),
+            json=worker_registration(),
+        )
+
+        created = await client.post(
+            "/v1/jobs",
+            json=job_submission(),
+        )
+        job_id = created.json()["job_id"]
+        fetched = await client.get(f"/v1/jobs/{job_id}")
+        cancelled = await client.post(f"/v1/jobs/{job_id}/cancel")
+
+        worker_token_present = await client.post(
+            "/v1/jobs",
+            headers=auth(WORKER_TOKEN),
+            json=job_submission(),
+        )
+
+    assert missing_worker_auth.status_code == 401
+    assert client_header_on_worker.status_code == 401
+    assert registered.status_code == 201
+    assert created.status_code == 201
+    assert fetched.status_code == 200
+    assert cancelled.status_code == 200
+    assert worker_token_present.status_code == 201
+
+
+def test_client_auth_bearer_requires_distinct_client_token() -> None:
+    repository = InMemoryControlRepository()
+
+    with pytest.raises(ValueError, match="client_token is required"):
+        create_app(
+            repository,
+            client_token=None,
+            worker_token=WORKER_TOKEN,
+            client_auth=ClientAuthMode.BEARER,
+        )
+
+    with pytest.raises(ValueError, match="must be distinct"):
+        create_app(
+            repository,
+            client_token=WORKER_TOKEN,
+            worker_token=WORKER_TOKEN,
+            client_auth=ClientAuthMode.BEARER,
+        )
 
 
 @pytest.mark.asyncio
@@ -475,6 +570,46 @@ async def test_worker_run_forever_register_claim_heartbeat_complete_loop() -> No
         await asyncio.wait_for(runtime_task, timeout=1.0)
 
     assert repository.get_worker(spec.worker_id).state.value == "offline"
+
+
+def test_control_daemon_client_auth_none_does_not_require_client_token(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    config = tmp_path / "control.toml"
+    config.write_text(
+        '[control]\nclient_auth = "none"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(
+        "ASTRUMWEAVER_DATABASE_URL",
+        "postgresql://example.invalid/astrumweaver",
+    )
+    monkeypatch.delenv("ASTRUMWEAVER_CLIENT_TOKEN", raising=False)
+    monkeypatch.setenv("ASTRUMWEAVER_WORKER_TOKEN", "worker")
+
+    app = build_app(str(config))
+
+    assert app.title == "AstrumWeaver Control API"
+
+
+def test_control_daemon_rejects_unknown_client_auth(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    config = tmp_path / "control.toml"
+    config.write_text(
+        '[control]\nclient_auth = "magic"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(
+        "ASTRUMWEAVER_DATABASE_URL",
+        "postgresql://example.invalid/astrumweaver",
+    )
+    monkeypatch.setenv("ASTRUMWEAVER_WORKER_TOKEN", "worker")
+
+    with pytest.raises(RuntimeError, match="client_auth must be bearer or none"):
+        build_app(str(config))
 
 
 def test_executor_capabilities_must_cover_worker_advertisement() -> None:

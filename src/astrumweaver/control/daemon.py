@@ -11,6 +11,7 @@ from typing import Any
 import uvicorn
 
 from .api import create_app
+from .auth import ClientAuthMode
 from .postgres import PostgresControlRepository
 
 
@@ -26,11 +27,25 @@ def build_app(config_path: str):
     database_url = os.environ.get("ASTRUMWEAVER_DATABASE_URL", "")
     client_token = os.environ.get("ASTRUMWEAVER_CLIENT_TOKEN", "")
     worker_token = os.environ.get("ASTRUMWEAVER_WORKER_TOKEN", "")
+    try:
+        client_auth = ClientAuthMode(
+            str(section.get("client_auth", ClientAuthMode.BEARER.value))
+        )
+    except ValueError as exc:
+        raise RuntimeError(
+            "control.client_auth must be bearer or none"
+        ) from exc
 
     if not database_url:
         raise RuntimeError("ASTRUMWEAVER_DATABASE_URL is required")
-    if not client_token:
-        raise RuntimeError("ASTRUMWEAVER_CLIENT_TOKEN is required")
+    if (
+        client_auth is ClientAuthMode.BEARER
+        and not client_token
+    ):
+        raise RuntimeError(
+            "ASTRUMWEAVER_CLIENT_TOKEN is required when "
+            "control.client_auth=bearer"
+        )
     if not worker_token:
         raise RuntimeError("ASTRUMWEAVER_WORKER_TOKEN is required")
 
@@ -41,8 +56,9 @@ def build_app(config_path: str):
     )
     return create_app(
         repository,
-        client_token=client_token,
+        client_token=client_token or None,
         worker_token=worker_token,
+        client_auth=client_auth,
         maintenance_interval_seconds=float(section.get("maintenance_interval_seconds", 5.0)),
     )
 

@@ -270,6 +270,9 @@ Example shape:
 
     package = inputs.astrumweaver.packages.${pkgs.system}.control;
 
+    # null/omitted preserves the secure daemon default: bearer.
+    clientAuth = "bearer";
+
     settings.control = {
       host = "127.0.0.1";
       port = 9000;
@@ -284,6 +287,15 @@ Example shape:
 ```
 
 The module owns service wiring, not PostgreSQL provisioning. The configured durable database must already exist according to the Host Prerequisite Contract.
+
+`clientAuth` accepts `"bearer"`, `"none"`, or `null`. The module default is
+`null`, which leaves the TOML setting absent and therefore preserves the
+Control daemon's secure `bearer` default. Set `clientAuth = "none";` only
+when the deployment boundary deliberately protects Client job
+submit/read/cancel access. In that mode the protected Control environment file
+does not need `ASTRUMWEAVER_CLIENT_TOKEN`; it still requires
+`ASTRUMWEAVER_DATABASE_URL` and `ASTRUMWEAVER_WORKER_TOKEN`.
+
 
 ## Secret handling
 
