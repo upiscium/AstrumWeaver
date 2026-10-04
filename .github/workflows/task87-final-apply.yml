@@ -1,0 +1,30 @@
+name: Task 87 final correction
+on:
+  push:
+    branches: [fix/87-runtime-health-supervision]
+    paths: [.github/workflows/task87-final-apply.yml]
+permissions:
+  contents: read
+jobs:
+  apply:
+    if: github.repository == 'upiscium/AstrumWeaver' && github.ref == 'refs/heads/fix/87-runtime-health-supervision'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+      - name: Apply exact local regression fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s  %s\n' f9eba6e884765e7e3df15395c81e6dd9ea05b0711301342d4df343b7dc4b010d .task87-final.patch | sha256sum --check --status
+          git apply --index --binary .task87-final.patch
+          git rm .task87-final.patch .github/workflows/task87-final-apply.yml
+          test "$(git write-tree)" = 897f1f9ad6579af788f58add6c25e25cab489350
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Stop owned Ollama process without waiting on HTTP health (#87)'
+          git push origin HEAD:refs/heads/fix/87-runtime-health-supervision
