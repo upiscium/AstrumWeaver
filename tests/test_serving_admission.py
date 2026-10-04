@@ -413,3 +413,66 @@ def test_worker_registration_rejects_serving_contract_not_in_worker_capabilities
             ),
             serving=inconsistent,
         )
+
+
+
+@pytest.mark.asyncio
+async def test_serving_admission_http_errors_are_explicit_and_bounded():
+    now = utc_now()
+    repository = InMemoryControlRepository()
+    app = create_app(
+        repository,
+        client_token=CLIENT_TOKEN,
+        worker_token=WORKER_TOKEN,
+        maintenance_interval_seconds=60,
+    )
+    transport = httpx.ASGITransport(app=app)
+    _, _, _, binding, advertisement = serving_values()
+    headers = {"authorization": f"Bearer {CLIENT_TOKEN}"}
+
+    def body(deadline):
+        return {
+            "protocol_version": PROTOCOL_VERSION,
+            "extensions": [SERVING_EXTENSION],
+            "capability": "llm.chat",
+            "payload": {"value": 1},
+            "requirements": {},
+            "serving_binding": binding.to_dict(),
+            "deadline_at": deadline.isoformat(),
+        }
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://control") as client:
+        missing = await client.post(
+            "/v1/jobs",
+            headers=headers,
+            json=body(now + timedelta(seconds=10)),
+        )
+        assert missing.status_code == 503
+
+        repository.register_worker(registration("worker-a", advertisement), now=now)
+        accepted = await client.post(
+            "/v1/jobs",
+            headers=headers,
+            json=body(now + timedelta(seconds=10)),
+        )
+        assert accepted.status_code == 201
+        claimed = repository.claim_next_job(
+            "worker-a",
+            runtime_instance_epoch=advertisement.runtime_instance_epoch,
+            now=now,
+        )
+        assert claimed is not None
+
+        overloaded = await client.post(
+            "/v1/jobs",
+            headers=headers,
+            json=body(now + timedelta(seconds=10)),
+        )
+        assert overloaded.status_code == 429
+
+        expired = await client.post(
+            "/v1/jobs",
+            headers=headers,
+            json=body(now - timedelta(seconds=1)),
+        )
+        assert expired.status_code == 408
