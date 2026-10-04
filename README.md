@@ -27,6 +27,9 @@ Current supported installation paths are:
 
 - **NixOS x86_64-linux:** flake + NixOS module — recommended.
 - **Other systemd Linux x86_64:** Nix `#installer` package + first-run TUI.
+  The standard llama.cpp RuntimeBackend is provisioned through a separate
+  AstrumWeaver-managed Nix profile; see
+  [Installation — RuntimeBackend Nix profile](docs/installation.md#runtimebackend-nix-profile).
 - **pip-only:** useful for development, but not currently a complete supported host deployment.
 
 AstrumWeaver assumes the Linux node, networking, PostgreSQL service, GPU
