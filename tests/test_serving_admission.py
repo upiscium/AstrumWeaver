@@ -172,6 +172,20 @@ def test_active_attempt_blocks_runtime_epoch_replacement_then_old_epoch_is_stale
         )
 
 
+def test_durable_job_rejects_binding_capability_mismatch():
+    now = utc_now()
+    repo = InMemoryControlRepository()
+    _, _, _, binding, advertisement = serving_values()
+    repo.register_worker(registration("worker-a", advertisement), now=now)
+    job = repo.submit_job(serving_submission(binding, now=now), now=now)
+
+    with pytest.raises(ValueError, match="binding capability"):
+        replace(
+            job,
+            serving_binding=replace(binding, capability="other.capability"),
+        )
+
+
 def test_job_snapshot_and_idempotency_include_resolved_binding_and_deadline():
     now = utc_now()
     repo = InMemoryControlRepository()
