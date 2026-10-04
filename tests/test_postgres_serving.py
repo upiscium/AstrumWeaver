@@ -477,3 +477,34 @@ def test_postgres_rejects_corrupt_durable_serving_identity():
                 """,
                 (digest("a"), queued.job_id),
             )
+
+
+def test_postgres_serving_lease_never_extends_past_request_deadline():
+    assert DATABASE_URL is not None
+    now = utc_now()
+    repo = PostgresControlRepository(DATABASE_URL, lease_seconds=300)
+    registration = worker(
+        "worker", epoch="12345678-1234-4234-9234-123456789abc"
+    )
+    repo.register_worker(registration, now=now)
+    request = replace(
+        submission(now),
+        deadline_at=now + timedelta(seconds=5),
+    )
+    job = repo.submit_job(request, now=now)
+    claimed = claim_serving(repo, "worker", now=now)
+    assert claimed is not None and claimed.lease_token
+    assert claimed.lease_expires_at == request.deadline_at
+
+    from astrumweaver.control import WorkerHeartbeat
+
+    repo.heartbeat_worker(
+        "worker",
+        WorkerHeartbeat(
+            active_job_id=job.job_id,
+            lease_token=claimed.lease_token,
+            runtime_instance_epoch=registration.serving.runtime_instance.epoch,
+        ),
+        now=now + timedelta(seconds=1),
+    )
+    assert repo.get_job(job.job_id).lease_expires_at == request.deadline_at
