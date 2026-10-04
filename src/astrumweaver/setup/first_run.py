@@ -664,10 +664,10 @@ def render_nixos_bootstrap_snippet(
             [
                 "  services.astrumweaver.control = {",
                 "    enable = true;",
+                f"    clientAuth = {_nix_string(control.client_auth.value)};",
                 "    settings.control = {",
                 f"      host = {_nix_string(control.bind_host)};",
                 f"      port = {control.port};",
-                f"      client_auth = {_nix_string(control.client_auth.value)};",
                 f"      worker_ttl_seconds = {control.worker_ttl_seconds};",
                 f"      lease_seconds = {control.lease_seconds};",
                 "      maintenance_interval_seconds = "
