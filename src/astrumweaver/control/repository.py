@@ -40,6 +40,18 @@ class ConflictError(RepositoryError):
     """Requested transition conflicts with current durable state."""
 
 
+class DeadlineExceededError(RepositoryError):
+    """A bounded serving request can no longer be admitted."""
+
+
+class NoCompatibleDeployment(RepositoryError):
+    """No live deployment satisfies the immutable serving binding."""
+
+
+class OverloadedError(RepositoryError):
+    """All live compatible serving replicas are at capacity."""
+
+
 class StorageUnavailable(RepositoryError):
     """Durable storage cannot be reached safely."""
 
@@ -362,12 +374,8 @@ class InMemoryControlRepository:
         self, submission: JobSubmission, *, now: datetime | None = None
     ) -> JobRecord:
         timestamp = _aware(now)
-        if (
-            submission.deadline_at is not None
-            and _aware(submission.deadline_at) <= timestamp
-        ):
-            raise ConflictError("job deadline has expired")
         with self._lock:
+            # Resolve durable idempotency before transient admission state.
             if submission.idempotency_key:
                 existing_id = self._idempotency.get(submission.idempotency_key)
                 if existing_id is not None:
@@ -377,6 +385,37 @@ class InMemoryControlRepository:
                             "idempotency key already belongs to a different job request"
                         )
                     return existing
+
+            if (
+                submission.deadline_at is not None
+                and _aware(submission.deadline_at) <= timestamp
+            ):
+                raise DeadlineExceededError("job deadline has expired")
+
+            if submission.serving is not None:
+                cutoff = timestamp - timedelta(seconds=self.worker_ttl_seconds)
+                compatible = [
+                    worker
+                    for worker in self._workers.values()
+                    if worker.state is WorkerState.ONLINE
+                    and worker.last_seen_at >= cutoff
+                    and submission.capability in worker.spec.capabilities
+                    and worker_matches(worker.spec, submission.requirements)
+                    and worker_serving_accepts_job(
+                        worker.serving, submission.capability, submission.serving
+                    )
+                ]
+                if not compatible:
+                    raise NoCompatibleDeployment(
+                        "no compatible serving deployment is available"
+                    )
+                if all(
+                    worker.active_jobs >= worker.max_concurrency
+                    for worker in compatible
+                ):
+                    raise OverloadedError(
+                        "all compatible serving deployments are at capacity"
+                    )
 
             self._sequence += 1
             record = JobRecord(
@@ -680,8 +719,11 @@ class InMemoryControlRepository:
 __all__ = [
     "ConflictError",
     "ControlRepository",
+    "DeadlineExceededError",
     "InMemoryControlRepository",
+    "NoCompatibleDeployment",
     "NotFoundError",
+    "OverloadedError",
     "RepositoryError",
     "StorageUnavailable",
 ]
