@@ -668,16 +668,26 @@ class InMemoryControlRepository:
                 ):
                     continue
                 self._release_worker_capacity(job.assigned_worker_id)
+                deadline_expired = (
+                    job.deadline_at is not None and job.deadline_at <= timestamp
+                )
                 should_retry = (
-                    job.attempts < job.max_attempts
-                    and (job.deadline_at is None or job.deadline_at > timestamp)
+                    not deadline_expired and job.attempts < job.max_attempts
                 )
                 updated = job.with_updates(
                     status=JobStatus.QUEUED if should_retry else JobStatus.FAILED,
-                    error={
-                        "message": "worker lease expired",
-                        "retryable": should_retry,
-                    },
+                    error=(
+                        {
+                            "type": "deadline_expired",
+                            "message": "job deadline expired",
+                            "retryable": False,
+                        }
+                        if deadline_expired
+                        else {
+                            "message": "worker lease expired",
+                            "retryable": should_retry,
+                        }
+                    ),
                     assigned_worker_id=None,
                     lease_token=None,
                     lease_expires_at=None,
