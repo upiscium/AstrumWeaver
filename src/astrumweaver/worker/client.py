@@ -14,7 +14,7 @@ from ..control.models import WorkerState
 from ..control.serde import job_result_to_dict, worker_spec_to_dict
 from ..execution import JobRequest, JobResult
 from ..serving import WorkerServingAdvertisement
-from ..transport import PROTOCOL_VERSION
+from ..transport import PROTOCOL_VERSION, SERVING_EXTENSION
 
 
 class ControlTransportError(RuntimeError):
@@ -105,6 +105,7 @@ class ControlClient:
                 "max_concurrency": max_concurrency,
                 "metadata": dict(metadata or {}),
                 "serving": None if serving is None else serving.to_dict(),
+                "extensions": [] if serving is None else [SERVING_EXTENSION],
             },
         )
         return self._object(response)
@@ -128,6 +129,9 @@ class ControlClient:
                 "lease_token": lease_token,
                 "state": None if state is None else state.value,
                 "runtime_instance_epoch": runtime_instance_epoch,
+                "extensions": (
+                    [] if runtime_instance_epoch is None else [SERVING_EXTENSION]
+                ),
                 "metadata": dict(metadata or {}),
             },
         )
@@ -191,6 +195,9 @@ class ControlClient:
                 "protocol_version": PROTOCOL_VERSION,
                 "lease_token": lease_token,
                 "runtime_instance_epoch": runtime_instance_epoch,
+                "extensions": (
+                    [] if runtime_instance_epoch is None else [SERVING_EXTENSION]
+                ),
                 "result": job_result_to_dict(result),
             },
         )
@@ -213,6 +220,9 @@ class ControlClient:
                 "protocol_version": PROTOCOL_VERSION,
                 "lease_token": lease_token,
                 "runtime_instance_epoch": runtime_instance_epoch,
+                "extensions": (
+                    [] if runtime_instance_epoch is None else [SERVING_EXTENSION]
+                ),
                 "error": dict(error) if isinstance(error, Mapping) else error,
                 "retryable": retryable,
             },
