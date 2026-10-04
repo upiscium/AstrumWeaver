@@ -47,6 +47,7 @@
             services.astrumweaver.control = {
               enable = true;
               package = control;
+              clientAuth = "none";
               settings.control = {
                 host = "127.0.0.1";
                 port = 9000;
@@ -334,11 +335,17 @@ EOF
           '';
         module-eval = pkgs.runCommand "astrumweaver-module-eval" {
           controlExec = moduleSmoke.config.systemd.services.astrumweaver-control.serviceConfig.ExecStart;
+          controlClientAuth = moduleSmoke.config.services.astrumweaver.control.clientAuth;
           workerExec = moduleSmoke.config.systemd.services.astrumweaver-worker.serviceConfig.ExecStart;
           workerPreflight = moduleSmoke.config.systemd.services.astrumweaver-worker.serviceConfig.ExecStartPre;
           modeTool = borrowableMode;
         } ''
           test -n "$controlExec"
+          test "$controlClientAuth" = none
+          controlConfig="$(printf "%s" "$controlExec" | sed -n 's/.*--config \([^ ]*\).*/\1/p')"
+          test -n "$controlConfig"
+          test -f "$controlConfig"
+          grep -q 'client_auth = "none"' "$controlConfig"
           test -n "$workerExec"
           test -n "$workerPreflight"
           test -x "$modeTool/bin/astrumweaver-gpu-mode"
