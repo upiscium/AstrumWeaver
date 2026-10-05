@@ -132,7 +132,7 @@ def test_catalog_rejects_wrong_operation_and_unbounded_profile():
         value.resolved,
         effective_limits={
             **dict(value.resolved.effective_limits),
-            "input_tokens": 5000,
+            "input_tokens": 6000,
             "output_tokens": 1024,
             "total_tokens": 5120,
         },
