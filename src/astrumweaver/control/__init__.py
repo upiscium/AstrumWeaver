@@ -2,6 +2,7 @@
 
 from .auth import ClientAuthMode
 from .models import (
+    JobEventRecord,
     JobRecord,
     JobStatus,
     JobSubmission,
@@ -16,6 +17,7 @@ from .repository import (
     ConflictError,
     ControlRepository,
     DeadlineExceededError,
+    EventBufferFull,
     InMemoryControlRepository,
     NoCompatibleDeployment,
     NotFoundError,
@@ -29,8 +31,10 @@ __all__ = [
     "ConflictError",
     "ControlRepository",
     "DeadlineExceededError",
+    "EventBufferFull",
     "InMemoryControlRepository",
     "NoCompatibleDeployment",
+    "JobEventRecord",
     "JobRecord",
     "JobStatus",
     "JobSubmission",
