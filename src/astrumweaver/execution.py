@@ -24,6 +24,23 @@ def _mapping(value: Mapping[str, Any] | None) -> Mapping[str, Any]:
     return MappingProxyType(dict(value or {}))
 
 
+class JobExecutionError(RuntimeError):
+    """Executor rejection with an explicit retry/public error contract."""
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        retryable: bool,
+    ) -> None:
+        normalized_code = _nonblank(code, "code")
+        normalized_message = _nonblank(message, "message")
+        self.code = normalized_code
+        self.retryable = bool(retryable)
+        super().__init__(normalized_message)
+
+
 @dataclass(frozen=True, slots=True)
 class ArtifactRef:
     """Reference to a durable or externally retrievable job artifact."""
