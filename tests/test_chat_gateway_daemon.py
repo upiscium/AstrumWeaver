@@ -69,6 +69,19 @@ def catalog_document() -> dict:
     }
 
 
+def route_paths(app) -> set[str]:
+    result: set[str] = set()
+    pending = list(app.routes)
+    while pending:
+        route = pending.pop()
+        path = getattr(route, "path", None)
+        if isinstance(path, str):
+            result.add(path)
+        nested = getattr(route, "routes", ())
+        pending.extend(nested)
+    return result
+
+
 def base_environment(monkeypatch) -> None:
     monkeypatch.setenv(
         "ASTRUMWEAVER_DATABASE_URL",
@@ -100,7 +113,7 @@ def test_control_daemon_mounts_chat_gateway_only_when_enabled(tmp_path, monkeypa
     )
 
     app = build_app(str(config))
-    paths = {route.path for route in app.routes}
+    paths = route_paths(app)
     assert "/v1/models" in paths
     assert "/v1/chat/completions" in paths
 
