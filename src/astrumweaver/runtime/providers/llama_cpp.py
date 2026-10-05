@@ -77,6 +77,8 @@ class LlamaCppProviderConfig:
     n_cpu_ffn: int | None = None
     offline: bool = True
     no_webui: bool = True
+    jinja: bool = False
+    chat_template_file: str | None = None
 
     def __post_init__(self) -> None:
         base_url = _nonblank(self.base_url, "base_url").rstrip("/")
@@ -108,6 +110,18 @@ class LlamaCppProviderConfig:
             raise ValueError("context_size must not be negative")
         if self.main_gpu < 0:
             raise ValueError("main_gpu must not be negative")
+        if type(self.jinja) is not bool:
+            raise TypeError("jinja must be boolean")
+        if self.chat_template_file is not None:
+            template = _nonblank(
+                self.chat_template_file,
+                "chat_template_file",
+            )
+            if not self.jinja:
+                raise ValueError(
+                    "chat_template_file requires jinja=true"
+                )
+            object.__setattr__(self, "chat_template_file", template)
 
         if self.gpu_layers is not None:
             value = self.gpu_layers
@@ -322,6 +336,8 @@ class LlamaCppSubprocessController:
         launch_policy: LlamaCppLaunchPolicy,
         offline: bool,
         no_webui: bool,
+        jinja: bool = False,
+        chat_template_file: str | None = None,
     ) -> None:
         self.executable = executable
         self.base_url = base_url
@@ -332,6 +348,8 @@ class LlamaCppSubprocessController:
         self.launch_policy = launch_policy
         self.offline = offline
         self.no_webui = no_webui
+        self.jinja = jinja
+        self.chat_template_file = chat_template_file
         self._process: asyncio.subprocess.Process | None = None
 
     @property
@@ -366,6 +384,12 @@ class LlamaCppSubprocessController:
             args.append("--no-webui")
         if self.offline:
             args.append("--offline")
+        if self.jinja:
+            args.append("--jinja")
+        if self.chat_template_file is not None:
+            args.extend(
+                ["--chat-template-file", self.chat_template_file]
+            )
 
         if self.gpu_uuids:
             visible = [f"CUDA{index}" for index in range(len(self.gpu_uuids))]
@@ -454,11 +478,22 @@ class LlamaCppExecutor(JobExecutor):
         model_ref: str,
         model_alias: str,
         residency_metadata: Mapping[str, Any],
+        tools_enabled: bool = False,
     ) -> None:
         self.api = api
         self.model_ref = _nonblank(model_ref, "model_ref")
         self.model_alias = _nonblank(model_alias, "model_alias")
         self.residency_metadata = dict(residency_metadata)
+        if type(tools_enabled) is not bool:
+            raise TypeError("tools_enabled must be boolean")
+        self.tools_enabled = tools_enabled
+        self.serving_features = {
+            "llm.chat": (
+                frozenset({"tools"})
+                if tools_enabled
+                else frozenset()
+            )
+        }
         self._inflight: dict[str, asyncio.Task[Mapping[str, Any]]] = {}
 
     def _payload(self, job: JobRequest) -> dict[str, Any]:
@@ -558,6 +593,24 @@ class LlamaCppExecutor(JobExecutor):
                 "gateway chat job must not supply a runtime model name",
                 retryable=False,
             )
+        uses_tools = bool(request.get("tools"))
+        uses_tools = uses_tools or request.get("tool_choice") not in {
+            None, "none"
+        }
+        for message in request.get("messages", ()):
+            if isinstance(message, Mapping) and (
+                message.get("role") == "tool"
+                or message.get("tool_calls") is not None
+            ):
+                uses_tools = True
+                break
+        if uses_tools and not self.tools_enabled:
+            raise JobExecutionError(
+                "unsupported_feature",
+                "llama.cpp serving deployment does not enable structured tools",
+                retryable=False,
+            )
+
         request["model"] = self.model_alias
         request["stream"] = False
         return request, limits
@@ -689,6 +742,7 @@ class LlamaCppManagedRuntime(ManagedRuntime):
         model_alias: str,
         startup_timeout_seconds: float,
         launch_policy: LlamaCppLaunchPolicy,
+        tools_enabled: bool = False,
     ) -> None:
         self.api = api
         self.process = process
@@ -702,6 +756,7 @@ class LlamaCppManagedRuntime(ManagedRuntime):
             api=api,
             model_ref=model_ref,
             model_alias=model_alias,
+            tools_enabled=tools_enabled,
             residency_metadata={
                 "residency_policy": context.demand.residency_policy.value,
                 "gpu_topology": context.demand.gpu_topology.value,
@@ -1138,6 +1193,8 @@ class LlamaCppProvider(RuntimeProvider):
                 "n_cpu_ffn": policy.n_cpu_ffn,
                 "offline": self.config.offline,
                 "no_webui": self.config.no_webui,
+                "jinja": self.config.jinja,
+                "chat_template_file": self.config.chat_template_file,
                 "capabilities": sorted(LLAMA_CPP_CAPABILITIES),
             },
             model_preparation=ModelPreparationPolicy.REFERENCE_ONLY,
@@ -1166,6 +1223,22 @@ class LlamaCppProvider(RuntimeProvider):
         )
         model_alias = str(cfg.get("model_alias") or "astrumweaver")
         executable = str(cfg.get("executable") or self.config.executable)
+        jinja = cfg.get("jinja", self.config.jinja)
+        if type(jinja) is not bool:
+            raise ValueError("llama.cpp deployment jinja must be boolean")
+        raw_template = cfg.get(
+            "chat_template_file",
+            self.config.chat_template_file,
+        )
+        chat_template_file = (
+            None
+            if raw_template is None
+            else _nonblank(str(raw_template), "chat_template_file")
+        )
+        if chat_template_file is not None and not jinja:
+            raise ValueError(
+                "llama.cpp chat_template_file requires jinja=true"
+            )
 
         split_mode = LlamaCppSplitMode(
             str(cfg.get("split_mode") or _launch_policy(context, self.config).split_mode)
@@ -1216,6 +1289,8 @@ class LlamaCppProvider(RuntimeProvider):
             launch_policy=policy,
             offline=bool(cfg.get("offline", self.config.offline)),
             no_webui=bool(cfg.get("no_webui", self.config.no_webui)),
+            jinja=jinja,
+            chat_template_file=chat_template_file,
         )
 
         return LlamaCppManagedRuntime(
@@ -1226,4 +1301,5 @@ class LlamaCppProvider(RuntimeProvider):
             model_alias=model_alias,
             startup_timeout_seconds=self.config.startup_timeout_seconds,
             launch_policy=policy,
+            tools_enabled=jinja,
         )
