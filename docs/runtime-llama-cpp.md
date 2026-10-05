@@ -64,8 +64,15 @@ The server exposes OpenAI-compatible endpoints used by the generic executor:
 
 ```text
 /v1/chat/completions
+/v1/chat/completions/input_tokens
 /v1/completions
 ```
+
+The Stage A #94 chat adapter uses the input-token endpoint before inference so
+the actual deployed Jinja/chat template, message history and tool schemas are
+included in context accounting. It rejects the request before generation if
+actual input tokens or the reserved output budget exceed the resolved #93
+serving limits.
 
 Readiness is checked with:
 
@@ -311,6 +318,35 @@ The generic payload supplies fields such as:
   ]
 }
 ```
+
+### Structured tools
+
+A llama.cpp runtime may advertise the #93 `tools` serving feature only when
+provider configuration enables:
+
+```text
+jinja = true
+```
+
+AstrumWeaver then starts `llama-server` with `--jinja`. An optional reviewed
+template path:
+
+```text
+chat_template_file = "/templates/tool-use.jinja"
+```
+
+is passed as `--chat-template-file` and is rejected unless Jinja mode is
+enabled. The corresponding serving `DeploymentIdentity` must also bind an
+immutable `template_artifact_sha256` before the Stage A gateway accepts a
+tools-enabled profile.
+
+The Worker daemon compares every serving-contract feature with the executor's
+locally proven `serving_features` before registration. Therefore a manifest
+cannot advertise `tools` merely because the capability is named `llm.chat`.
+
+Stage A accepts `parallel_tool_calls=false` but deliberately rejects
+`parallel_tool_calls=true` until an exact model/template pair has separate
+parallel-call evidence.
 
 ### Text generation
 
