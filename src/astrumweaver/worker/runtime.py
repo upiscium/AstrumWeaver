@@ -18,7 +18,7 @@ from ..contracts import WorkerSpec
 from ..control.models import WorkerState
 from ..control.serde import worker_spec_from_dict
 from ..transport import PROTOCOL_VERSION, SERVING_EXTENSION
-from ..execution import JobExecutor, JobResult
+from ..execution import JobExecutionError, JobExecutor, JobResult
 from ..serving import (
     ServingJobBinding,
     WorkerServingAdvertisement,
@@ -492,6 +492,16 @@ class WorkerRuntime:
                 result = await execution
             except asyncio.CancelledError:
                 raise
+            except JobExecutionError as exc:
+                if self.runtime_supervisor is not None:
+                    await self.runtime_supervisor.check()
+                    self._require_runtime()
+                error = {
+                    "type": type(exc).__name__,
+                    "code": exc.code,
+                    "message": str(exc),
+                }
+                retryable = exc.retryable
             except Exception as exc:
                 if self.runtime_supervisor is not None:
                     # Detect a dead runtime before consuming another queued
