@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlsplit
 
+import httpx
+
 from .hardware import REVISION_PATTERN
 
 
@@ -38,6 +40,7 @@ _TOOL_MARKER = "ASTRUMWEAVER_TOOL_OK"
 _TOOL_FILENAME = "acceptance.txt"
 
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
+GatewayGetter = Callable[..., httpx.Response]
 
 
 class OpenCodeChatAcceptanceError(RuntimeError):
@@ -58,8 +61,10 @@ class OpenCodeChatAcceptanceEvidence:
     openai_compatible_stream_source_sha1: str
     openai_compatible_error_source_sha1: str
     profile_id: str
+    profile_revision: str
     deployment_revision: str
     serving_contract_revision: str
+    gateway_identity_preflight: str
     isolated_config: str
     plain_chat_stream: str
     structured_tool_round_trip: str
@@ -166,6 +171,7 @@ class OpenCodeChatAcceptanceRunner:
         base_url: str,
         client_token: str,
         profile_id: str,
+        profile_revision: str,
         astrumweaver_revision: str,
         deployment_revision: str,
         serving_contract_revision: str,
@@ -173,6 +179,7 @@ class OpenCodeChatAcceptanceRunner:
         output_tokens: int,
         timeout_seconds: float = 180.0,
         command_runner: CommandRunner = subprocess.run,
+        gateway_get: GatewayGetter = httpx.get,
     ) -> None:
         executable = str(opencode).strip()
         if not executable:
@@ -181,6 +188,8 @@ class OpenCodeChatAcceptanceRunner:
             raise ValueError("client token must not be blank")
         if not _PROFILE_ID.fullmatch(profile_id):
             raise ValueError("profile_id is invalid")
+        if not _DIGEST.fullmatch(profile_revision):
+            raise ValueError("profile_revision is invalid")
         if not REVISION_PATTERN.fullmatch(astrumweaver_revision):
             raise ValueError("astrumweaver_revision is invalid")
         if not _DIGEST.fullmatch(deployment_revision):
@@ -198,6 +207,7 @@ class OpenCodeChatAcceptanceRunner:
         self.base_url = _validate_base_url(base_url)
         self.client_token = client_token
         self.profile_id = profile_id
+        self.profile_revision = profile_revision
         self.astrumweaver_revision = astrumweaver_revision
         self.deployment_revision = deployment_revision
         self.serving_contract_revision = serving_contract_revision
@@ -205,6 +215,96 @@ class OpenCodeChatAcceptanceRunner:
         self.output_tokens = output
         self.timeout_seconds = float(timeout_seconds)
         self._command_runner = command_runner
+        self._gateway_get = gateway_get
+
+    def _gateway_preflight(self) -> None:
+        try:
+            response = self._gateway_get(
+                f"{self.base_url}/models",
+                headers={
+                    "authorization": f"Bearer {self.client_token}",
+                },
+                timeout=min(self.timeout_seconds, 30.0),
+            )
+        except httpx.HTTPError as exc:
+            raise OpenCodeChatAcceptanceError(
+                "AstrumWeaver gateway identity preflight is unavailable"
+            ) from exc
+        except OSError as exc:
+            raise OpenCodeChatAcceptanceError(
+                "AstrumWeaver gateway identity preflight is unavailable"
+            ) from exc
+
+        if response.status_code != 200:
+            raise OpenCodeChatAcceptanceError(
+                "AstrumWeaver gateway identity preflight was rejected"
+            )
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise OpenCodeChatAcceptanceError(
+                "AstrumWeaver gateway identity preflight returned invalid JSON"
+            ) from exc
+        if not isinstance(body, Mapping):
+            raise OpenCodeChatAcceptanceError(
+                "AstrumWeaver gateway model catalog is invalid"
+            )
+        data = body.get("data")
+        if not isinstance(data, list):
+            raise OpenCodeChatAcceptanceError(
+                "AstrumWeaver gateway model catalog is invalid"
+            )
+        models = [
+            item
+            for item in data
+            if isinstance(item, Mapping)
+            and item.get("id") == self.profile_id
+        ]
+        if len(models) != 1:
+            raise OpenCodeChatAcceptanceError(
+                "AstrumWeaver acceptance profile is not uniquely configured"
+            )
+        extension = models[0].get("x_astrumweaver")
+        if not isinstance(extension, Mapping):
+            raise OpenCodeChatAcceptanceError(
+                "AstrumWeaver gateway omitted bound profile identity"
+            )
+
+        expected = {
+            "profile_revision": self.profile_revision,
+            "deployment_revision": self.deployment_revision,
+            "serving_contract_revision": self.serving_contract_revision,
+            "operation_schema": "openai-chat-completions-v1",
+        }
+        for field, value in expected.items():
+            if extension.get(field) != value:
+                raise OpenCodeChatAcceptanceError(
+                    "AstrumWeaver gateway profile identity does not match "
+                    "the acceptance target"
+                )
+
+        features = extension.get("features")
+        if (
+            not isinstance(features, list)
+            or any(not isinstance(item, str) for item in features)
+            or "tools" not in features
+        ):
+            raise OpenCodeChatAcceptanceError(
+                "AstrumWeaver gateway profile does not advertise structured tools"
+            )
+        limits = extension.get("effective_limits")
+        if not isinstance(limits, Mapping):
+            raise OpenCodeChatAcceptanceError(
+                "AstrumWeaver gateway profile limits are unavailable"
+            )
+        if (
+            limits.get("total_tokens") != self.context_tokens
+            or limits.get("output_tokens") != self.output_tokens
+        ):
+            raise OpenCodeChatAcceptanceError(
+                "AstrumWeaver gateway profile limits do not match "
+                "the acceptance target"
+            )
 
     def _config(self) -> dict[str, object]:
         return {
@@ -343,6 +443,7 @@ class OpenCodeChatAcceptanceRunner:
         return events
 
     def run(self) -> OpenCodeChatAcceptanceEvidence:
+        self._gateway_preflight()
         with tempfile.TemporaryDirectory(
             prefix="astrumweaver-opencode-accept-"
         ) as raw:
@@ -423,8 +524,10 @@ class OpenCodeChatAcceptanceRunner:
                 PINNED_OPENAI_COMPATIBLE_ERROR_BLOB
             ),
             profile_id=self.profile_id,
+            profile_revision=self.profile_revision,
             deployment_revision=self.deployment_revision,
             serving_contract_revision=self.serving_contract_revision,
+            gateway_identity_preflight="PASS",
             isolated_config="PASS",
             plain_chat_stream="PASS",
             structured_tool_round_trip="PASS",
@@ -464,8 +567,10 @@ def render_opencode_chat_markdown(
             evidence.openai_compatible_error_source_sha1,
         ),
         ("Logical profile", evidence.profile_id),
+        ("Logical profile revision", evidence.profile_revision),
         ("Deployment revision", evidence.deployment_revision),
         ("Serving contract revision", evidence.serving_contract_revision),
+        ("Gateway identity preflight", evidence.gateway_identity_preflight),
         ("Isolated OpenCode config", evidence.isolated_config),
         ("Plain chat stream", evidence.plain_chat_stream),
         (
@@ -507,6 +612,7 @@ def main() -> None:
     )
     parser.add_argument("--opencode", default="opencode")
     parser.add_argument("--profile-id", required=True)
+    parser.add_argument("--profile-revision", required=True)
     parser.add_argument("--revision", required=True)
     parser.add_argument("--deployment-revision", required=True)
     parser.add_argument("--serving-contract-revision", required=True)
@@ -542,6 +648,7 @@ def main() -> None:
             base_url=base_url,
             client_token=client_token,
             profile_id=args.profile_id,
+            profile_revision=args.profile_revision,
             astrumweaver_revision=args.revision,
             deployment_revision=args.deployment_revision,
             serving_contract_revision=args.serving_contract_revision,
