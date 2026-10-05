@@ -185,14 +185,20 @@ class ChatGatewayProfile:
                 "invalid_profile",
                 "configured chat profile identity is invalid",
             ) from exc
-        return cls(
-            resolved=resolved,
-            adapter_id=str(data["adapter_id"]),
-            request_timeout_seconds=data.get("request_timeout_seconds", 60.0),
-            max_attempts=data.get("max_attempts", 2),
-            owned_by=str(data.get("owned_by", "astrumweaver")),
-            created=data.get("created", 0),
-        )
+        try:
+            return cls(
+                resolved=resolved,
+                adapter_id=data["adapter_id"],
+                request_timeout_seconds=data.get("request_timeout_seconds", 60.0),
+                max_attempts=data.get("max_attempts", 2),
+                owned_by=data.get("owned_by", "astrumweaver"),
+                created=data.get("created", 0),
+            )
+        except KeyError as exc:
+            raise ChatGatewayError(
+                "invalid_profile",
+                "configured chat profile is missing a required field",
+            ) from exc
 
 
 class ChatProfileCatalog:
@@ -250,12 +256,13 @@ class ChatProfileCatalog:
                 "invalid_catalog",
                 "chat gateway catalog profiles must be an array",
             )
-        return cls(
-            tuple(
-                ChatGatewayProfile.from_dict(item)
-                for item in raw_profiles
-                if isinstance(item, Mapping)
+        if not all(isinstance(item, Mapping) for item in raw_profiles):
+            raise ChatGatewayError(
+                "invalid_catalog",
+                "chat gateway catalog profile entries must be objects",
             )
+        return cls(
+            tuple(ChatGatewayProfile.from_dict(item) for item in raw_profiles)
         )
 
 
