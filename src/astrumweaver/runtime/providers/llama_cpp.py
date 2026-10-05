@@ -28,6 +28,7 @@ from ...execution import (
 from ...gateway.chat import (
     CHAT_JOB_SCHEMA,
     LLAMA_CPP_CHAT_ADAPTER,
+    ChatGatewayError,
     validate_chat_stream_chunk,
 )
 from ..contracts import (
@@ -783,7 +784,14 @@ class LlamaCppExecutor(JobExecutor):
         self._inflight[job.job_id] = current
         try:
             async for raw_chunk in self.api.chat_stream(payload):
-                chunk = validate_chat_stream_chunk(raw_chunk)
+                try:
+                    chunk = validate_chat_stream_chunk(raw_chunk)
+                except ChatGatewayError as exc:
+                    raise JobExecutionError(
+                        "invalid_provider_response",
+                        "llama.cpp returned an invalid chat stream chunk",
+                        retryable=False,
+                    ) from exc
                 choices = chunk.get("choices")
                 if isinstance(choices, list) and choices:
                     choice = choices[0]
