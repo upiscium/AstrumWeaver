@@ -55,6 +55,14 @@ def build_app(config_path: str):
         database_url,
         worker_ttl_seconds=int(section.get("worker_ttl_seconds", 60)),
         lease_seconds=int(section.get("lease_seconds", 300)),
+        event_max_count=int(section.get("event_max_count", 4096)),
+        event_max_payload_bytes=int(
+            section.get("event_max_payload_bytes", 65536)
+        ),
+        event_max_total_bytes=int(
+            section.get("event_max_total_bytes", 4 * 1024 * 1024)
+        ),
+        event_max_read=int(section.get("event_max_read", 512)),
     )
     app = create_app(
         repository,
