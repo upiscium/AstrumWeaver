@@ -10,10 +10,16 @@ Schema/unit tests do not substitute for this run.
 The command accepts exactly:
 
 - OpenCode `1.18.30`;
+- OpenCode package manifest SHA-1
+  `c7c467037d109b457884484af81d4518527816c5`;
 - session source SHA-1
   `a99f8acff20c5d64d0b6cb90df480218bb1daddc`;
-- OpenAI-compatible chat source SHA-1
-  `9ac85b07b139f2a7a87f1a62d829a274b9cfd1ca`.
+- AI SDK `6.0.168`;
+- `@ai-sdk/openai-compatible` `2.0.41`;
+- adapter stream source SHA-1
+  `8c622db23c2d9a7373701f5a1b0c2ba109e24602`;
+- adapter error-schema source SHA-1
+  `f0ebb31de52b6484c9faa5ffd5eaed599c0c150e`.
 
 The acceptance command does not install or upgrade OpenCode. Supply an existing
 binary with `--opencode`; a version mismatch fails before any chat request.
@@ -102,7 +108,7 @@ The generated Markdown may contain only:
 
 - evidence schema/date;
 - AstrumWeaver Git revision;
-- pinned OpenCode version and source identities;
+- pinned OpenCode, AI SDK and OpenAI-compatible adapter identities;
 - logical profile identifier;
 - deployment and serving-contract revisions;
 - PASS/FAIL-scope fields represented by a successful evidence record.
