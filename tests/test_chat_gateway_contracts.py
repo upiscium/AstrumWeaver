@@ -274,7 +274,7 @@ def test_tool_round_trip_preserves_call_ids_and_argument_json_strings():
 @pytest.mark.parametrize(
     ("patch", "code"),
     [
-        ({"stream": True}, "streaming_not_supported"),
+        ({"stream": "yes"}, "invalid_request"),
         ({"n": 2}, "unsupported_field"),
         ({"response_format": {"type": "json_object"}}, "unsupported_field"),
         ({"max_tokens": 2048}, "output_limit_exceeded"),
@@ -289,6 +289,22 @@ def test_request_subset_fails_closed(patch, code):
     with pytest.raises(ChatGatewayError) as error:
         compile_chat_request(request, profile(), request_size_bytes=256)
     assert error.value.code == code
+
+
+def test_streaming_request_compiles_to_same_bounded_job_envelope():
+    compiled = compile_chat_request(
+        {
+            "model": "local-code-v1",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "stream": True,
+            "max_tokens": 32,
+        },
+        profile(),
+        request_size_bytes=256,
+    )
+    assert compiled.payload["request"]["stream"] is True
+    assert compiled.payload["request"]["max_tokens"] == 32
+    assert compiled.payload["limits"]["total_tokens"] == 5120
 
 
 def test_request_byte_bound_and_missing_tool_feature_fail_closed():
