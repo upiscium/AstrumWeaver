@@ -91,7 +91,7 @@ def manifest(value: ChatGatewayProfile) -> dict:
     }
 
 
-def test_catalog_round_trip_and_models_expose_only_profile_ids():
+def test_catalog_round_trip_and_models_expose_profile_binding_metadata():
     original = profile()
     catalog = ChatProfileCatalog.from_dict(manifest(original))
 
@@ -106,6 +106,14 @@ def test_catalog_round_trip_and_models_expose_only_profile_ids():
                 "object": "model",
                 "created": 1,
                 "owned_by": "astrumweaver",
+                "x_astrumweaver": {
+                    "profile_revision": loaded.resolved.profile_revision,
+                    "deployment_revision": loaded.resolved.deployment.revision,
+                    "serving_contract_revision": loaded.resolved.contract.revision,
+                    "operation_schema": loaded.resolved.contract.operation_schema,
+                    "features": sorted(loaded.resolved.contract.features),
+                    "effective_limits": dict(loaded.resolved.effective_limits),
+                },
             }
         ],
     }
