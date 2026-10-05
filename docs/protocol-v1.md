@@ -358,6 +358,29 @@ factory = "astrumweaver.executors.structured_echo:create_executor"
 [executor.settings]
 ```
 
+A serving Worker additionally points at an operator-reviewed serving deployment
+declaration:
+
+```toml
+[serving]
+manifest = "/etc/astrumweaver/serving.json"
+```
+
+The same path may be supplied explicitly with
+`astrumweaver-worker --serving-manifest ...`, which overrides the TOML value.
+The declaration contains the immutable `DeploymentIdentity` and the exact
+`ServingContract` set to advertise. It is configuration provenance inside the
+existing trusted operator/Worker boundary, not cryptographic attestation of the
+referenced artifacts.
+
+The daemon parses this declaration before registration, verifies that every
+declared contract capability is also in `worker.capabilities`, and, when a
+managed RuntimeProvider deployment is used, requires its provider ID to match
+the runtime deployment. It creates the per-start `RuntimeInstance` epoch only
+after the selected executor/runtime has been prepared and its capabilities have
+been validated. Restarting the Worker therefore preserves the immutable
+deployment revision but produces a fresh epoch.
+
 Example GPU Worker resource section:
 
 ```toml
