@@ -19,6 +19,11 @@ __all__ = [
     "RuntimeDeploymentAcceptanceRunner",
     "render_runtime_deployment_markdown",
     "write_runtime_deployment_evidence",
+    "OpenCodeChatAcceptanceError",
+    "OpenCodeChatAcceptanceEvidence",
+    "OpenCodeChatAcceptanceRunner",
+    "render_opencode_chat_markdown",
+    "write_opencode_chat_evidence",
 ]
 
 from .runtime_deployment import (
@@ -27,4 +32,13 @@ from .runtime_deployment import (
     RuntimeDeploymentAcceptanceRunner,
     render_runtime_deployment_markdown,
     write_runtime_deployment_evidence,
+)
+
+
+from .opencode_chat import (
+    OpenCodeChatAcceptanceError,
+    OpenCodeChatAcceptanceEvidence,
+    OpenCodeChatAcceptanceRunner,
+    render_opencode_chat_markdown,
+    write_opencode_chat_evidence,
 )
