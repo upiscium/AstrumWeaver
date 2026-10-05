@@ -489,3 +489,69 @@ def test_normalize_rejects_invalid_provider_shape():
         )
     assert error.value.code == "invalid_provider_response"
     assert error.value.status_code == 502
+
+
+
+def test_parallel_tool_calls_false_is_preserved_but_true_is_unverified():
+    value = profile()
+    compiled = compile_chat_request(
+        {
+            "model": value.profile_id,
+            "messages": [{"role": "user", "content": "inspect"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {"name": "inspect", "parameters": {}},
+                }
+            ],
+            "tool_choice": "auto",
+            "parallel_tool_calls": False,
+        },
+        value,
+        request_size_bytes=512,
+    )
+    assert compiled.payload["request"]["parallel_tool_calls"] is False
+
+    with pytest.raises(ChatGatewayError) as error:
+        compile_chat_request(
+            {
+                "model": value.profile_id,
+                "messages": [{"role": "user", "content": "inspect"}],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {"name": "inspect", "parameters": {}},
+                    }
+                ],
+                "tool_choice": "auto",
+                "parallel_tool_calls": True,
+            },
+            value,
+            request_size_bytes=512,
+        )
+    assert error.value.code == "unsupported_feature"
+
+
+def test_tools_profile_requires_template_artifact_identity():
+    value = profile()
+    deployment = replace(
+        value.resolved.deployment,
+        template_artifact_sha256=None,
+    )
+    contract = replace(
+        value.resolved.contract,
+        deployment_revision=deployment.revision,
+    )
+    logical = replace(
+        value.resolved.profile,
+        deployment_revision=deployment.revision,
+        serving_contract_revision=contract.revision,
+    )
+    resolved = resolve_profile(logical, contract, deployment)
+
+    with pytest.raises(ChatGatewayError, match="template artifact"):
+        ChatGatewayProfile(
+            resolved=resolved,
+            adapter_id=LLAMA_CPP_CHAT_ADAPTER,
+            request_timeout_seconds=30,
+        )
