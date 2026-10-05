@@ -3,6 +3,7 @@
 from .contracts import AcceleratorDevice, JobRequirements, ResourceShape, WorkerSpec
 from .execution import (
     ArtifactRef,
+    JobExecutionError,
     JobExecutor,
     JobRequest,
     JobResult,
@@ -14,6 +15,7 @@ from .scheduling import MatchResult, match_worker, worker_matches
 __all__ = [
     "AcceleratorDevice",
     "ArtifactRef",
+    "JobExecutionError",
     "JobExecutor",
     "JobRequest",
     "JobRequirements",
