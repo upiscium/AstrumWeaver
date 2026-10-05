@@ -316,6 +316,36 @@ ASTRUMWEAVER_CLIENT_TOKEN   # required only for client_auth = "bearer"
 
 Production Control never falls back to an in-memory repository.
 
+### Optional Stage A chat gateway
+
+#94 Stage A may mount the bounded non-streaming edge surface on the same
+Control process:
+
+```toml
+[chat_gateway]
+enabled = true
+catalog = "/etc/astrumweaver/chat-catalog.json"
+poll_interval_seconds = 0.05
+```
+
+When omitted or `enabled = false`, existing v1 Control routes are unchanged.
+The catalog contains only reviewed logical serving profiles and their resolved
+#93 deployment/contract identities. `GET /v1/models` exposes those profile IDs,
+not runtime model discovery.
+
+The Stage A routes reuse the configured Client authentication policy:
+
+```text
+GET  /v1/models
+POST /v1/chat/completions
+```
+
+`POST /v1/chat/completions` is non-streaming only. It compiles the validated
+request into an opaque durable `llm.chat` Job, waits within the profile
+deadline, and cancels only that owned Job on gateway timeout or disconnect.
+`stream=true` remains unsupported until the separate #94 Stage B fenced event
+channel exists.
+
 ## Database migration
 
 Apply packaged migrations explicitly:

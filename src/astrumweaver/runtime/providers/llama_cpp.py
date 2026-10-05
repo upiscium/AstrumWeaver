@@ -14,7 +14,15 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from ...execution import JobExecutor, JobRequest, JobResult, ResidencyItem, ResidencyReport
+from ...execution import (
+    JobExecutionError,
+    JobExecutor,
+    JobRequest,
+    JobResult,
+    ResidencyItem,
+    ResidencyReport,
+)
+from ...gateway.chat import CHAT_JOB_SCHEMA, LLAMA_CPP_CHAT_ADAPTER
 from ..contracts import (
     CompatibilityReason,
     GPUTopology,
@@ -69,6 +77,8 @@ class LlamaCppProviderConfig:
     n_cpu_ffn: int | None = None
     offline: bool = True
     no_webui: bool = True
+    jinja: bool = False
+    chat_template_file: str | None = None
 
     def __post_init__(self) -> None:
         base_url = _nonblank(self.base_url, "base_url").rstrip("/")
@@ -100,6 +110,18 @@ class LlamaCppProviderConfig:
             raise ValueError("context_size must not be negative")
         if self.main_gpu < 0:
             raise ValueError("main_gpu must not be negative")
+        if type(self.jinja) is not bool:
+            raise TypeError("jinja must be boolean")
+        if self.chat_template_file is not None:
+            template = _nonblank(
+                self.chat_template_file,
+                "chat_template_file",
+            )
+            if not self.jinja:
+                raise ValueError(
+                    "chat_template_file requires jinja=true"
+                )
+            object.__setattr__(self, "chat_template_file", template)
 
         if self.gpu_layers is not None:
             value = self.gpu_layers
@@ -203,6 +225,8 @@ class LlamaCppApi(Protocol):
 
     async def chat(self, payload: Mapping[str, Any]) -> Mapping[str, Any]: ...
 
+    async def chat_input_tokens(self, payload: Mapping[str, Any]) -> int: ...
+
     async def completion(self, payload: Mapping[str, Any]) -> Mapping[str, Any]: ...
 
     async def close(self) -> None: ...
@@ -265,6 +289,19 @@ class HttpLlamaCppApi:
             json=payload,
         )
 
+    async def chat_input_tokens(self, payload: Mapping[str, Any]) -> int:
+        body = await self._json(
+            "POST",
+            "/v1/chat/completions/input_tokens",
+            json=payload,
+        )
+        value = body.get("input_tokens")
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise RuntimeError(
+                "llama.cpp token-count endpoint returned invalid input_tokens"
+            )
+        return value
+
     async def completion(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         return await self._json(
             "POST",
@@ -299,6 +336,8 @@ class LlamaCppSubprocessController:
         launch_policy: LlamaCppLaunchPolicy,
         offline: bool,
         no_webui: bool,
+        jinja: bool = False,
+        chat_template_file: str | None = None,
     ) -> None:
         self.executable = executable
         self.base_url = base_url
@@ -309,6 +348,8 @@ class LlamaCppSubprocessController:
         self.launch_policy = launch_policy
         self.offline = offline
         self.no_webui = no_webui
+        self.jinja = jinja
+        self.chat_template_file = chat_template_file
         self._process: asyncio.subprocess.Process | None = None
 
     @property
@@ -343,6 +384,12 @@ class LlamaCppSubprocessController:
             args.append("--no-webui")
         if self.offline:
             args.append("--offline")
+        if self.jinja:
+            args.append("--jinja")
+        if self.chat_template_file is not None:
+            args.extend(
+                ["--chat-template-file", self.chat_template_file]
+            )
 
         if self.gpu_uuids:
             visible = [f"CUDA{index}" for index in range(len(self.gpu_uuids))]
@@ -431,11 +478,22 @@ class LlamaCppExecutor(JobExecutor):
         model_ref: str,
         model_alias: str,
         residency_metadata: Mapping[str, Any],
+        tools_enabled: bool = False,
     ) -> None:
         self.api = api
         self.model_ref = _nonblank(model_ref, "model_ref")
         self.model_alias = _nonblank(model_alias, "model_alias")
         self.residency_metadata = dict(residency_metadata)
+        if type(tools_enabled) is not bool:
+            raise TypeError("tools_enabled must be boolean")
+        self.tools_enabled = tools_enabled
+        self.serving_features = {
+            "llm.chat": (
+                frozenset({"tools"})
+                if tools_enabled
+                else frozenset()
+            )
+        }
         self._inflight: dict[str, asyncio.Task[Mapping[str, Any]]] = {}
 
     def _payload(self, job: JobRequest) -> dict[str, Any]:
@@ -452,16 +510,153 @@ class LlamaCppExecutor(JobExecutor):
         payload["stream"] = False
         return payload
 
+    def _gateway_chat_payload(
+        self,
+        job: JobRequest,
+    ) -> tuple[dict[str, Any], dict[str, int]] | None:
+        envelope = dict(job.payload)
+        if envelope.get("schema_version") != CHAT_JOB_SCHEMA:
+            return None
+        if set(envelope) != {"schema_version", "adapter_id", "request", "limits"}:
+            raise JobExecutionError(
+                "invalid_chat_job",
+                "chat job envelope uses unsupported fields",
+                retryable=False,
+            )
+        if envelope.get("adapter_id") != LLAMA_CPP_CHAT_ADAPTER:
+            raise JobExecutionError(
+                "unsupported_chat_adapter",
+                "chat job targets an unsupported provider adapter",
+                retryable=False,
+            )
+        raw_request = envelope.get("request")
+        raw_limits = envelope.get("limits")
+        if not isinstance(raw_request, Mapping) or not isinstance(raw_limits, Mapping):
+            raise JobExecutionError(
+                "invalid_chat_job",
+                "chat job request/limits must be objects",
+                retryable=False,
+            )
+        request = dict(raw_request)
+        if not isinstance(request.get("messages"), list):
+            raise JobExecutionError(
+                "invalid_chat_job",
+                "chat job requires a messages array",
+                retryable=False,
+            )
+        if request.get("stream") is not False:
+            raise JobExecutionError(
+                "streaming_not_supported",
+                "Stage A chat jobs must be non-streaming",
+                retryable=False,
+            )
+        output_tokens = request.get("max_tokens")
+        if (
+            isinstance(output_tokens, bool)
+            or not isinstance(output_tokens, int)
+            or output_tokens < 1
+        ):
+            raise JobExecutionError(
+                "invalid_chat_job",
+                "chat job max_tokens must be a positive integer",
+                retryable=False,
+            )
+        limits: dict[str, int] = {}
+        for key in ("input_tokens", "output_tokens", "total_tokens"):
+            value = raw_limits.get(key)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise JobExecutionError(
+                    "invalid_chat_job",
+                    "chat job token limits must be positive integers",
+                    retryable=False,
+                )
+            limits[key] = value
+        if (
+            limits["input_tokens"] > limits["total_tokens"]
+            or limits["output_tokens"] > limits["total_tokens"]
+        ):
+            raise JobExecutionError(
+                "invalid_chat_job",
+                "chat job token limit exceeds total context",
+                retryable=False,
+            )
+        if output_tokens > limits["output_tokens"]:
+            raise JobExecutionError(
+                "output_limit_exceeded",
+                "chat output budget exceeds the bound serving profile",
+                retryable=False,
+            )
+        supplied_model = request.pop("model", None)
+        if supplied_model is not None:
+            raise JobExecutionError(
+                "invalid_chat_job",
+                "gateway chat job must not supply a runtime model name",
+                retryable=False,
+            )
+        uses_tools = bool(request.get("tools"))
+        tool_choice = request.get("tool_choice")
+        uses_tools = uses_tools or (
+            tool_choice is not None and tool_choice != "none"
+        )
+        for message in request.get("messages", ()):
+            if isinstance(message, Mapping) and (
+                message.get("role") == "tool"
+                or message.get("tool_calls") is not None
+            ):
+                uses_tools = True
+                break
+        if uses_tools and not self.tools_enabled:
+            raise JobExecutionError(
+                "unsupported_feature",
+                "llama.cpp serving deployment does not enable structured tools",
+                retryable=False,
+            )
+
+        request["model"] = self.model_alias
+        request["stream"] = False
+        return request, limits
+
+    async def _enforce_chat_limits(
+        self,
+        payload: Mapping[str, Any],
+        limits: Mapping[str, int],
+    ) -> None:
+        input_tokens = await self.api.chat_input_tokens(payload)
+        output_tokens = int(payload["max_tokens"])
+        if input_tokens > limits["input_tokens"]:
+            raise JobExecutionError(
+                "context_length_exceeded",
+                "chat input exceeds the deployed input-token limit",
+                retryable=False,
+            )
+        if input_tokens + output_tokens > limits["total_tokens"]:
+            raise JobExecutionError(
+                "context_length_exceeded",
+                "chat input plus output reservation exceeds deployed context",
+                retryable=False,
+            )
+
     async def execute(self, job: JobRequest) -> JobResult:
         if job.capability not in self.capabilities:
             raise ValueError(
                 f"llama.cpp executor does not support capability: {job.capability}"
             )
 
-        payload = self._payload(job)
+        gateway_chat = (
+            self._gateway_chat_payload(job)
+            if job.capability == "llm.chat"
+            else None
+        )
+        if gateway_chat is None:
+            payload = self._payload(job)
+        else:
+            payload, limits = gateway_chat
+
         if job.capability == "llm.chat":
             if not isinstance(payload.get("messages"), list):
                 raise ValueError("llm.chat requires a messages list")
+            if gateway_chat is not None:
+                await self._enforce_chat_limits(payload, limits)
             call = self.api.chat(payload)
         else:
             if not isinstance(payload.get("prompt"), str):
@@ -548,6 +743,7 @@ class LlamaCppManagedRuntime(ManagedRuntime):
         model_alias: str,
         startup_timeout_seconds: float,
         launch_policy: LlamaCppLaunchPolicy,
+        tools_enabled: bool = False,
     ) -> None:
         self.api = api
         self.process = process
@@ -561,6 +757,7 @@ class LlamaCppManagedRuntime(ManagedRuntime):
             api=api,
             model_ref=model_ref,
             model_alias=model_alias,
+            tools_enabled=tools_enabled,
             residency_metadata={
                 "residency_policy": context.demand.residency_policy.value,
                 "gpu_topology": context.demand.gpu_topology.value,
@@ -997,6 +1194,8 @@ class LlamaCppProvider(RuntimeProvider):
                 "n_cpu_ffn": policy.n_cpu_ffn,
                 "offline": self.config.offline,
                 "no_webui": self.config.no_webui,
+                "jinja": self.config.jinja,
+                "chat_template_file": self.config.chat_template_file,
                 "capabilities": sorted(LLAMA_CPP_CAPABILITIES),
             },
             model_preparation=ModelPreparationPolicy.REFERENCE_ONLY,
@@ -1025,6 +1224,22 @@ class LlamaCppProvider(RuntimeProvider):
         )
         model_alias = str(cfg.get("model_alias") or "astrumweaver")
         executable = str(cfg.get("executable") or self.config.executable)
+        jinja = cfg.get("jinja", self.config.jinja)
+        if type(jinja) is not bool:
+            raise ValueError("llama.cpp deployment jinja must be boolean")
+        raw_template = cfg.get(
+            "chat_template_file",
+            self.config.chat_template_file,
+        )
+        chat_template_file = (
+            None
+            if raw_template is None
+            else _nonblank(str(raw_template), "chat_template_file")
+        )
+        if chat_template_file is not None and not jinja:
+            raise ValueError(
+                "llama.cpp chat_template_file requires jinja=true"
+            )
 
         split_mode = LlamaCppSplitMode(
             str(cfg.get("split_mode") or _launch_policy(context, self.config).split_mode)
@@ -1075,6 +1290,8 @@ class LlamaCppProvider(RuntimeProvider):
             launch_policy=policy,
             offline=bool(cfg.get("offline", self.config.offline)),
             no_webui=bool(cfg.get("no_webui", self.config.no_webui)),
+            jinja=jinja,
+            chat_template_file=chat_template_file,
         )
 
         return LlamaCppManagedRuntime(
@@ -1085,4 +1302,5 @@ class LlamaCppProvider(RuntimeProvider):
             model_alias=model_alias,
             startup_timeout_seconds=self.config.startup_timeout_seconds,
             launch_policy=policy,
+            tools_enabled=jinja,
         )
