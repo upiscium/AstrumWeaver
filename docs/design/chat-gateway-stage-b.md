@@ -32,7 +32,12 @@ the in-memory reference repository. Limits are explicit:
 
 - maximum event payload bytes;
 - maximum events retained per Job;
+- maximum aggregate event bytes retained per Job;
 - bounded read page size.
+
+Production Control exposes these as `[control]` settings
+(`event_max_count`, `event_max_payload_bytes`,
+`event_max_total_bytes`, and `event_max_read`) with bounded defaults.
 
 An append that would exceed the buffer fails closed. The Worker treats failed
 publication as loss of streaming authority and aborts the provider stream rather
