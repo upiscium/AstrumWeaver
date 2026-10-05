@@ -14,7 +14,15 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from ...execution import JobExecutor, JobRequest, JobResult, ResidencyItem, ResidencyReport
+from ...execution import (
+    JobExecutionError,
+    JobExecutor,
+    JobRequest,
+    JobResult,
+    ResidencyItem,
+    ResidencyReport,
+)
+from ...gateway.chat import CHAT_JOB_SCHEMA, LLAMA_CPP_CHAT_ADAPTER
 from ..contracts import (
     CompatibilityReason,
     GPUTopology,
@@ -203,6 +211,8 @@ class LlamaCppApi(Protocol):
 
     async def chat(self, payload: Mapping[str, Any]) -> Mapping[str, Any]: ...
 
+    async def chat_input_tokens(self, payload: Mapping[str, Any]) -> int: ...
+
     async def completion(self, payload: Mapping[str, Any]) -> Mapping[str, Any]: ...
 
     async def close(self) -> None: ...
@@ -264,6 +274,19 @@ class HttpLlamaCppApi:
             "/v1/chat/completions",
             json=payload,
         )
+
+    async def chat_input_tokens(self, payload: Mapping[str, Any]) -> int:
+        body = await self._json(
+            "POST",
+            "/v1/chat/completions/input_tokens",
+            json=payload,
+        )
+        value = body.get("input_tokens")
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise RuntimeError(
+                "llama.cpp token-count endpoint returned invalid input_tokens"
+            )
+        return value
 
     async def completion(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         return await self._json(
@@ -452,16 +475,131 @@ class LlamaCppExecutor(JobExecutor):
         payload["stream"] = False
         return payload
 
+    def _gateway_chat_payload(
+        self,
+        job: JobRequest,
+    ) -> tuple[dict[str, Any], dict[str, int]] | None:
+        envelope = dict(job.payload)
+        if envelope.get("schema_version") != CHAT_JOB_SCHEMA:
+            return None
+        if set(envelope) != {"schema_version", "adapter_id", "request", "limits"}:
+            raise JobExecutionError(
+                "invalid_chat_job",
+                "chat job envelope uses unsupported fields",
+                retryable=False,
+            )
+        if envelope.get("adapter_id") != LLAMA_CPP_CHAT_ADAPTER:
+            raise JobExecutionError(
+                "unsupported_chat_adapter",
+                "chat job targets an unsupported provider adapter",
+                retryable=False,
+            )
+        raw_request = envelope.get("request")
+        raw_limits = envelope.get("limits")
+        if not isinstance(raw_request, Mapping) or not isinstance(raw_limits, Mapping):
+            raise JobExecutionError(
+                "invalid_chat_job",
+                "chat job request/limits must be objects",
+                retryable=False,
+            )
+        request = dict(raw_request)
+        if not isinstance(request.get("messages"), list):
+            raise JobExecutionError(
+                "invalid_chat_job",
+                "chat job requires a messages array",
+                retryable=False,
+            )
+        if request.get("stream") is not False:
+            raise JobExecutionError(
+                "streaming_not_supported",
+                "Stage A chat jobs must be non-streaming",
+                retryable=False,
+            )
+        output_tokens = request.get("max_tokens")
+        if (
+            isinstance(output_tokens, bool)
+            or not isinstance(output_tokens, int)
+            or output_tokens < 1
+        ):
+            raise JobExecutionError(
+                "invalid_chat_job",
+                "chat job max_tokens must be a positive integer",
+                retryable=False,
+            )
+        limits: dict[str, int] = {}
+        for key in ("input_tokens", "output_tokens", "total_tokens"):
+            value = raw_limits.get(key)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise JobExecutionError(
+                    "invalid_chat_job",
+                    "chat job token limits must be positive integers",
+                    retryable=False,
+                )
+            limits[key] = value
+        if limits["input_tokens"] + limits["output_tokens"] > limits["total_tokens"]:
+            raise JobExecutionError(
+                "invalid_chat_job",
+                "chat job limits exceed total context",
+                retryable=False,
+            )
+        if output_tokens > limits["output_tokens"]:
+            raise JobExecutionError(
+                "output_limit_exceeded",
+                "chat output budget exceeds the bound serving profile",
+                retryable=False,
+            )
+        supplied_model = request.pop("model", None)
+        if supplied_model is not None:
+            raise JobExecutionError(
+                "invalid_chat_job",
+                "gateway chat job must not supply a runtime model name",
+                retryable=False,
+            )
+        request["model"] = self.model_alias
+        request["stream"] = False
+        return request, limits
+
+    async def _enforce_chat_limits(
+        self,
+        payload: Mapping[str, Any],
+        limits: Mapping[str, int],
+    ) -> None:
+        input_tokens = await self.api.chat_input_tokens(payload)
+        output_tokens = int(payload["max_tokens"])
+        if input_tokens > limits["input_tokens"]:
+            raise JobExecutionError(
+                "context_length_exceeded",
+                "chat input exceeds the deployed input-token limit",
+                retryable=False,
+            )
+        if input_tokens + output_tokens > limits["total_tokens"]:
+            raise JobExecutionError(
+                "context_length_exceeded",
+                "chat input plus output reservation exceeds deployed context",
+                retryable=False,
+            )
+
     async def execute(self, job: JobRequest) -> JobResult:
         if job.capability not in self.capabilities:
             raise ValueError(
                 f"llama.cpp executor does not support capability: {job.capability}"
             )
 
-        payload = self._payload(job)
+        gateway_chat = (
+            self._gateway_chat_payload(job)
+            if job.capability == "llm.chat"
+            else None
+        )
+        if gateway_chat is None:
+            payload = self._payload(job)
+        else:
+            payload, limits = gateway_chat
+
         if job.capability == "llm.chat":
             if not isinstance(payload.get("messages"), list):
                 raise ValueError("llm.chat requires a messages list")
+            if gateway_chat is not None:
+                await self._enforce_chat_limits(payload, limits)
             call = self.api.chat(payload)
         else:
             if not isinstance(payload.get("prompt"), str):
