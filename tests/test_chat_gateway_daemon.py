@@ -113,7 +113,7 @@ def test_control_daemon_mounts_chat_gateway_only_when_enabled(tmp_path, monkeypa
     )
 
     app = build_app(str(config))
-    paths = route_paths(app)
+    paths = set(app.openapi()["paths"])
     assert "/v1/models" in paths
     assert "/v1/chat/completions" in paths
 
@@ -123,7 +123,7 @@ def test_control_daemon_mounts_chat_gateway_only_when_enabled(tmp_path, monkeypa
         encoding="utf-8",
     )
     app = build_app(str(disabled))
-    paths = {route.path for route in app.routes}
+    paths = set(app.openapi()["paths"])
     assert "/v1/models" not in paths
     assert "/v1/chat/completions" not in paths
 
