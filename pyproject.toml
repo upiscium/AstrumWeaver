@@ -32,6 +32,7 @@ astrumweaver-worker-mode = "astrumweaver.worker.mode:main"
 astrumweaver-migrate = "astrumweaver.control.migrate:main"
 astrumweaver-hardware-accept = "astrumweaver.validation.hardware:main"
 astrumweaver-runtime-deployment-accept = "astrumweaver.validation.runtime_deployment:main"
+astrumweaver-opencode-chat-accept = "astrumweaver.validation.opencode_chat:main"
 astrumweaver-setup-tui = "astrumweaver.setup.tui:main"
 
 [tool.hatch.build.targets.wheel]
