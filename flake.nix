@@ -198,6 +198,7 @@
           test -x ${worker}/bin/astrumweaver-gpu-isolation-probe
           test -x ${worker}/bin/astrumweaver-setup-tui
           test -x ${worker}/bin/astrumweaver-runtime-deployment-accept
+          test -x ${worker}/bin/astrumweaver-opencode-chat-accept
 
           # Execute the actual packaged TUI wrapper through a profile-like
           # symlink.  The wrapper must pass that lexical bin directory into
@@ -291,6 +292,11 @@ EOF
         runtime-deployment-accept-cli = pkgs.runCommand "astrumweaver-runtime-deployment-accept-cli" { } ''
           test -x ${worker}/bin/astrumweaver-runtime-deployment-accept
           ${worker}/bin/astrumweaver-runtime-deployment-accept --help >/dev/null
+          touch "$out"
+        '';
+        opencode-chat-accept-cli = pkgs.runCommand "astrumweaver-opencode-chat-accept-cli" { } ''
+          test -x ${worker}/bin/astrumweaver-opencode-chat-accept
+          ${worker}/bin/astrumweaver-opencode-chat-accept --help >/dev/null
           touch "$out"
         '';
         runtime-module-eval = pkgs.runCommand "astrumweaver-runtime-module-eval" {
