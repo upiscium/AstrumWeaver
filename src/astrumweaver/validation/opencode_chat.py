@@ -20,6 +20,7 @@ from .hardware import REVISION_PATTERN
 
 PINNED_OPENCODE_VERSION = "1.18.30"
 PINNED_OPENCODE_PACKAGE_BLOB = "c7c467037d109b457884484af81d4518527816c5"
+PINNED_OPENCODE_LOCK_BLOB = "efe01bf957f3e825d822997161aed6cb3efe3728"
 PINNED_OPENCODE_SESSION_BLOB = "a99f8acff20c5d64d0b6cb90df480218bb1daddc"
 PINNED_AI_SDK_VERSION = "6.0.168"
 PINNED_OPENAI_COMPATIBLE_VERSION = "2.0.41"
@@ -50,6 +51,7 @@ class OpenCodeChatAcceptanceEvidence:
     astrumweaver_revision: str
     opencode_version: str
     opencode_package_manifest_sha1: str
+    opencode_lock_sha1: str
     opencode_session_source_sha1: str
     ai_sdk_version: str
     openai_compatible_version: str
@@ -410,6 +412,7 @@ class OpenCodeChatAcceptanceRunner:
             astrumweaver_revision=self.astrumweaver_revision,
             opencode_version=PINNED_OPENCODE_VERSION,
             opencode_package_manifest_sha1=PINNED_OPENCODE_PACKAGE_BLOB,
+            opencode_lock_sha1=PINNED_OPENCODE_LOCK_BLOB,
             opencode_session_source_sha1=PINNED_OPENCODE_SESSION_BLOB,
             ai_sdk_version=PINNED_AI_SDK_VERSION,
             openai_compatible_version=PINNED_OPENAI_COMPATIBLE_VERSION,
@@ -442,6 +445,7 @@ def render_opencode_chat_markdown(
             "OpenCode package manifest SHA-1",
             evidence.opencode_package_manifest_sha1,
         ),
+        ("OpenCode lockfile SHA-1", evidence.opencode_lock_sha1),
         (
             "OpenCode session source SHA-1",
             evidence.opencode_session_source_sha1,
