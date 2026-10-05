@@ -132,10 +132,13 @@ class ChatGatewayProfile:
                 "invalid_profile",
                 "chat gateway profile is missing required bounded limits",
             )
-        if limits["input_tokens"] + limits["output_tokens"] > limits["total_tokens"]:
+        if (
+            limits["input_tokens"] > limits["total_tokens"]
+            or limits["output_tokens"] > limits["total_tokens"]
+        ):
             raise ChatGatewayError(
                 "invalid_profile",
-                "chat input/output limits exceed the total context limit",
+                "chat input/output limit exceeds the total context limit",
             )
         if (
             isinstance(self.request_timeout_seconds, bool)
