@@ -147,6 +147,7 @@ class ChatGatewayService:
             "output_limit_exceeded",
             "streaming_not_supported",
             "unsupported_chat_adapter",
+            "unsupported_feature",
         }:
             message = error.get("message")
             raise ChatGatewayError(
@@ -186,6 +187,8 @@ class ChatGatewayService:
             request_size_bytes=request_size_bytes,
         )
 
+        loop = asyncio.get_running_loop()
+        stop_at = loop.time() + profile.request_timeout_seconds
         now = utc_now()
         deadline_at = now + timedelta(seconds=profile.request_timeout_seconds)
         try:
@@ -226,8 +229,6 @@ class ChatGatewayService:
             ) from exc
 
         job_id = record.job_id
-        loop = asyncio.get_running_loop()
-        stop_at = loop.time() + profile.request_timeout_seconds
         try:
             while True:
                 current = await asyncio.to_thread(self.repository.get_job, job_id)
