@@ -20,6 +20,7 @@ from ..control.serde import worker_spec_from_dict
 from ..transport import PROTOCOL_VERSION, SERVING_EXTENSION
 from ..execution import JobExecutionError, JobExecutor, JobResult
 from ..serving import (
+    ServingDeploymentDeclaration,
     ServingJobBinding,
     WorkerServingAdvertisement,
     worker_serving_matches,
@@ -119,6 +120,38 @@ def require_executor_capabilities(
             "executor does not support advertised capabilities: "
             + ", ".join(sorted(missing))
         )
+
+
+def require_executor_serving_features(
+    executor: JobExecutor,
+    declaration: ServingDeploymentDeclaration,
+) -> None:
+    raw = getattr(executor, "serving_features", {})
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, Mapping):
+        raise TypeError("executor serving_features must be a mapping")
+
+    for contract in declaration.contracts:
+        values = raw.get(contract.capability, ())
+        if isinstance(values, str):
+            values = (values,)
+        try:
+            supported = frozenset(str(value).strip() for value in values)
+        except TypeError as exc:
+            raise TypeError(
+                "executor serving feature values must be iterable"
+            ) from exc
+        if any(not value for value in supported):
+            raise ValueError(
+                "executor serving features must be non-blank strings"
+            )
+        missing = contract.features - supported
+        if missing:
+            raise RuntimeError(
+                "executor does not support advertised serving features for "
+                f"{contract.capability}: " + ", ".join(sorted(missing))
+            )
 
 
 def load_executor(specifier: str, config: Mapping[str, Any] | None = None) -> JobExecutor:
