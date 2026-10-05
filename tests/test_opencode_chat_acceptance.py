@@ -4,6 +4,7 @@ import json
 import subprocess
 from pathlib import Path
 
+import httpx
 import pytest
 
 from astrumweaver.validation.opencode_chat import (
@@ -22,6 +23,7 @@ from astrumweaver.validation.opencode_chat import (
 
 DEPLOYMENT = "sha256:" + "1" * 64
 CONTRACT = "sha256:" + "2" * 64
+PROFILE = "sha256:" + "3" * 64
 
 
 def completed(args, *, stdout="", stderr="", returncode=0):
@@ -82,12 +84,50 @@ class SuccessfulOpenCode:
         )
 
 
-def runner(command_runner):
+def gateway_response(
+    *,
+    profile_revision=PROFILE,
+    deployment_revision=DEPLOYMENT,
+    serving_contract_revision=CONTRACT,
+    context_tokens=5120,
+    output_tokens=1024,
+):
+    return httpx.Response(
+        200,
+        json={
+            "object": "list",
+            "data": [
+                {
+                    "id": "local-code-v1",
+                    "object": "model",
+                    "created": 0,
+                    "owned_by": "astrumweaver",
+                    "x_astrumweaver": {
+                        "profile_revision": profile_revision,
+                        "deployment_revision": deployment_revision,
+                        "serving_contract_revision": serving_contract_revision,
+                        "operation_schema": "openai-chat-completions-v1",
+                        "features": ["tools"],
+                        "effective_limits": {
+                            "input_tokens": 4096,
+                            "output_tokens": output_tokens,
+                            "request_bytes": 65536,
+                            "total_tokens": context_tokens,
+                        },
+                    },
+                }
+            ],
+        },
+    )
+
+
+def runner(command_runner, gateway_get=None):
     return OpenCodeChatAcceptanceRunner(
         opencode="/opt/opencode/bin/opencode",
         base_url="https://gateway.example.invalid/v1",
         client_token="private-token",
         profile_id="local-code-v1",
+        profile_revision=PROFILE,
         astrumweaver_revision="deadbeef12345678",
         deployment_revision=DEPLOYMENT,
         serving_contract_revision=CONTRACT,
@@ -95,6 +135,11 @@ def runner(command_runner):
         output_tokens=1024,
         timeout_seconds=30,
         command_runner=command_runner,
+        gateway_get=(
+            (lambda *_args, **_kwargs: gateway_response())
+            if gateway_get is None
+            else gateway_get
+        ),
     )
 
 
@@ -105,6 +150,8 @@ def test_real_client_runner_uses_isolated_pinned_opencode_shape():
 
     assert evidence.overall == "PASS"
     assert evidence.opencode_version == "1.18.30"
+    assert evidence.profile_revision == PROFILE
+    assert evidence.gateway_identity_preflight == "PASS"
     assert evidence.opencode_package_manifest_sha1 == PINNED_OPENCODE_PACKAGE_BLOB
     assert evidence.opencode_lock_sha1 == PINNED_OPENCODE_LOCK_BLOB
     assert evidence.opencode_session_source_sha1 == PINNED_OPENCODE_SESSION_BLOB
@@ -182,6 +229,8 @@ def test_public_evidence_omits_private_gateway_and_acceptance_payloads():
     assert "| AI SDK version | 6.0.168 |" in markdown
     assert "| OpenAI-compatible adapter version | 2.0.41 |" in markdown
     assert "| Logical profile | local-code-v1 |" in markdown
+    assert f"| Logical profile revision | {PROFILE} |" in markdown
+    assert "| Gateway identity preflight | PASS |" in markdown
     assert "| Structured tool round trip | PASS |" in markdown
     assert "| Overall | PASS |" in markdown
 
@@ -240,6 +289,7 @@ def test_gateway_url_rejects_embedded_credentials_and_non_v1_shapes(url):
             base_url=url,
             client_token="token",
             profile_id="local-code-v1",
+            profile_revision=PROFILE,
             astrumweaver_revision="deadbeef12345678",
             deployment_revision=DEPLOYMENT,
             serving_contract_revision=CONTRACT,
@@ -272,3 +322,41 @@ def test_tool_smoke_requires_completed_structured_tool_event():
 
     with pytest.raises(OpenCodeChatAcceptanceError, match="structured tool"):
         runner(fake).run()
+
+
+def test_gateway_identity_mismatch_fails_before_opencode_invocation():
+    calls = []
+
+    def opencode(args, **kwargs):
+        calls.append((args, kwargs))
+        return completed(args, stdout="1.18.30\n")
+
+    with pytest.raises(
+        OpenCodeChatAcceptanceError,
+        match="identity does not match",
+    ):
+        runner(
+            opencode,
+            gateway_get=lambda *_args, **_kwargs: gateway_response(
+                deployment_revision="sha256:" + "9" * 64,
+            ),
+        ).run()
+
+    assert calls == []
+
+
+def test_gateway_preflight_uses_client_authority_without_leaking_it():
+    requests = []
+
+    def gateway_get(url, **kwargs):
+        requests.append((url, kwargs))
+        return gateway_response()
+
+    evidence = runner(SuccessfulOpenCode(), gateway_get=gateway_get).run()
+
+    assert evidence.overall == "PASS"
+    assert len(requests) == 1
+    url, kwargs = requests[0]
+    assert url == "https://gateway.example.invalid/v1/models"
+    assert kwargs["headers"]["authorization"] == "Bearer private-token"
+    assert kwargs["timeout"] == 30

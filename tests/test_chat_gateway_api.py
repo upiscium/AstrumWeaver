@@ -237,6 +237,19 @@ async def test_models_expose_configured_profile_not_runtime_inventory():
                 "object": "model",
                 "created": 0,
                 "owned_by": "astrumweaver",
+                "x_astrumweaver": {
+                    "profile_revision": gateway.resolved.profile_revision,
+                    "deployment_revision": gateway.resolved.deployment.revision,
+                    "serving_contract_revision": gateway.resolved.contract.revision,
+                    "operation_schema": "openai-chat-completions-v1",
+                    "features": ["tools"],
+                    "effective_limits": {
+                        "input_tokens": 4096,
+                        "output_tokens": 1024,
+                        "request_bytes": 65536,
+                        "total_tokens": 5120,
+                    },
+                },
             }
         ],
     }
