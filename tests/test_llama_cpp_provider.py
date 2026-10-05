@@ -1103,6 +1103,7 @@ async def test_stage_a_gateway_chat_counts_actual_template_before_inference() ->
         model_ref="/models/qwen.gguf",
         model_alias="astrumweaver",
         residency_metadata={},
+        tools_enabled=True,
     )
     arguments = '{"path":"README.md"}'
     result = await executor.execute(
@@ -1259,3 +1260,126 @@ async def test_stage_a_gateway_chat_rejects_wrong_adapter_before_provider_call()
     assert not error.value.retryable
     assert api.chat_token_payloads == []
     assert api.chat_payloads == []
+
+
+
+def test_llama_cpp_jinja_tool_mode_threads_into_setup_and_command() -> None:
+    provider = LlamaCppProvider(
+        LlamaCppProviderConfig(
+            jinja=True,
+            chat_template_file="/templates/tool-use.jinja",
+        )
+    )
+    intent = provider.setup_intent(context())
+    assert intent.configuration["jinja"] is True
+    assert (
+        intent.configuration["chat_template_file"]
+        == "/templates/tool-use.jinja"
+    )
+
+    controller = LlamaCppSubprocessController(
+        executable="llama-server",
+        base_url="http://127.0.0.1:8080",
+        model_ref="/models/qwen.gguf",
+        model_alias="astrumweaver",
+        gpu_uuids=("GPU-one",),
+        context_size=4096,
+        launch_policy=LlamaCppLaunchPolicy(
+            gpu_layers="all",
+            split_mode=LlamaCppSplitMode.NONE,
+            fit=False,
+            tensor_split=None,
+            fit_target_mb=None,
+            main_gpu=0,
+            cpu_moe=False,
+            n_cpu_moe=None,
+            n_cpu_ffn=None,
+        ),
+        offline=True,
+        no_webui=True,
+        jinja=True,
+        chat_template_file="/templates/tool-use.jinja",
+    )
+    command = controller.command()
+    assert "--jinja" in command
+    assert command[command.index("--chat-template-file") + 1] == (
+        "/templates/tool-use.jinja"
+    )
+
+
+def test_llama_cpp_template_file_requires_jinja_mode() -> None:
+    with pytest.raises(ValueError, match="requires jinja"):
+        LlamaCppProviderConfig(
+            jinja=False,
+            chat_template_file="/templates/tool-use.jinja",
+        )
+
+
+@pytest.mark.asyncio
+async def test_stage_a_tool_request_requires_jinja_runtime_evidence() -> None:
+    api = FakeApi()
+    executor = LlamaCppExecutor(
+        api=api,
+        model_ref="/models/qwen.gguf",
+        model_alias="astrumweaver",
+        residency_metadata={},
+        tools_enabled=False,
+    )
+
+    with pytest.raises(JobExecutionError) as error:
+        await executor.execute(
+            JobRequest(
+                job_id="tool-without-jinja",
+                capability="llm.chat",
+                payload={
+                    "schema_version": "chat-job-v1",
+                    "adapter_id": "llama-cpp-chat-v1",
+                    "request": {
+                        "messages": [{"role": "user", "content": "inspect"}],
+                        "tools": [
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": "read_file",
+                                    "parameters": {"type": "object"},
+                                },
+                            }
+                        ],
+                        "tool_choice": "auto",
+                        "max_tokens": 8,
+                        "stream": False,
+                    },
+                    "limits": {
+                        "input_tokens": 64,
+                        "output_tokens": 16,
+                        "total_tokens": 80,
+                    },
+                },
+            )
+        )
+
+    assert error.value.code == "unsupported_feature"
+    assert not error.value.retryable
+    assert api.chat_token_payloads == []
+    assert api.chat_payloads == []
+
+
+def test_llama_cpp_executor_advertises_tools_only_with_jinja() -> None:
+    api = FakeApi()
+    plain = LlamaCppExecutor(
+        api=api,
+        model_ref="/models/qwen.gguf",
+        model_alias="astrumweaver",
+        residency_metadata={},
+        tools_enabled=False,
+    )
+    tools = LlamaCppExecutor(
+        api=api,
+        model_ref="/models/qwen.gguf",
+        model_alias="astrumweaver",
+        residency_metadata={},
+        tools_enabled=True,
+    )
+
+    assert plain.serving_features["llm.chat"] == frozenset()
+    assert tools.serving_features["llm.chat"] == frozenset({"tools"})
