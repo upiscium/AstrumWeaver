@@ -7,7 +7,11 @@ from pathlib import Path
 import pytest
 
 from astrumweaver.validation.opencode_chat import (
-    PINNED_OPENCODE_CHAT_BLOB,
+    PINNED_AI_SDK_VERSION,
+    PINNED_OPENAI_COMPATIBLE_ERROR_BLOB,
+    PINNED_OPENAI_COMPATIBLE_STREAM_BLOB,
+    PINNED_OPENAI_COMPATIBLE_VERSION,
+    PINNED_OPENCODE_PACKAGE_BLOB,
     PINNED_OPENCODE_SESSION_BLOB,
     OpenCodeChatAcceptanceError,
     OpenCodeChatAcceptanceRunner,
@@ -100,8 +104,18 @@ def test_real_client_runner_uses_isolated_pinned_opencode_shape():
 
     assert evidence.overall == "PASS"
     assert evidence.opencode_version == "1.18.30"
+    assert evidence.opencode_package_manifest_sha1 == PINNED_OPENCODE_PACKAGE_BLOB
     assert evidence.opencode_session_source_sha1 == PINNED_OPENCODE_SESSION_BLOB
-    assert evidence.opencode_chat_source_sha1 == PINNED_OPENCODE_CHAT_BLOB
+    assert evidence.ai_sdk_version == PINNED_AI_SDK_VERSION
+    assert evidence.openai_compatible_version == PINNED_OPENAI_COMPATIBLE_VERSION
+    assert (
+        evidence.openai_compatible_stream_source_sha1
+        == PINNED_OPENAI_COMPATIBLE_STREAM_BLOB
+    )
+    assert (
+        evidence.openai_compatible_error_source_sha1
+        == PINNED_OPENAI_COMPATIBLE_ERROR_BLOB
+    )
     assert evidence.plain_chat_stream == "PASS"
     assert evidence.structured_tool_round_trip == "PASS"
     assert len(fake.calls) == 3
@@ -163,6 +177,8 @@ def test_public_evidence_omits_private_gateway_and_acceptance_payloads():
         assert private_value not in markdown
 
     assert "| OpenCode version | 1.18.30 |" in markdown
+    assert "| AI SDK version | 6.0.168 |" in markdown
+    assert "| OpenAI-compatible adapter version | 2.0.41 |" in markdown
     assert "| Logical profile | local-code-v1 |" in markdown
     assert "| Structured tool round trip | PASS |" in markdown
     assert "| Overall | PASS |" in markdown
