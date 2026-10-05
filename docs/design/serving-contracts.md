@@ -24,10 +24,14 @@ preflight does not reserve a replica: authoritative compatibility, capacity and
 runtime-instance identity are rechecked when a Worker atomically claims the Job.
 
 A serving Worker advertises one immutable deployment revision and one per-start
-`RuntimeInstance` epoch. Every serving claim, heartbeat/lifecycle mutation and
-terminal write is fenced by the current epoch. Re-registering the same idle
-Worker identity with the same deployment but a new epoch invalidates the old
-process without changing the admitted deployment contract.
+`RuntimeInstance` epoch. The Worker daemon loads an operator-reviewed
+`ServingDeploymentDeclaration`, checks its declared capabilities against the
+Worker and its provider against a managed runtime deployment when present, then
+creates the fresh epoch only after executor/runtime preparation and capability
+validation. Every serving claim, heartbeat/lifecycle mutation and terminal write
+is fenced by the current epoch. Re-registering the same idle Worker identity
+with the same deployment but a new epoch invalidates the old process without
+changing the admitted deployment contract.
 
 ## Identity and validation
 
@@ -64,8 +68,9 @@ caller; constructing a value neither starts a runtime nor verifies uniqueness.
 
 ## Validation scope
 
-Schema/unit coverage includes `tests/test_serving_contracts.py` and
-`tests/test_serving_control.py`. Durable integration coverage in
+Schema/unit coverage includes `tests/test_serving_contracts.py`,
+`tests/test_serving_control.py`, and the daemon declaration wiring in
+`tests/test_serving_daemon.py`. Durable integration coverage in
 `tests/test_postgres_serving.py` exercises actual PostgreSQL transactions,
 including competing claims, concurrent idempotency, cancellation/deadline races,
 stale runtime epochs and database identity constraints.
