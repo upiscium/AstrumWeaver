@@ -12,6 +12,8 @@ The command accepts exactly:
 - OpenCode `1.18.30`;
 - OpenCode package manifest SHA-1
   `c7c467037d109b457884484af81d4518527816c5`;
+- OpenCode `bun.lock` SHA-1
+  `efe01bf957f3e825d822997161aed6cb3efe3728`;
 - session source SHA-1
   `a99f8acff20c5d64d0b6cb90df480218bb1daddc`;
 - AI SDK `6.0.168`;
