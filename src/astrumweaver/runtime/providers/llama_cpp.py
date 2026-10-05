@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -15,6 +16,8 @@ from urllib.parse import urlsplit
 import httpx
 
 from ...execution import (
+    JobEvent,
+    JobEventSink,
     JobExecutionError,
     JobExecutor,
     JobRequest,
@@ -22,7 +25,11 @@ from ...execution import (
     ResidencyItem,
     ResidencyReport,
 )
-from ...gateway.chat import CHAT_JOB_SCHEMA, LLAMA_CPP_CHAT_ADAPTER
+from ...gateway.chat import (
+    CHAT_JOB_SCHEMA,
+    LLAMA_CPP_CHAT_ADAPTER,
+    validate_chat_stream_chunk,
+)
 from ..contracts import (
     CompatibilityReason,
     GPUTopology,
@@ -225,6 +232,11 @@ class LlamaCppApi(Protocol):
 
     async def chat(self, payload: Mapping[str, Any]) -> Mapping[str, Any]: ...
 
+    def chat_stream(
+        self,
+        payload: Mapping[str, Any],
+    ) -> AsyncIterator[Mapping[str, Any]]: ...
+
     async def chat_input_tokens(self, payload: Mapping[str, Any]) -> int: ...
 
     async def completion(self, payload: Mapping[str, Any]) -> Mapping[str, Any]: ...
@@ -288,6 +300,37 @@ class HttpLlamaCppApi:
             "/v1/chat/completions",
             json=payload,
         )
+
+    async def chat_stream(
+        self,
+        payload: Mapping[str, Any],
+    ) -> AsyncIterator[Mapping[str, Any]]:
+        async with self._client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json=dict(payload),
+        ) as response:
+            response.raise_for_status()
+            async for raw_line in response.aiter_lines():
+                line = raw_line.strip()
+                if not line or line.startswith(":"):
+                    continue
+                if not line.startswith("data:"):
+                    raise RuntimeError("llama.cpp stream returned invalid SSE framing")
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    return
+                try:
+                    value = json.loads(data)
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError(
+                        "llama.cpp stream returned invalid JSON"
+                    ) from exc
+                if not isinstance(value, Mapping):
+                    raise RuntimeError(
+                        "llama.cpp stream returned a non-object event"
+                    )
+                yield value
 
     async def chat_input_tokens(self, payload: Mapping[str, Any]) -> int:
         body = await self._json(
@@ -494,7 +537,7 @@ class LlamaCppExecutor(JobExecutor):
                 else frozenset()
             )
         }
-        self._inflight: dict[str, asyncio.Task[Mapping[str, Any]]] = {}
+        self._inflight: dict[str, asyncio.Task[Any]] = {}
 
     def _payload(self, job: JobRequest) -> dict[str, Any]:
         payload = dict(job.payload)
@@ -544,10 +587,10 @@ class LlamaCppExecutor(JobExecutor):
                 "chat job requires a messages array",
                 retryable=False,
             )
-        if request.get("stream") is not False:
+        if type(request.get("stream")) is not bool:
             raise JobExecutionError(
-                "streaming_not_supported",
-                "Stage A chat jobs must be non-streaming",
+                "invalid_chat_job",
+                "chat job stream flag must be boolean",
                 retryable=False,
             )
         output_tokens = request.get("max_tokens")
@@ -613,7 +656,6 @@ class LlamaCppExecutor(JobExecutor):
             )
 
         request["model"] = self.model_alias
-        request["stream"] = False
         return request, limits
 
     async def _enforce_chat_limits(
@@ -656,6 +698,12 @@ class LlamaCppExecutor(JobExecutor):
             if not isinstance(payload.get("messages"), list):
                 raise ValueError("llm.chat requires a messages list")
             if gateway_chat is not None:
+                if payload.get("stream") is True:
+                    raise JobExecutionError(
+                        "streaming_requires_event_sink",
+                        "streaming chat requires the fenced Job event channel",
+                        retryable=False,
+                    )
                 await self._enforce_chat_limits(payload, limits)
             call = self.api.chat(payload)
         else:
@@ -702,6 +750,76 @@ class LlamaCppExecutor(JobExecutor):
             outputs=dict(response),
             metrics=metrics,
             text=text,
+            metadata={
+                "runtime_provider": LLAMA_CPP_PROVIDER_ID,
+                "model": self.model_ref,
+                "model_alias": self.model_alias,
+            },
+        )
+
+    async def execute_stream(
+        self,
+        job: JobRequest,
+        sink: JobEventSink,
+    ) -> JobResult:
+        if job.capability != "llm.chat":
+            return await self.execute(job)
+        gateway_chat = self._gateway_chat_payload(job)
+        if gateway_chat is None:
+            return await self.execute(job)
+        payload, limits = gateway_chat
+        if payload.get("stream") is not True:
+            return await self.execute(job)
+
+        await self._enforce_chat_limits(payload, limits)
+        payload["stream"] = True
+        payload["stream_options"] = {"include_usage": True}
+
+        metrics: dict[str, int | float] = {}
+        text_parts: list[str] = []
+        current = asyncio.current_task()
+        if current is None:
+            raise RuntimeError("streaming execution task is unavailable")
+        self._inflight[job.job_id] = current
+        try:
+            async for raw_chunk in self.api.chat_stream(payload):
+                chunk = validate_chat_stream_chunk(raw_chunk)
+                choices = chunk.get("choices")
+                if isinstance(choices, list) and choices:
+                    choice = choices[0]
+                    if isinstance(choice, Mapping):
+                        delta = choice.get("delta")
+                        if isinstance(delta, Mapping):
+                            content = delta.get("content")
+                            if isinstance(content, str):
+                                text_parts.append(content)
+                usage = chunk.get("usage")
+                if isinstance(usage, Mapping):
+                    for key in (
+                        "prompt_tokens",
+                        "completion_tokens",
+                        "total_tokens",
+                    ):
+                        value = usage.get(key)
+                        if (
+                            isinstance(value, (int, float))
+                            and not isinstance(value, bool)
+                        ):
+                            metrics[key] = value
+                await sink.emit(
+                    JobEvent(
+                        kind="chat.completion.chunk",
+                        payload=chunk,
+                    )
+                )
+        finally:
+            if self._inflight.get(job.job_id) is current:
+                self._inflight.pop(job.job_id, None)
+
+        return JobResult(
+            outputs={"streamed": True},
+            metrics=metrics,
+            text="".join(text_parts) if text_parts else None,
             metadata={
                 "runtime_provider": LLAMA_CPP_PROVIDER_ID,
                 "model": self.model_ref,
