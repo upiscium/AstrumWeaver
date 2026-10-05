@@ -898,12 +898,22 @@ async def test_streaming_tool_round_trip_matches_pinned_opencode_wire_shape():
             for frame in sse_data(first)
             if frame != "[DONE]"
         ]
-        call_id = first_chunks[0]["choices"][0]["delta"]["tool_calls"][0]["id"]
-        call_name = first_chunks[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["name"]
-        arguments = "".join(
-            item["function"].get("arguments", "")
+        tool_fragments = [
+            item
             for chunk in first_chunks
-            for item in chunk.get("choices", [{}])[0].get("delta", {}).get("tool_calls", [])
+            for choice in chunk.get("choices", [])
+            for item in choice.get("delta", {}).get("tool_calls", [])
+        ]
+        opening = next(
+            item
+            for item in tool_fragments
+            if item.get("id") is not None
+        )
+        call_id = opening["id"]
+        call_name = opening["function"]["name"]
+        arguments = "".join(
+            item.get("function", {}).get("arguments", "")
+            for item in tool_fragments
         )
         assert call_id == "call_read"
         assert call_name == "read_file"
