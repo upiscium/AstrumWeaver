@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import replace
 from datetime import timedelta
 
@@ -807,3 +808,272 @@ async def test_partial_stream_failure_has_no_done_and_no_retry():
     assert record.max_attempts == 1
     assert record.attempts == 1
     assert record.status is JobStatus.FAILED
+
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_round_trip_matches_pinned_opencode_wire_shape():
+    repository = InMemoryControlRepository()
+    gateway, advertisement = serving_values(tools=True)
+    register_worker(repository, advertisement)
+    app = app_with_gateway(repository, gateway)
+    transport = httpx.ASGITransport(app=app)
+    headers = {"authorization": f"Bearer {CLIENT_TOKEN}"}
+    tool_chunks = [
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_read",
+                                "type": "function",
+                                "function": {
+                                    "name": "read_file",
+                                    "arguments": "{\"path\":",
+                                },
+                            }
+                        ]
+                    },
+                    "finish_reason": None,
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {
+                                    "arguments": "\"README.md\"}",
+                                },
+                            }
+                        ]
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        },
+        {
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 8,
+                "completion_tokens": 4,
+                "total_tokens": 12,
+            },
+        },
+    ]
+    first_worker = asyncio.create_task(stream_next(repository, tool_chunks))
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://control") as client:
+        first = await client.post(
+            "/v1/chat/completions",
+            headers=headers,
+            json={
+                "model": "local-code-v1",
+                "messages": [{"role": "user", "content": "read README"}],
+                "stream": True,
+                "stream_options": {"include_usage": True},
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "parameters": {"type": "object"},
+                        },
+                    }
+                ],
+                "tool_choice": "auto",
+            },
+        )
+        await first_worker
+
+        first_chunks = [
+            json.loads(frame)
+            for frame in sse_data(first)
+            if frame != "[DONE]"
+        ]
+        call_id = first_chunks[0]["choices"][0]["delta"]["tool_calls"][0]["id"]
+        call_name = first_chunks[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["name"]
+        arguments = "".join(
+            item["function"].get("arguments", "")
+            for chunk in first_chunks
+            for item in chunk.get("choices", [{}])[0].get("delta", {}).get("tool_calls", [])
+        )
+        assert call_id == "call_read"
+        assert call_name == "read_file"
+        assert arguments == '{"path":"README.md"}'
+
+        final_chunks = [
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": "README summarized."},
+                        "finish_reason": "stop",
+                    }
+                ]
+            },
+            {
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 16,
+                    "completion_tokens": 3,
+                    "total_tokens": 19,
+                },
+            },
+        ]
+        second_worker = asyncio.create_task(stream_next(repository, final_chunks))
+        second = await client.post(
+            "/v1/chat/completions",
+            headers=headers,
+            json={
+                "model": "local-code-v1",
+                "messages": [
+                    {"role": "user", "content": "read README"},
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "reasoning_content": "I need the file contents.",
+                        "tool_calls": [
+                            {
+                                "id": call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": call_name,
+                                    "arguments": arguments,
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": "# README",
+                    },
+                ],
+                "stream": True,
+                "stream_options": {"include_usage": True},
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "parameters": {"type": "object"},
+                        },
+                    }
+                ],
+                "tool_choice": "auto",
+            },
+        )
+        await second_worker
+
+    second_frames = sse_data(second)
+    assert second_frames[-1] == "[DONE]"
+    final = json.loads(second_frames[0])
+    assert final["choices"][0]["delta"]["content"] == "README summarized."
+    jobs = repository.list_jobs()
+    assert len(jobs) == 2
+    assert all(job.max_attempts == 1 for job in jobs)
+    history = jobs[1].payload["request"]["messages"]
+    assert history[1]["reasoning_content"] == "I need the file contents."
+    assert history[1]["tool_calls"][0]["id"] == "call_read"
+    assert history[2]["tool_call_id"] == "call_read"
+
+
+class _DisconnectedRequest:
+    async def is_disconnected(self) -> bool:
+        return True
+
+
+class _ConnectedRequest:
+    async def is_disconnected(self) -> bool:
+        return False
+
+
+@pytest.mark.asyncio
+async def test_streaming_disconnect_cancels_owned_job_before_output():
+    repository = InMemoryControlRepository()
+    gateway, advertisement = serving_values()
+    register_worker(repository, advertisement)
+    service = ChatGatewayService(
+        repository,
+        ChatProfileCatalog((gateway,)),
+        poll_interval_seconds=0.001,
+    )
+    iterator = await service.stream(
+        _DisconnectedRequest(),
+        {
+            "model": "local-code-v1",
+            "messages": [{"role": "user", "content": "disconnect"}],
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        },
+        request_size_bytes=128,
+    )
+    with pytest.raises(StopAsyncIteration):
+        await anext(iterator)
+
+    record = repository.list_jobs()[0]
+    assert record.max_attempts == 1
+    assert record.status is JobStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_streaming_caller_task_cancellation_cancels_owned_job():
+    repository = InMemoryControlRepository()
+    gateway, advertisement = serving_values()
+    register_worker(repository, advertisement)
+    service = ChatGatewayService(
+        repository,
+        ChatProfileCatalog((gateway,)),
+        poll_interval_seconds=0.01,
+    )
+    iterator = await service.stream(
+        _ConnectedRequest(),
+        {
+            "model": "local-code-v1",
+            "messages": [{"role": "user", "content": "cancel"}],
+            "stream": True,
+        },
+        request_size_bytes=128,
+    )
+    task = asyncio.create_task(anext(iterator))
+    await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert repository.list_jobs()[0].status is JobStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_streaming_timeout_emits_error_without_done_and_cancels_job():
+    repository = InMemoryControlRepository()
+    gateway, advertisement = serving_values(timeout=0.01)
+    register_worker(repository, advertisement)
+    service = ChatGatewayService(
+        repository,
+        ChatProfileCatalog((gateway,)),
+        poll_interval_seconds=0.001,
+    )
+    iterator = await service.stream(
+        _ConnectedRequest(),
+        {
+            "model": "local-code-v1",
+            "messages": [{"role": "user", "content": "timeout"}],
+            "stream": True,
+        },
+        request_size_bytes=128,
+    )
+    frames = [frame async for frame in iterator]
+
+    assert all("[DONE]" not in frame for frame in frames)
+    payload = json.loads(frames[-1][len("data: "):].strip())
+    assert payload["error"]["code"] == "gateway_timeout"
+    assert repository.list_jobs()[0].status is JobStatus.CANCELLED
