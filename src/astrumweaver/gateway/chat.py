@@ -37,6 +37,7 @@ _ALLOWED_REQUEST_FIELDS = frozenset(
         "messages",
         "tools",
         "tool_choice",
+        "parallel_tool_calls",
         "max_tokens",
         "max_completion_tokens",
         "temperature",
@@ -596,6 +597,18 @@ def compile_chat_request(
             "unsupported_field",
             "Stage A supports exactly one completion choice",
         )
+    if "parallel_tool_calls" in data:
+        parallel = data["parallel_tool_calls"]
+        if type(parallel) is not bool:
+            raise ChatGatewayError(
+                "invalid_request",
+                "parallel_tool_calls must be boolean",
+            )
+        if parallel:
+            raise ChatGatewayError(
+                "unsupported_feature",
+                "parallel tool calls are not verified in Stage A",
+            )
 
     limits = dict(profile.resolved.effective_limits)
     if request_size_bytes > limits["request_bytes"]:
@@ -620,6 +633,8 @@ def compile_chat_request(
         choice = _validate_tool_choice(data["tool_choice"], tool_names=tool_names)
         request["tool_choice"] = choice
         tool_choice_uses_tools = choice != "none"
+    if "parallel_tool_calls" in data:
+        request["parallel_tool_calls"] = False
 
     uses_tools = history_uses_tools or bool(tool_names) or tool_choice_uses_tools
     if uses_tools and "tools" not in profile.resolved.contract.features:
