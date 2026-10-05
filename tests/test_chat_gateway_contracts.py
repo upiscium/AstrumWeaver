@@ -138,14 +138,29 @@ def test_catalog_rejects_wrong_operation_and_unbounded_profile():
             request_timeout_seconds=30,
         )
 
-    too_wide = replace(
-        value.resolved,
-        effective_limits={
-            **dict(value.resolved.effective_limits),
+    too_wide_contract = replace(
+        value.resolved.contract,
+        limits={
             "input_tokens": 6000,
             "output_tokens": 1024,
             "total_tokens": 5120,
+            "request_bytes": 65536,
         },
+    )
+    too_wide_profile = replace(
+        value.resolved.profile,
+        serving_contract_revision=too_wide_contract.revision,
+        limits={
+            "input_tokens": 6000,
+            "output_tokens": 1024,
+            "total_tokens": 5120,
+            "request_bytes": 65536,
+        },
+    )
+    too_wide = resolve_profile(
+        too_wide_profile,
+        too_wide_contract,
+        value.resolved.deployment,
     )
     with pytest.raises(ChatGatewayError, match="total context"):
         ChatGatewayProfile(
