@@ -13,17 +13,30 @@ Initial target:
 - OpenCode release: `v1.18.30`
 - release date: 2026-09-09
 - source tag: `anomalyco/opencode@v1.18.30`
+- OpenCode package manifest:
+  `packages/opencode/package.json`
+  (Git blob `c7c467037d109b457884484af81d4518527816c5`)
 - session transport source:
   `packages/opencode/src/session/llm.ts`
   (Git blob `a99f8acff20c5d64d0b6cb90df480218bb1daddc`)
-- OpenAI-compatible Chat source:
-  `packages/llm/src/protocols/openai-chat.ts`
-  (Git blob `9ac85b07b139f2a7a87f1a62d829a274b9cfd1ca`)
+- AI SDK runtime: `ai@6.0.168`
+- custom-provider adapter: `@ai-sdk/openai-compatible@2.0.41`
+- adapter stream implementation:
+  `packages/openai-compatible/src/chat/openai-compatible-chat-language-model.ts`
+  at tag `@ai-sdk/openai-compatible@2.0.41`
+  (Git blob `8c622db23c2d9a7373701f5a1b0c2ba109e24602`)
+- adapter error schema:
+  `packages/openai-compatible/src/openai-compatible-error.ts`
+  at the same tag
+  (Git blob `f0ebb31de52b6484c9faa5ffd5eaed599c0c150e`)
 
-At this pin, the ordinary session path invokes AI SDK `streamText(...)`. The
-OpenAI-compatible Chat protocol sends `stream: true` and requests usage in
-stream options. This means the non-streaming Stage A gateway is intentionally
-not accepted as OpenCode-compatible.
+At this pin, the ordinary session path invokes AI SDK `streamText(...)` and
+the configured `@ai-sdk/openai-compatible` adapter sends `stream: true`.
+Its streaming schema is a union of ordinary chat chunks and the provider error
+schema. AstrumWeaver's top-level `{"error": {"message": ...}}` SSE event on a
+failed partial stream is therefore consumed as an explicit client-side stream
+error rather than a successful chat chunk. The non-streaming Stage A gateway is
+intentionally not accepted as OpenCode-compatible.
 
 ## Provider configuration shape
 
