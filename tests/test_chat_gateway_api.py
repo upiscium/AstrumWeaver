@@ -11,6 +11,7 @@ from astrumweaver import JobResult, ResourceShape, WorkerSpec
 from astrumweaver.control import (
     InMemoryControlRepository,
     JobStatus,
+    JobSubmission,
     WorkerRegistration,
     utc_now,
 )
@@ -426,7 +427,7 @@ async def test_no_compatible_deployment_and_overload_are_explicit():
 
         register_worker(repository, advertisement)
         occupied = repository.submit_job(
-            __import__("astrumweaver.control", fromlist=["JobSubmission"]).JobSubmission(
+            JobSubmission(
                 capability="llm.chat",
                 payload={"direct": True},
                 deadline_at=utc_now() + timedelta(seconds=10),
