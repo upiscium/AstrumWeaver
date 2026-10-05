@@ -130,6 +130,36 @@ It polls durable state rather than bypassing Control.
 Stage A never retries after externally visible output because it exposes no
 partial output.
 
+## Payload retention and logging
+
+Stage A uses the existing durable Control Job path, so accepted chat request
+payloads and normalized provider results are persisted in PostgreSQL as Job
+state. There is no automatic TTL or payload deletion in this slice. Operators
+must therefore treat the Control database and backups as private conversation/
+source-code storage and apply their own database retention policy before using
+the gateway with sensitive repositories. Public logs/metrics must not contain
+request bodies, messages, tool arguments/results, credentials, or model-local
+paths; only bounded identifiers/status/error codes are suitable for public
+evidence.
+
+This intentionally records the actual retention behavior rather than claiming
+that a redacted metrics path makes the durable payload private-safe. Automated
+payload expiry/deletion is a separate lifecycle feature and is not implied by
+Stage A.
+
+## Pinned OpenCode compatibility finding
+
+The first coding-client target is **OpenCode v1.18.30** (release tag
+`v1.18.30`). Exact source inspection shows that its normal session path uses
+AI SDK `streamText(...)`, and its OpenAI-compatible Chat protocol constructs
+requests with `stream: true` and `stream_options.include_usage: true`.
+Therefore Stage A's deliberate `stream=true` rejection is **not compatible
+with a normal OpenCode v1.18.30 session**. Stage A is a bounded gateway/
+provider vertical slice only; it must not be described as an OpenCode pilot.
+
+The real pinned-client smoke is deferred until Stage B provides the fenced SSE
+event contract required by that exact client behavior.
+
 ## Stage B boundary
 
 Live streaming is deferred until the generic event channel binds every event to
