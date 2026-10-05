@@ -347,6 +347,7 @@ def test_check_storage_rejects_legacy_001_only_schema_until_migrated() -> None:
         "002_worker_accelerators.sql",
         "003_serving_bindings.sql",
         "004_serving_identity_invariants.sql",
+        "005_job_events.sql",
     ]
     repo.check_storage()
 
