@@ -91,9 +91,11 @@ The example limits are placeholders and must match the selected
 - Real runtime/model/quantization/template identity: must be supplied by the
   acceptance run and recorded with its exact deployment/contract revisions.
 
-The packaged `astrumweaver-opencode-chat-accept` command performs both real
-client smokes with an isolated temporary OpenCode config/workdir and writes only
-redacted evidence. See [OpenCode chat acceptance](../opencode-chat-acceptance.md).
+The packaged `astrumweaver-opencode-chat-accept` command first validates the
+live gateway's namespaced model metadata against the expected profile revision,
+deployment revision, serving-contract revision and limits. It then performs both
+real client smokes with an isolated temporary OpenCode config/workdir and writes
+only redacted evidence. See [OpenCode chat acceptance](../opencode-chat-acceptance.md).
 
 A later compatibility update must preserve this historical pin rather than
 silently replacing the client version used for acceptance.
