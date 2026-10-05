@@ -16,6 +16,9 @@ Initial target:
 - OpenCode package manifest:
   `packages/opencode/package.json`
   (Git blob `c7c467037d109b457884484af81d4518527816c5`)
+- resolved dependency lockfile:
+  `bun.lock`
+  (Git blob `efe01bf957f3e825d822997161aed6cb3efe3728`)
 - session transport source:
   `packages/opencode/src/session/llm.ts`
   (Git blob `a99f8acff20c5d64d0b6cb90df480218bb1daddc`)
