@@ -48,6 +48,7 @@ _ALLOWED_REQUEST_FIELDS = frozenset(
         "stop",
         "n",
         "stream",
+        "stream_options",
     }
 )
 
@@ -366,7 +367,7 @@ def _validate_messages(
 
         allowed = {"role", "content", "name"}
         if role == "assistant":
-            allowed.add("tool_calls")
+            allowed.update({"tool_calls", "reasoning_content"})
         if role == "tool":
             allowed.add("tool_call_id")
         if set(data) - allowed:
@@ -396,6 +397,14 @@ def _validate_messages(
             message["content"] = content
 
         if role == "assistant":
+            reasoning = data.get("reasoning_content")
+            if reasoning is not None:
+                if not isinstance(reasoning, str):
+                    raise ChatGatewayError(
+                        "invalid_request",
+                        "assistant reasoning_content must be a string",
+                    )
+                message["reasoning_content"] = reasoning
             raw_calls = data.get("tool_calls")
             if raw_calls is not None:
                 if not isinstance(raw_calls, list) or not raw_calls:
@@ -593,6 +602,18 @@ def compile_chat_request(
             "invalid_request",
             "stream must be boolean",
         )
+    if "stream_options" in data:
+        options = data["stream_options"]
+        if (
+            not stream
+            or not isinstance(options, Mapping)
+            or set(options) != {"include_usage"}
+            or options.get("include_usage") is not True
+        ):
+            raise ChatGatewayError(
+                "invalid_request",
+                "stream_options supports only include_usage=true with streaming",
+            )
     if "n" in data and data["n"] != 1:
         raise ChatGatewayError(
             "unsupported_field",
@@ -750,6 +771,15 @@ def normalize_chat_completion(
         "role": "assistant",
         "content": content,
     }
+    reasoning = message_data.get("reasoning_content")
+    if reasoning is not None:
+        if not isinstance(reasoning, str):
+            raise ChatGatewayError(
+                "invalid_provider_response",
+                "provider reasoning_content is invalid",
+                status_code=502,
+            )
+        normalized_message["reasoning_content"] = reasoning
     if message_data.get("tool_calls") is not None:
         normalized_message["tool_calls"] = _normalize_response_tool_calls(
             message_data["tool_calls"]
