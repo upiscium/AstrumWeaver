@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 from astrumweaver import ResourceShape, WorkerSpec
-from astrumweaver.execution import JobRequest
+from astrumweaver.execution import JobExecutionError, JobRequest
 from astrumweaver.runtime import (
     ExecutionDemand,
     GPUTopology,
@@ -650,6 +650,11 @@ async def test_http_api_uses_health_models_and_openai_endpoints() -> None:
                     "data": [{"id": "astrumweaver", "object": "model"}],
                 },
             )
+        if request.url.path == "/v1/chat/completions/input_tokens":
+            return httpx.Response(
+                200,
+                json={"object": "response.input_tokens", "input_tokens": 3},
+            )
         if request.url.path == "/v1/chat/completions":
             return httpx.Response(
                 200,
@@ -694,6 +699,13 @@ async def test_http_api_uses_health_models_and_openai_endpoints() -> None:
             }
         )
         assert chat["choices"][0]["message"]["content"] == "hello"
+        assert await api.chat_input_tokens(
+            {
+                "model": "astrumweaver",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": False,
+            }
+        ) == 3
         completion = await api.completion(
             {
                 "model": "astrumweaver",
@@ -709,6 +721,7 @@ async def test_http_api_uses_health_models_and_openai_endpoints() -> None:
         "/health",
         "/v1/models",
         "/v1/chat/completions",
+        "/v1/chat/completions/input_tokens",
         "/v1/completions",
     ]
 
@@ -726,6 +739,8 @@ class FakeApi:
         self.chat_started = asyncio.Event()
         self.block_chat = False
         self.chat_payloads: list[dict] = []
+        self.chat_token_payloads: list[dict] = []
+        self.chat_input_token_count = 3
         self.completion_payloads: list[dict] = []
 
     async def health(self) -> bool:
@@ -735,6 +750,10 @@ class FakeApi:
         if not self.reachable:
             raise httpx.ConnectError("offline")
         return self.model_ids
+
+    async def chat_input_tokens(self, payload: Mapping[str, object]) -> int:
+        self.chat_token_payloads.append(dict(payload))
+        return self.chat_input_token_count
 
     async def chat(self, payload: Mapping[str, object]):
         self.chat_payloads.append(dict(payload))
@@ -1073,3 +1092,170 @@ def test_main_gpu_must_be_inside_visible_set() -> None:
     assert "main-gpu-outside-visible-set" in {
         reason.code for reason in report.reasons
     }
+
+
+@pytest.mark.asyncio
+async def test_stage_a_gateway_chat_counts_actual_template_before_inference() -> None:
+    api = FakeApi()
+    api.chat_input_token_count = 40
+    executor = LlamaCppExecutor(
+        api=api,
+        model_ref="/models/qwen.gguf",
+        model_alias="astrumweaver",
+        residency_metadata={},
+    )
+    arguments = '{"path":"README.md"}'
+    result = await executor.execute(
+        JobRequest(
+            job_id="gateway-chat",
+            capability="llm.chat",
+            payload={
+                "schema_version": "chat-job-v1",
+                "adapter_id": "llama-cpp-chat-v1",
+                "request": {
+                    "messages": [
+                        {"role": "user", "content": "inspect"},
+                    ],
+                    "tools": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "read_file",
+                                "parameters": {"type": "object"},
+                            },
+                        }
+                    ],
+                    "tool_choice": "auto",
+                    "max_tokens": 20,
+                    "stream": False,
+                },
+                "limits": {
+                    "input_tokens": 64,
+                    "output_tokens": 32,
+                    "total_tokens": 84,
+                },
+            },
+        )
+    )
+
+    assert result.text == "hello"
+    assert len(api.chat_token_payloads) == 1
+    counted = api.chat_token_payloads[0]
+    assert counted["model"] == "astrumweaver"
+    assert counted["tools"][0]["function"]["name"] == "read_file"
+    assert counted["stream"] is False
+    assert api.chat_payloads == [counted]
+
+
+@pytest.mark.asyncio
+async def test_stage_a_gateway_chat_context_overflow_is_non_retryable() -> None:
+    api = FakeApi()
+    api.chat_input_token_count = 65
+    executor = LlamaCppExecutor(
+        api=api,
+        model_ref="/models/qwen.gguf",
+        model_alias="astrumweaver",
+        residency_metadata={},
+    )
+
+    with pytest.raises(JobExecutionError) as error:
+        await executor.execute(
+            JobRequest(
+                job_id="overflow",
+                capability="llm.chat",
+                payload={
+                    "schema_version": "chat-job-v1",
+                    "adapter_id": "llama-cpp-chat-v1",
+                    "request": {
+                        "messages": [{"role": "user", "content": "large"}],
+                        "max_tokens": 8,
+                        "stream": False,
+                    },
+                    "limits": {
+                        "input_tokens": 64,
+                        "output_tokens": 16,
+                        "total_tokens": 80,
+                    },
+                },
+            )
+        )
+
+    assert error.value.code == "context_length_exceeded"
+    assert not error.value.retryable
+    assert api.chat_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_stage_a_gateway_chat_total_context_reserves_output_tokens() -> None:
+    api = FakeApi()
+    api.chat_input_token_count = 60
+    executor = LlamaCppExecutor(
+        api=api,
+        model_ref="/models/qwen.gguf",
+        model_alias="astrumweaver",
+        residency_metadata={},
+    )
+
+    with pytest.raises(JobExecutionError) as error:
+        await executor.execute(
+            JobRequest(
+                job_id="reservation-overflow",
+                capability="llm.chat",
+                payload={
+                    "schema_version": "chat-job-v1",
+                    "adapter_id": "llama-cpp-chat-v1",
+                    "request": {
+                        "messages": [{"role": "user", "content": "large"}],
+                        "max_tokens": 21,
+                        "stream": False,
+                    },
+                    "limits": {
+                        "input_tokens": 64,
+                        "output_tokens": 32,
+                        "total_tokens": 80,
+                    },
+                },
+            )
+        )
+
+    assert error.value.code == "context_length_exceeded"
+    assert not error.value.retryable
+    assert api.chat_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_stage_a_gateway_chat_rejects_wrong_adapter_before_provider_call() -> None:
+    api = FakeApi()
+    executor = LlamaCppExecutor(
+        api=api,
+        model_ref="/models/qwen.gguf",
+        model_alias="astrumweaver",
+        residency_metadata={},
+    )
+
+    with pytest.raises(JobExecutionError) as error:
+        await executor.execute(
+            JobRequest(
+                job_id="wrong-adapter",
+                capability="llm.chat",
+                payload={
+                    "schema_version": "chat-job-v1",
+                    "adapter_id": "other-chat-v1",
+                    "request": {
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "max_tokens": 8,
+                        "stream": False,
+                    },
+                    "limits": {
+                        "input_tokens": 64,
+                        "output_tokens": 16,
+                        "total_tokens": 80,
+                    },
+                },
+            )
+        )
+
+    assert error.value.code == "unsupported_chat_adapter"
+    assert not error.value.retryable
+    assert api.chat_token_payloads == []
+    assert api.chat_payloads == []
