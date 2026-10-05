@@ -14,7 +14,7 @@ from ..control.models import WorkerState
 from ..control.serde import job_result_to_dict, worker_spec_to_dict
 from ..execution import JobRequest, JobResult
 from ..serving import WorkerServingAdvertisement
-from ..transport import PROTOCOL_VERSION, SERVING_EXTENSION
+from ..transport import JOB_EVENTS_EXTENSION, PROTOCOL_VERSION, SERVING_EXTENSION
 
 
 class ControlTransportError(RuntimeError):
@@ -93,7 +93,7 @@ class ControlClient:
         ):
             raise ControlTransportError(502, "Control response extensions are invalid")
         extensions = frozenset(str(item) for item in raw_extensions)
-        if extensions - {SERVING_EXTENSION}:
+        if extensions - {SERVING_EXTENSION, JOB_EVENTS_EXTENSION}:
             raise ControlTransportError(
                 502, "Control response uses an unsupported extension"
             )
@@ -102,6 +102,7 @@ class ControlClient:
             "claimed_deployment_revision",
             "claimed_serving_contract_revision",
             "claimed_runtime_instance_epoch",
+            "runtime_instance_epoch",
         )
         if (
             any(body.get(field) is not None for field in serving_fields)
@@ -248,6 +249,33 @@ class ControlClient:
             lease_expires_at=body.get("lease_expires_at"),
             attempts=int(body.get("attempts", 0)),
         )
+
+    async def publish_event(
+        self,
+        worker_id: str,
+        job_id: str,
+        lease_token: str,
+        *,
+        kind: str,
+        payload: Mapping[str, Any],
+        runtime_instance_epoch: str | None = None,
+    ) -> dict[str, Any]:
+        extensions = [JOB_EVENTS_EXTENSION]
+        if runtime_instance_epoch is not None:
+            extensions.append(SERVING_EXTENSION)
+        response = await self._request(
+            "POST",
+            f"/v1/workers/{worker_id}/jobs/{job_id}/events",
+            json={
+                "protocol_version": PROTOCOL_VERSION,
+                "extensions": extensions,
+                "lease_token": lease_token,
+                "runtime_instance_epoch": runtime_instance_epoch,
+                "kind": kind,
+                "payload": dict(payload),
+            },
+        )
+        return self._object(response)
 
     async def inspect_job(self, worker_id: str, job_id: str) -> dict[str, Any]:
         response = await self._request(
