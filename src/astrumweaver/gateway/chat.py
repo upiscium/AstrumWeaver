@@ -125,6 +125,14 @@ class ChatGatewayProfile:
                 "invalid_profile",
                 "chat gateway profile uses an unsupported operation schema",
             )
+        if (
+            "tools" in self.resolved.contract.features
+            and self.resolved.deployment.template_artifact_sha256 is None
+        ):
+            raise ChatGatewayError(
+                "invalid_profile",
+                "structured tools require an immutable template artifact identity",
+            )
         limits = dict(self.resolved.effective_limits)
         missing = _REQUIRED_LIMITS - limits.keys()
         if missing:
