@@ -11,6 +11,7 @@ from astrumweaver.validation.opencode_chat import (
     PINNED_OPENAI_COMPATIBLE_ERROR_BLOB,
     PINNED_OPENAI_COMPATIBLE_STREAM_BLOB,
     PINNED_OPENAI_COMPATIBLE_VERSION,
+    PINNED_OPENCODE_LOCK_BLOB,
     PINNED_OPENCODE_PACKAGE_BLOB,
     PINNED_OPENCODE_SESSION_BLOB,
     OpenCodeChatAcceptanceError,
@@ -105,6 +106,7 @@ def test_real_client_runner_uses_isolated_pinned_opencode_shape():
     assert evidence.overall == "PASS"
     assert evidence.opencode_version == "1.18.30"
     assert evidence.opencode_package_manifest_sha1 == PINNED_OPENCODE_PACKAGE_BLOB
+    assert evidence.opencode_lock_sha1 == PINNED_OPENCODE_LOCK_BLOB
     assert evidence.opencode_session_source_sha1 == PINNED_OPENCODE_SESSION_BLOB
     assert evidence.ai_sdk_version == PINNED_AI_SDK_VERSION
     assert evidence.openai_compatible_version == PINNED_OPENAI_COMPATIBLE_VERSION
