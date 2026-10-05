@@ -111,8 +111,9 @@ def test_real_client_runner_uses_isolated_pinned_opencode_shape():
         assert kwargs["capture_output"] is True
         assert kwargs["text"] is True
         env = kwargs["env"]
-        assert env["HOME"].startswith("/tmp/")
-        assert env["XDG_DATA_HOME"].startswith(env["HOME"])
+        home = Path(env["HOME"])
+        assert home.name == "home"
+        assert Path(env["XDG_DATA_HOME"]).is_relative_to(home)
         assert env["OPENCODE_DISABLE_PROJECT_CONFIG"] == "1"
         assert env["OPENCODE_PURE"] == "1"
         assert env["OPENCODE_DISABLE_AUTOUPDATE"] == "1"
