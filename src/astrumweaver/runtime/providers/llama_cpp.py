@@ -536,10 +536,13 @@ class LlamaCppExecutor(JobExecutor):
                     retryable=False,
                 )
             limits[key] = value
-        if limits["input_tokens"] + limits["output_tokens"] > limits["total_tokens"]:
+        if (
+            limits["input_tokens"] > limits["total_tokens"]
+            or limits["output_tokens"] > limits["total_tokens"]
+        ):
             raise JobExecutionError(
                 "invalid_chat_job",
-                "chat job limits exceed total context",
+                "chat job token limit exceeds total context",
                 retryable=False,
             )
         if output_tokens > limits["output_tokens"]:
