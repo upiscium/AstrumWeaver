@@ -19,8 +19,16 @@ from .hardware import REVISION_PATTERN
 
 
 PINNED_OPENCODE_VERSION = "1.18.30"
+PINNED_OPENCODE_PACKAGE_BLOB = "c7c467037d109b457884484af81d4518527816c5"
 PINNED_OPENCODE_SESSION_BLOB = "a99f8acff20c5d64d0b6cb90df480218bb1daddc"
-PINNED_OPENCODE_CHAT_BLOB = "9ac85b07b139f2a7a87f1a62d829a274b9cfd1ca"
+PINNED_AI_SDK_VERSION = "6.0.168"
+PINNED_OPENAI_COMPATIBLE_VERSION = "2.0.41"
+PINNED_OPENAI_COMPATIBLE_STREAM_BLOB = (
+    "8c622db23c2d9a7373701f5a1b0c2ba109e24602"
+)
+PINNED_OPENAI_COMPATIBLE_ERROR_BLOB = (
+    "f0ebb31de52b6484c9faa5ffd5eaed599c0c150e"
+)
 _PROVIDER_ID = "astrumweaver-acceptance"
 _PROFILE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -41,8 +49,12 @@ class OpenCodeChatAcceptanceEvidence:
     date_utc: str
     astrumweaver_revision: str
     opencode_version: str
+    opencode_package_manifest_sha1: str
     opencode_session_source_sha1: str
-    opencode_chat_source_sha1: str
+    ai_sdk_version: str
+    openai_compatible_version: str
+    openai_compatible_stream_source_sha1: str
+    openai_compatible_error_source_sha1: str
     profile_id: str
     deployment_revision: str
     serving_contract_revision: str
@@ -397,8 +409,16 @@ class OpenCodeChatAcceptanceRunner:
             date_utc=datetime.now(UTC).date().isoformat(),
             astrumweaver_revision=self.astrumweaver_revision,
             opencode_version=PINNED_OPENCODE_VERSION,
+            opencode_package_manifest_sha1=PINNED_OPENCODE_PACKAGE_BLOB,
             opencode_session_source_sha1=PINNED_OPENCODE_SESSION_BLOB,
-            opencode_chat_source_sha1=PINNED_OPENCODE_CHAT_BLOB,
+            ai_sdk_version=PINNED_AI_SDK_VERSION,
+            openai_compatible_version=PINNED_OPENAI_COMPATIBLE_VERSION,
+            openai_compatible_stream_source_sha1=(
+                PINNED_OPENAI_COMPATIBLE_STREAM_BLOB
+            ),
+            openai_compatible_error_source_sha1=(
+                PINNED_OPENAI_COMPATIBLE_ERROR_BLOB
+            ),
             profile_id=self.profile_id,
             deployment_revision=self.deployment_revision,
             serving_contract_revision=self.serving_contract_revision,
@@ -419,12 +439,25 @@ def render_opencode_chat_markdown(
         ("AstrumWeaver revision", evidence.astrumweaver_revision),
         ("OpenCode version", evidence.opencode_version),
         (
+            "OpenCode package manifest SHA-1",
+            evidence.opencode_package_manifest_sha1,
+        ),
+        (
             "OpenCode session source SHA-1",
             evidence.opencode_session_source_sha1,
         ),
+        ("AI SDK version", evidence.ai_sdk_version),
         (
-            "OpenCode chat source SHA-1",
-            evidence.opencode_chat_source_sha1,
+            "OpenAI-compatible adapter version",
+            evidence.openai_compatible_version,
+        ),
+        (
+            "OpenAI-compatible stream source SHA-1",
+            evidence.openai_compatible_stream_source_sha1,
+        ),
+        (
+            "OpenAI-compatible error source SHA-1",
+            evidence.openai_compatible_error_source_sha1,
         ),
         ("Logical profile", evidence.profile_id),
         ("Deployment revision", evidence.deployment_revision),
