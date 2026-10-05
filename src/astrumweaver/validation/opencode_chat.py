@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import subprocess
@@ -176,8 +177,8 @@ class OpenCodeChatAcceptanceRunner:
         output = _positive_integer(output_tokens, "output_tokens")
         if output > context:
             raise ValueError("output_tokens must not exceed context_tokens")
-        if timeout_seconds <= 0:
-            raise ValueError("timeout_seconds must be positive")
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be finite and positive")
 
         self.opencode = executable
         self.base_url = _validate_base_url(base_url)
@@ -281,6 +282,7 @@ class OpenCodeChatAcceptanceRunner:
                 env=dict(env),
                 timeout=self.timeout_seconds,
                 check=False,
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
             )
