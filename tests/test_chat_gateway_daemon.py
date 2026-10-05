@@ -153,3 +153,49 @@ def test_control_daemon_requires_valid_catalog_when_chat_gateway_enabled(
     )
     with pytest.raises(RuntimeError, match="profile catalog is invalid"):
         build_app(str(invalid))
+
+
+def test_control_daemon_threads_job_event_buffer_limits(tmp_path, monkeypatch):
+    from astrumweaver.control import daemon
+
+    base_environment(monkeypatch)
+    captured = {}
+
+    class FakeRepository:
+        def __init__(self, database_url, **kwargs):
+            captured["database_url"] = database_url
+            captured.update(kwargs)
+
+    monkeypatch.setattr(daemon, "PostgresControlRepository", FakeRepository)
+    monkeypatch.setattr(
+        daemon,
+        "create_app",
+        lambda repository, **_kwargs: type(
+            "App",
+            (),
+            {"include_router": lambda self, _router: None},
+        )(),
+    )
+
+    config = tmp_path / "control.toml"
+    config.write_text(
+        "\n".join(
+            [
+                "[control]",
+                'client_auth = "none"',
+                "event_max_count = 123",
+                "event_max_payload_bytes = 4567",
+                "event_max_total_bytes = 891011",
+                "event_max_read = 37",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    build_app(str(config))
+
+    assert captured["event_max_count"] == 123
+    assert captured["event_max_payload_bytes"] == 4567
+    assert captured["event_max_total_bytes"] == 891011
+    assert captured["event_max_read"] == 37
