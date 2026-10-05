@@ -351,6 +351,10 @@ client_auth = "bearer"
 worker_ttl_seconds = 60
 lease_seconds = 300
 maintenance_interval_seconds = 5
+event_max_count = 4096
+event_max_payload_bytes = 65536
+event_max_total_bytes = 4194304
+event_max_read = 512
 access_log = false
 ```
 
