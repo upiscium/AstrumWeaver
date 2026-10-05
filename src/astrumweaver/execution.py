@@ -66,6 +66,25 @@ class ArtifactRef:
 
 
 @dataclass(frozen=True, slots=True)
+class JobEvent:
+    """One opaque executor event emitted through a Worker-owned fenced sink."""
+
+    kind: str
+    payload: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "kind", _nonblank(self.kind, "kind"))
+        object.__setattr__(self, "payload", _mapping(self.payload))
+
+
+@runtime_checkable
+class JobEventSink(Protocol):
+    async def emit(self, event: JobEvent) -> None:
+        """Publish one event under the current Worker attempt authority."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
 class JobRequest:
     """Executor-facing job payload.
 
@@ -171,4 +190,18 @@ class JobExecutor(Protocol):
 
     async def residency(self) -> ResidencyReport:
         """Report resources currently kept resident by the executor."""
+        ...
+
+
+
+@runtime_checkable
+class StreamingJobExecutor(JobExecutor, Protocol):
+    """Optional executor extension for fenced incremental output."""
+
+    async def execute_stream(
+        self,
+        job: JobRequest,
+        sink: JobEventSink,
+    ) -> JobResult:
+        """Execute while publishing ordered events through the supplied sink."""
         ...
