@@ -6,12 +6,13 @@ import asyncio
 import json
 import math
 import secrets
+from collections.abc import AsyncIterator
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..control.auth import ClientAuthMode
 from ..control.models import JobStatus, JobSubmission, utc_now
@@ -27,6 +28,7 @@ from .chat import (
     ChatProfileCatalog,
     compile_chat_request,
     normalize_chat_completion,
+    normalize_chat_stream_chunk,
 )
 
 
@@ -167,13 +169,13 @@ class ChatGatewayService:
             status_code=502,
         )
 
-    async def complete(
+    async def _submit(
         self,
-        request: Request,
         body: dict[str, object],
         *,
         request_size_bytes: int,
-    ) -> dict[str, object]:
+        max_attempts: int | None = None,
+    ):
         model = body.get("model")
         if not isinstance(model, str):
             raise ChatGatewayError(
@@ -186,9 +188,6 @@ class ChatGatewayService:
             profile,
             request_size_bytes=request_size_bytes,
         )
-
-        loop = asyncio.get_running_loop()
-        stop_at = loop.time() + profile.request_timeout_seconds
         now = utc_now()
         deadline_at = now + timedelta(seconds=profile.request_timeout_seconds)
         try:
@@ -197,7 +196,11 @@ class ChatGatewayService:
                 JobSubmission(
                     capability="llm.chat",
                     payload=compiled.payload,
-                    max_attempts=profile.max_attempts,
+                    max_attempts=(
+                        profile.max_attempts
+                        if max_attempts is None
+                        else max_attempts
+                    ),
                     deadline_at=deadline_at,
                     serving=profile.binding,
                 ),
@@ -227,7 +230,21 @@ class ChatGatewayService:
                 "chat request conflicts with durable admission state",
                 status_code=409,
             ) from exc
+        return profile, record
 
+    async def complete(
+        self,
+        request: Request,
+        body: dict[str, object],
+        *,
+        request_size_bytes: int,
+    ) -> dict[str, object]:
+        profile, record = await self._submit(
+            body,
+            request_size_bytes=request_size_bytes,
+        )
+        loop = asyncio.get_running_loop()
+        stop_at = loop.time() + profile.request_timeout_seconds
         job_id = record.job_id
         try:
             while True:
@@ -259,6 +276,151 @@ class ChatGatewayService:
         except asyncio.CancelledError:
             await self._cancel(job_id)
             raise
+
+
+    async def stream(
+        self,
+        request: Request,
+        body: dict[str, object],
+        *,
+        request_size_bytes: int,
+    ) -> AsyncIterator[str]:
+        profile, record = await self._submit(
+            body,
+            request_size_bytes=request_size_bytes,
+            max_attempts=1,
+        )
+        loop = asyncio.get_running_loop()
+        stop_at = loop.time() + profile.request_timeout_seconds
+        job_id = record.job_id
+        created = int(record.created_at.timestamp())
+
+        async def generate() -> AsyncIterator[str]:
+            sequence = 0
+            try:
+                while True:
+                    if await request.is_disconnected():
+                        await self._cancel(job_id)
+                        return
+
+                    events = await asyncio.to_thread(
+                        self.repository.list_job_events,
+                        job_id,
+                        after_sequence=sequence,
+                        limit=128,
+                    )
+                    for event in events:
+                        if event.kind != "chat.completion.chunk":
+                            await self._cancel(job_id)
+                            yield _stream_error(
+                                "invalid_stream_event",
+                                "chat backend emitted an unsupported event",
+                            )
+                            return
+                        try:
+                            chunk = normalize_chat_stream_chunk(
+                                event.payload,
+                                profile_id=profile.profile_id,
+                                job_id=job_id,
+                                created=created,
+                            )
+                        except ChatGatewayError:
+                            await self._cancel(job_id)
+                            yield _stream_error(
+                                "invalid_provider_response",
+                                "chat backend emitted an invalid stream chunk",
+                            )
+                            return
+                        sequence = event.sequence
+                        yield _stream_data(chunk)
+
+                    current = await asyncio.to_thread(
+                        self.repository.get_job,
+                        job_id,
+                    )
+                    if current.status in {
+                        JobStatus.SUCCEEDED,
+                        JobStatus.FAILED,
+                        JobStatus.CANCELLED,
+                    }:
+                        tail = await asyncio.to_thread(
+                            self.repository.list_job_events,
+                            job_id,
+                            after_sequence=sequence,
+                            limit=128,
+                        )
+                        if tail:
+                            continue
+                        if current.status is JobStatus.SUCCEEDED:
+                            yield "data: [DONE]\n\n"
+                            return
+                        if current.status is JobStatus.CANCELLED:
+                            yield _stream_error(
+                                "request_cancelled",
+                                "chat request was cancelled",
+                            )
+                            return
+                        error = dict(current.error or {})
+                        code = error.get("code")
+                        error_type = error.get("type")
+                        public_code = (
+                            str(code)
+                            if code in {
+                                "context_length_exceeded",
+                                "event_buffer_full",
+                                "invalid_chat_job",
+                                "output_limit_exceeded",
+                                "unsupported_chat_adapter",
+                                "unsupported_feature",
+                            }
+                            else (
+                                "deadline_exceeded"
+                                if error_type == "deadline_expired"
+                                else "backend_failure"
+                            )
+                        )
+                        yield _stream_error(
+                            public_code,
+                            "chat stream terminated before durable success",
+                        )
+                        return
+
+                    remaining = stop_at - loop.time()
+                    if remaining <= 0:
+                        await self._cancel(job_id)
+                        yield _stream_error(
+                            "gateway_timeout",
+                            "chat stream exceeded the bounded gateway deadline",
+                        )
+                        return
+                    await asyncio.sleep(
+                        min(self.poll_interval_seconds, remaining)
+                    )
+            except asyncio.CancelledError:
+                await self._cancel(job_id)
+                raise
+
+        return generate()
+
+
+def _stream_data(value: dict[str, object]) -> str:
+    return "data: " + json.dumps(
+        value,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ) + "\n\n"
+
+
+def _stream_error(code: str, message: str) -> str:
+    return _stream_data(
+        {
+            "error": {
+                "message": message,
+                "type": "server_error",
+                "code": code,
+            }
+        }
+    )
 
 
 def create_chat_router(
@@ -318,6 +480,20 @@ def create_chat_router(
                 message="chat request body must be a JSON object",
             )
         try:
+            if value.get("stream") is True:
+                iterator = await service.stream(
+                    request,
+                    value,
+                    request_size_bytes=len(raw),
+                )
+                return StreamingResponse(
+                    iterator,
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "X-Accel-Buffering": "no",
+                    },
+                )
             result = await service.complete(
                 request,
                 value,

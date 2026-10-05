@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from hashlib import sha256
 from contextlib import contextmanager
 from datetime import datetime, timedelta
@@ -19,6 +19,7 @@ from ..serving import (
 )
 from .migrate import required_migration_names
 from .models import (
+    JobEventRecord,
     JobRecord,
     JobStatus,
     JobSubmission,
@@ -31,6 +32,7 @@ from .models import (
 from .repository import (
     ConflictError,
     DeadlineExceededError,
+    EventBufferFull,
     NoCompatibleDeployment,
     NotFoundError,
     OverloadedError,
@@ -38,6 +40,7 @@ from .repository import (
     StorageUnavailable,
     _assert_worker_epoch,
     _aware,
+    _event_size,
     _failure_payload,
     _lease_expiry,
     _submission_matches,
@@ -95,6 +98,7 @@ class PostgresControlRepository:
                 SELECT
                     to_regclass('public.workers') AS workers,
                     to_regclass('public.jobs') AS jobs,
+                    to_regclass('public.job_events') AS job_events,
                     to_regclass('public.schema_migrations') AS schema_migrations
                 """
             ).fetchone()
@@ -102,6 +106,7 @@ class PostgresControlRepository:
                 not row
                 or row.get("workers") is None
                 or row.get("jobs") is None
+                or row.get("job_events") is None
                 or row.get("schema_migrations") is None
             ):
                 raise StorageUnavailable("postgresql schema is unavailable")
@@ -125,16 +130,30 @@ class PostgresControlRepository:
         *,
         worker_ttl_seconds: int = 60,
         lease_seconds: int = 300,
+        event_max_count: int = 4096,
+        event_max_payload_bytes: int = 65536,
+        event_max_total_bytes: int = 4 * 1024 * 1024,
+        event_max_read: int = 512,
     ) -> None:
         if not database_url:
             raise ValueError("database_url is required")
-        if worker_ttl_seconds < 1:
-            raise ValueError("worker_ttl_seconds must be positive")
-        if lease_seconds < 1:
-            raise ValueError("lease_seconds must be positive")
+        for value, name in (
+            (worker_ttl_seconds, "worker_ttl_seconds"),
+            (lease_seconds, "lease_seconds"),
+            (event_max_count, "event_max_count"),
+            (event_max_payload_bytes, "event_max_payload_bytes"),
+            (event_max_total_bytes, "event_max_total_bytes"),
+            (event_max_read, "event_max_read"),
+        ):
+            if type(value) is not int or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
         self.database_url = database_url
         self.worker_ttl_seconds = worker_ttl_seconds
         self.lease_seconds = lease_seconds
+        self.event_max_count = event_max_count
+        self.event_max_payload_bytes = event_max_payload_bytes
+        self.event_max_total_bytes = event_max_total_bytes
+        self.event_max_read = event_max_read
 
     @contextmanager
     def _connection(self) -> Iterator[Any]:
@@ -201,6 +220,19 @@ class PostgresControlRepository:
                 if row.get("serving") is None
                 else WorkerServingAdvertisement.from_dict(row["serving"])
             ),
+        )
+
+    @staticmethod
+    def _event(row: dict[str, Any]) -> JobEventRecord:
+        return JobEventRecord(
+            job_id=str(row["job_id"]),
+            attempt=int(row["attempt"]),
+            sequence=int(row["sequence"]),
+            worker_id=str(row["worker_id"]),
+            runtime_instance_epoch=row.get("runtime_instance_epoch"),
+            kind=str(row["kind"]),
+            payload=row.get("payload") or {},
+            created_at=row["created_at"],
         )
 
     @staticmethod
@@ -752,6 +784,118 @@ class PostgresControlRepository:
         if row is None:
             raise NotFoundError(f"job not found: {job_id}")
         return self._job(row)
+
+    def append_job_event(
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        lease_token: str,
+        runtime_instance_epoch: str | None,
+        kind: str,
+        payload: Mapping[str, object],
+        now: datetime | None = None,
+    ) -> JobEventRecord:
+        timestamp = _aware(now)
+        normalized_kind = str(kind).strip()
+        if not normalized_kind:
+            raise ValueError("event kind must not be blank")
+        size = _event_size(normalized_kind, payload)
+        if size > self.event_max_payload_bytes:
+            raise EventBufferFull("job event payload exceeds the configured limit")
+
+        with self._transaction() as connection:
+            job_row = connection.execute(
+                "SELECT * FROM jobs WHERE id::text = %s FOR UPDATE",
+                (job_id,),
+            ).fetchone()
+            if job_row is None:
+                raise NotFoundError(f"job not found: {job_id}")
+            self._assert_running_row(
+                job_row,
+                worker_id=worker_id,
+                lease_token=lease_token,
+                runtime_instance_epoch=runtime_instance_epoch,
+                now=timestamp,
+            )
+            claimed_epoch = job_row.get("claimed_runtime_instance_epoch")
+            if runtime_instance_epoch != claimed_epoch:
+                raise ConflictError(f"job {job_id} runtime instance is stale")
+
+            aggregate = connection.execute(
+                """
+                SELECT
+                    count(*)::integer AS event_count,
+                    COALESCE(sum(payload_bytes), 0)::bigint AS total_bytes,
+                    COALESCE(max(sequence), 0)::bigint AS last_sequence
+                FROM job_events
+                WHERE job_id = %s
+                """,
+                (job_row["id"],),
+            ).fetchone()
+            if int(aggregate["event_count"]) >= self.event_max_count:
+                raise EventBufferFull("job event count exceeds the configured limit")
+            if int(aggregate["total_bytes"]) + size > self.event_max_total_bytes:
+                raise EventBufferFull("job event buffer exceeds the configured byte limit")
+            sequence = int(aggregate["last_sequence"]) + 1
+
+            row = connection.execute(
+                """
+                INSERT INTO job_events (
+                    job_id, sequence, attempt, worker_id,
+                    runtime_instance_epoch, kind, payload,
+                    payload_bytes, created_at
+                ) VALUES (
+                    %s, %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s
+                )
+                RETURNING *
+                """,
+                (
+                    job_row["id"],
+                    sequence,
+                    int(job_row["attempts"]),
+                    worker_id,
+                    claimed_epoch,
+                    normalized_kind,
+                    _json(dict(payload)),
+                    size,
+                    timestamp,
+                ),
+            ).fetchone()
+            return self._event(row)
+
+    def list_job_events(
+        self,
+        job_id: str,
+        *,
+        after_sequence: int = 0,
+        limit: int = 128,
+    ) -> list[JobEventRecord]:
+        if type(after_sequence) is not int or after_sequence < 0:
+            raise ValueError("after_sequence must be a non-negative integer")
+        if type(limit) is not int or not 1 <= limit <= self.event_max_read:
+            raise ValueError("event read limit is outside the configured bound")
+        with self._connection() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM jobs WHERE id::text = %s",
+                (job_id,),
+            ).fetchone()
+            if exists is None:
+                raise NotFoundError(f"job not found: {job_id}")
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM job_events
+                WHERE job_id::text = %s
+                  AND sequence > %s
+                ORDER BY sequence ASC
+                LIMIT %s
+                """,
+                (job_id, after_sequence, limit),
+            ).fetchall()
+        return [self._event(row) for row in rows]
 
     def claim_next_job(
         self,

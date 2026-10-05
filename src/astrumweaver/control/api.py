@@ -17,6 +17,7 @@ from ..control.repository import (
     ConflictError,
     ControlRepository,
     DeadlineExceededError,
+    EventBufferFull,
     NoCompatibleDeployment,
     NotFoundError,
     OverloadedError,
@@ -25,9 +26,12 @@ from ..control.repository import (
 )
 from ..control.serde import job_result_from_dict
 from ..transport import (
+    JOB_EVENTS_EXTENSION,
     PROTOCOL_VERSION,
     SERVING_EXTENSION,
     _extensions,
+    _require_job_events_extension,
+    job_event_record_to_dict,
     job_record_to_dict,
     job_submission_from_dict,
     worker_heartbeat_from_dict,
@@ -162,6 +166,10 @@ def create_app(
     async def overloaded_handler(_: Request, exc: OverloadedError) -> JSONResponse:
         return JSONResponse(status_code=429, content={"detail": str(exc)})
 
+    @app.exception_handler(EventBufferFull)
+    async def event_buffer_handler(_: Request, exc: EventBufferFull) -> JSONResponse:
+        return JSONResponse(status_code=429, content={"detail": str(exc)})
+
     @app.exception_handler(ConflictError)
     async def conflict_handler(_: Request, exc: ConflictError) -> JSONResponse:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
@@ -183,7 +191,7 @@ def create_app(
         return {
             "status": "ok",
             "protocol_version": PROTOCOL_VERSION,
-            "extensions": [SERVING_EXTENSION],
+            "extensions": [SERVING_EXTENSION, JOB_EVENTS_EXTENSION],
         }
 
     @app.get("/v1/ready")
@@ -192,7 +200,7 @@ def create_app(
         return {
             "ready": True,
             "protocol_version": PROTOCOL_VERSION,
-            "extensions": [SERVING_EXTENSION],
+            "extensions": [SERVING_EXTENSION, JOB_EVENTS_EXTENSION],
         }
 
     @app.post("/v1/jobs", status_code=201, dependencies=[Depends(require_client)])
@@ -266,6 +274,39 @@ def create_app(
         if record is None:
             return Response(status_code=204)
         return JSONResponse(status_code=200, content=job_record_to_dict(record))
+
+    @app.post(
+        "/v1/workers/{worker_id}/jobs/{job_id}/events",
+        dependencies=[Depends(require_worker)],
+    )
+    async def append_job_event(
+        worker_id: str,
+        job_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            body = await _json_v1(request)
+            _require_job_events_extension(body)
+            lease_token = str(body["lease_token"])
+            runtime_instance_epoch = _serving_epoch(body)
+            kind = str(body["kind"]).strip()
+            payload = body.get("payload")
+            if not kind:
+                raise ValueError("event kind must not be blank")
+            if not isinstance(payload, dict):
+                raise TypeError("event payload must be an object")
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        record = await asyncio.to_thread(
+            repository.append_job_event,
+            job_id,
+            worker_id=worker_id,
+            lease_token=lease_token,
+            runtime_instance_epoch=runtime_instance_epoch,
+            kind=kind,
+            payload=payload,
+        )
+        return job_event_record_to_dict(record)
 
     @app.get(
         "/v1/workers/{worker_id}/jobs/{job_id}",

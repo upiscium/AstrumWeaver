@@ -7,6 +7,8 @@ PostgreSQL backend in postgres.py.
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from threading import RLock
@@ -17,6 +19,7 @@ from ..execution import JobResult
 from ..scheduling import worker_matches
 from ..serving import worker_serving_accepts_job
 from .models import (
+    JobEventRecord,
     JobRecord,
     JobStatus,
     JobSubmission,
@@ -50,6 +53,10 @@ class NoCompatibleDeployment(RepositoryError):
 
 class OverloadedError(RepositoryError):
     """All live compatible serving replicas are at capacity."""
+
+
+class EventBufferFull(RepositoryError):
+    """A bounded Job event buffer cannot accept another event."""
 
 
 class StorageUnavailable(RepositoryError):
@@ -95,6 +102,26 @@ class ControlRepository(Protocol):
     ) -> list[JobRecord]: ...
 
     def get_job(self, job_id: str) -> JobRecord: ...
+
+    def append_job_event(
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        lease_token: str,
+        runtime_instance_epoch: str | None,
+        kind: str,
+        payload: Mapping[str, object],
+        now: datetime | None = None,
+    ) -> JobEventRecord: ...
+
+    def list_job_events(
+        self,
+        job_id: str,
+        *,
+        after_sequence: int = 0,
+        limit: int = 128,
+    ) -> list[JobEventRecord]: ...
 
     def claim_next_job(
         self,
@@ -151,6 +178,22 @@ def _lease_expiry(
     return expiry if deadline_at is None else min(expiry, deadline_at)
 
 
+def _event_size(kind: str, payload: Mapping[str, object]) -> int:
+    if not isinstance(payload, Mapping):
+        raise TypeError("event payload must be a mapping")
+    try:
+        encoded = json.dumps(
+            {"kind": kind, "payload": dict(payload)},
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise TypeError("event payload must be JSON-compatible") from exc
+    return len(encoded)
+
+
 def _failure_payload(error: str | dict[str, object], *, retryable: bool) -> dict[str, object]:
     if isinstance(error, str):
         return {"message": error, "retryable": retryable}
@@ -196,15 +239,36 @@ def _submission_matches(record: JobRecord, submission: JobSubmission) -> bool:
 class InMemoryControlRepository:
     """Deterministic reference implementation of control-plane semantics."""
 
-    def __init__(self, *, worker_ttl_seconds: int = 60, lease_seconds: int = 300) -> None:
-        if worker_ttl_seconds < 1:
-            raise ValueError("worker_ttl_seconds must be positive")
-        if lease_seconds < 1:
-            raise ValueError("lease_seconds must be positive")
+    def __init__(
+        self,
+        *,
+        worker_ttl_seconds: int = 60,
+        lease_seconds: int = 300,
+        event_max_count: int = 4096,
+        event_max_payload_bytes: int = 65536,
+        event_max_total_bytes: int = 4 * 1024 * 1024,
+        event_max_read: int = 512,
+    ) -> None:
+        for value, name in (
+            (worker_ttl_seconds, "worker_ttl_seconds"),
+            (lease_seconds, "lease_seconds"),
+            (event_max_count, "event_max_count"),
+            (event_max_payload_bytes, "event_max_payload_bytes"),
+            (event_max_total_bytes, "event_max_total_bytes"),
+            (event_max_read, "event_max_read"),
+        ):
+            if type(value) is not int or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
         self.worker_ttl_seconds = worker_ttl_seconds
         self.lease_seconds = lease_seconds
+        self.event_max_count = event_max_count
+        self.event_max_payload_bytes = event_max_payload_bytes
+        self.event_max_total_bytes = event_max_total_bytes
+        self.event_max_read = event_max_read
         self._workers: dict[str, WorkerRecord] = {}
         self._jobs: dict[str, JobRecord] = {}
+        self._events: dict[str, list[JobEventRecord]] = {}
+        self._event_bytes: dict[str, int] = {}
         self._idempotency: dict[str, str] = {}
         self._sequence = 0
         self._lock = RLock()
@@ -487,6 +551,74 @@ class InMemoryControlRepository:
         with self._lock:
             return sorted(self._jobs.values(), key=lambda item: item.sequence)
 
+    def append_job_event(
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        lease_token: str,
+        runtime_instance_epoch: str | None,
+        kind: str,
+        payload: Mapping[str, object],
+        now: datetime | None = None,
+    ) -> JobEventRecord:
+        timestamp = _aware(now)
+        normalized_kind = str(kind).strip()
+        if not normalized_kind:
+            raise ValueError("event kind must not be blank")
+        size = _event_size(normalized_kind, payload)
+        if size > self.event_max_payload_bytes:
+            raise EventBufferFull("job event payload exceeds the configured limit")
+        with self._lock:
+            job = self.get_job(job_id)
+            self._assert_running(
+                job,
+                worker_id=worker_id,
+                lease_token=lease_token,
+                runtime_instance_epoch=runtime_instance_epoch,
+                now=timestamp,
+            )
+            if runtime_instance_epoch != job.claimed_runtime_instance_epoch:
+                raise ConflictError(f"job {job.job_id} runtime instance is stale")
+            events = self._events.setdefault(job_id, [])
+            total = self._event_bytes.get(job_id, 0)
+            if len(events) >= self.event_max_count:
+                raise EventBufferFull("job event count exceeds the configured limit")
+            if total + size > self.event_max_total_bytes:
+                raise EventBufferFull("job event buffer exceeds the configured byte limit")
+            record = JobEventRecord(
+                job_id=job.job_id,
+                attempt=job.attempts,
+                sequence=len(events) + 1,
+                worker_id=worker_id,
+                runtime_instance_epoch=job.claimed_runtime_instance_epoch,
+                kind=normalized_kind,
+                payload=dict(payload),
+                created_at=timestamp,
+            )
+            events.append(record)
+            self._event_bytes[job_id] = total + size
+            return record
+
+    def list_job_events(
+        self,
+        job_id: str,
+        *,
+        after_sequence: int = 0,
+        limit: int = 128,
+    ) -> list[JobEventRecord]:
+        if type(after_sequence) is not int or after_sequence < 0:
+            raise ValueError("after_sequence must be a non-negative integer")
+        if type(limit) is not int or not 1 <= limit <= self.event_max_read:
+            raise ValueError("event read limit is outside the configured bound")
+        with self._lock:
+            self.get_job(job_id)
+            return [
+                event
+                for event in self._events.get(job_id, ())
+                if event.sequence > after_sequence
+            ][:limit]
+
     def claim_next_job(
         self,
         worker_id: str,
@@ -757,6 +889,7 @@ __all__ = [
     "ConflictError",
     "ControlRepository",
     "DeadlineExceededError",
+    "EventBufferFull",
     "InMemoryControlRepository",
     "NoCompatibleDeployment",
     "NotFoundError",

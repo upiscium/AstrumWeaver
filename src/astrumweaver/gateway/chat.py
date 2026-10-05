@@ -48,6 +48,7 @@ _ALLOWED_REQUEST_FIELDS = frozenset(
         "stop",
         "n",
         "stream",
+        "stream_options",
     }
 )
 
@@ -366,7 +367,7 @@ def _validate_messages(
 
         allowed = {"role", "content", "name"}
         if role == "assistant":
-            allowed.add("tool_calls")
+            allowed.update({"tool_calls", "reasoning_content"})
         if role == "tool":
             allowed.add("tool_call_id")
         if set(data) - allowed:
@@ -396,6 +397,14 @@ def _validate_messages(
             message["content"] = content
 
         if role == "assistant":
+            reasoning = data.get("reasoning_content")
+            if reasoning is not None:
+                if not isinstance(reasoning, str):
+                    raise ChatGatewayError(
+                        "invalid_request",
+                        "assistant reasoning_content must be a string",
+                    )
+                message["reasoning_content"] = reasoning
             raw_calls = data.get("tool_calls")
             if raw_calls is not None:
                 if not isinstance(raw_calls, list) or not raw_calls:
@@ -587,11 +596,24 @@ def compile_chat_request(
             "request model does not match the resolved gateway profile",
         )
 
-    if "stream" in data and data["stream"] is not False:
+    stream = data.get("stream", False)
+    if type(stream) is not bool:
         raise ChatGatewayError(
-            "streaming_not_supported",
-            "stream=true requires the Stage B fenced event channel",
+            "invalid_request",
+            "stream must be boolean",
         )
+    if "stream_options" in data:
+        options = data["stream_options"]
+        if (
+            not stream
+            or not isinstance(options, Mapping)
+            or set(options) != {"include_usage"}
+            or options.get("include_usage") is not True
+        ):
+            raise ChatGatewayError(
+                "invalid_request",
+                "stream_options supports only include_usage=true with streaming",
+            )
     if "n" in data and data["n"] != 1:
         raise ChatGatewayError(
             "unsupported_field",
@@ -621,7 +643,7 @@ def compile_chat_request(
     messages, history_uses_tools = _validate_messages(data.get("messages"))
     request: dict[str, object] = {
         "messages": messages,
-        "stream": False,
+        "stream": stream,
     }
 
     tool_names: set[str] = set()
@@ -749,6 +771,15 @@ def normalize_chat_completion(
         "role": "assistant",
         "content": content,
     }
+    reasoning = message_data.get("reasoning_content")
+    if reasoning is not None:
+        if not isinstance(reasoning, str):
+            raise ChatGatewayError(
+                "invalid_provider_response",
+                "provider reasoning_content is invalid",
+                status_code=502,
+            )
+        normalized_message["reasoning_content"] = reasoning
     if message_data.get("tool_calls") is not None:
         normalized_message["tool_calls"] = _normalize_response_tool_calls(
             message_data["tool_calls"]
@@ -801,6 +832,259 @@ def normalize_chat_completion(
     return result
 
 
+def _stream_usage(value: object) -> dict[str, object] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ChatGatewayError(
+            "invalid_provider_response",
+            "provider stream usage is invalid",
+            status_code=502,
+        )
+    result: dict[str, object] = {}
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        raw = value.get(key)
+        if raw is not None:
+            if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+                raise ChatGatewayError(
+                    "invalid_provider_response",
+                    "provider stream usage token count is invalid",
+                    status_code=502,
+                )
+            result[key] = raw
+    for key, child_key in (
+        ("prompt_tokens_details", "cached_tokens"),
+        ("completion_tokens_details", "reasoning_tokens"),
+    ):
+        raw = value.get(key)
+        if raw is None:
+            continue
+        if not isinstance(raw, Mapping):
+            raise ChatGatewayError(
+                "invalid_provider_response",
+                "provider stream usage details are invalid",
+                status_code=502,
+            )
+        child = raw.get(child_key)
+        details: dict[str, int] = {}
+        if child is not None:
+            if isinstance(child, bool) or not isinstance(child, int) or child < 0:
+                raise ChatGatewayError(
+                    "invalid_provider_response",
+                    "provider stream usage detail is invalid",
+                    status_code=502,
+                )
+            details[child_key] = child
+        result[key] = details
+    return result
+
+
+def validate_chat_stream_chunk(value: Mapping[str, object]) -> dict[str, object]:
+    """Validate one provider-native OpenAI-compatible chat stream chunk."""
+
+    if not isinstance(value, Mapping):
+        raise ChatGatewayError(
+            "invalid_provider_response",
+            "provider stream chunk must be an object",
+            status_code=502,
+        )
+    data = dict(value)
+    choices = data.get("choices")
+    if not isinstance(choices, list) or len(choices) > 1:
+        raise ChatGatewayError(
+            "invalid_provider_response",
+            "provider stream chunk must contain zero or one choices",
+            status_code=502,
+        )
+
+    normalized_choices: list[dict[str, object]] = []
+    if choices:
+        raw_choice = choices[0]
+        if not isinstance(raw_choice, Mapping):
+            raise ChatGatewayError(
+                "invalid_provider_response",
+                "provider stream choice is invalid",
+                status_code=502,
+            )
+        choice = dict(raw_choice)
+        index = choice.get("index", 0)
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            raise ChatGatewayError(
+                "invalid_provider_response",
+                "provider stream choice index is invalid",
+                status_code=502,
+            )
+        raw_delta = choice.get("delta") or {}
+        if not isinstance(raw_delta, Mapping):
+            raise ChatGatewayError(
+                "invalid_provider_response",
+                "provider stream delta is invalid",
+                status_code=502,
+            )
+        delta = dict(raw_delta)
+        normalized_delta: dict[str, object] = {}
+        role = delta.get("role")
+        if role is not None:
+            if role != "assistant":
+                raise ChatGatewayError(
+                    "invalid_provider_response",
+                    "provider stream role is invalid",
+                    status_code=502,
+                )
+            normalized_delta["role"] = role
+        for key in ("content", "reasoning_content"):
+            raw = delta.get(key)
+            if raw is not None:
+                if not isinstance(raw, str):
+                    raise ChatGatewayError(
+                        "invalid_provider_response",
+                        "provider stream text delta is invalid",
+                        status_code=502,
+                    )
+                normalized_delta[key] = raw
+
+        raw_tools = delta.get("tool_calls")
+        if raw_tools is not None:
+            if not isinstance(raw_tools, list):
+                raise ChatGatewayError(
+                    "invalid_provider_response",
+                    "provider stream tool_calls is invalid",
+                    status_code=502,
+                )
+            tools: list[dict[str, object]] = []
+            for raw_tool in raw_tools:
+                if not isinstance(raw_tool, Mapping):
+                    raise ChatGatewayError(
+                        "invalid_provider_response",
+                        "provider stream tool call is invalid",
+                        status_code=502,
+                    )
+                tool = dict(raw_tool)
+                tool_index = tool.get("index")
+                if (
+                    isinstance(tool_index, bool)
+                    or not isinstance(tool_index, int)
+                    or tool_index < 0
+                ):
+                    raise ChatGatewayError(
+                        "invalid_provider_response",
+                        "provider stream tool index is invalid",
+                        status_code=502,
+                    )
+                item: dict[str, object] = {"index": tool_index}
+                tool_id = tool.get("id")
+                if tool_id is not None:
+                    if not isinstance(tool_id, str) or not tool_id:
+                        raise ChatGatewayError(
+                            "invalid_provider_response",
+                            "provider stream tool id is invalid",
+                            status_code=502,
+                        )
+                    item["id"] = tool_id
+                tool_type = tool.get("type")
+                if tool_type is not None:
+                    if tool_type != "function":
+                        raise ChatGatewayError(
+                            "invalid_provider_response",
+                            "provider stream tool type is invalid",
+                            status_code=502,
+                        )
+                    item["type"] = "function"
+                raw_function = tool.get("function")
+                if raw_function is not None:
+                    if not isinstance(raw_function, Mapping):
+                        raise ChatGatewayError(
+                            "invalid_provider_response",
+                            "provider stream tool function is invalid",
+                            status_code=502,
+                        )
+                    function = dict(raw_function)
+                    normalized_function: dict[str, str] = {}
+                    for key in ("name", "arguments"):
+                        raw = function.get(key)
+                        if raw is not None:
+                            if not isinstance(raw, str):
+                                raise ChatGatewayError(
+                                    "invalid_provider_response",
+                                    "provider stream tool fragment is invalid",
+                                    status_code=502,
+                                )
+                            normalized_function[key] = raw
+                    item["function"] = normalized_function
+                tools.append(item)
+            normalized_delta["tool_calls"] = tools
+
+        finish_reason = choice.get("finish_reason")
+        if finish_reason is not None and not isinstance(finish_reason, str):
+            raise ChatGatewayError(
+                "invalid_provider_response",
+                "provider stream finish_reason is invalid",
+                status_code=502,
+            )
+        normalized_choices.append(
+            {
+                "index": index,
+                "delta": normalized_delta,
+                "finish_reason": finish_reason,
+            }
+        )
+
+    result: dict[str, object] = {
+        "choices": normalized_choices,
+    }
+    for key in ("id", "object", "model"):
+        raw = data.get(key)
+        if raw is not None:
+            if not isinstance(raw, str):
+                raise ChatGatewayError(
+                    "invalid_provider_response",
+                    "provider stream identity field is invalid",
+                    status_code=502,
+                )
+            result[key] = raw
+    created = data.get("created")
+    if created is not None:
+        if isinstance(created, bool) or not isinstance(created, int) or created < 0:
+            raise ChatGatewayError(
+                "invalid_provider_response",
+                "provider stream created field is invalid",
+                status_code=502,
+            )
+        result["created"] = created
+    usage = _stream_usage(data.get("usage"))
+    if usage is not None:
+        result["usage"] = usage
+    return result
+
+
+def normalize_chat_stream_chunk(
+    value: Mapping[str, object],
+    *,
+    profile_id: str,
+    job_id: str,
+    created: int,
+) -> dict[str, object]:
+    data = validate_chat_stream_chunk(value)
+    result: dict[str, object] = {
+        "id": (
+            data["id"]
+            if isinstance(data.get("id"), str)
+            else f"chatcmpl-{job_id}"
+        ),
+        "object": "chat.completion.chunk",
+        "created": (
+            data["created"]
+            if isinstance(data.get("created"), int)
+            else created
+        ),
+        "model": profile_id,
+        "choices": data["choices"],
+    }
+    if "usage" in data:
+        result["usage"] = data["usage"]
+    return result
+
+
 __all__ = [
     "CHAT_CATALOG_SCHEMA",
     "CHAT_JOB_SCHEMA",
@@ -812,4 +1096,6 @@ __all__ = [
     "CompiledChatRequest",
     "compile_chat_request",
     "normalize_chat_completion",
+    "normalize_chat_stream_chunk",
+    "validate_chat_stream_chunk",
 ]

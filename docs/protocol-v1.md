@@ -26,7 +26,12 @@ Responses include `protocol_version: "v1"` where applicable.
 
 Breaking transport changes require a new protocol namespace rather than silently changing v1 semantics.
 
-### Serving extension negotiation
+### Optional v1 extensions
+
+Control advertises the optional extensions it supports from `GET /v1/health`
+and `GET /v1/ready`. Unknown extensions fail closed.
+
+#### Serving extension negotiation
 
 Deployment-bound serving uses the optional v1 extension:
 
@@ -72,6 +77,40 @@ Idempotency is resolved before transient liveness/capacity/deadline admission
 checks. An equivalent retry of an already-admitted request returns the same
 durable Job; reuse of the key for different resolved serving intent is a
 conflict.
+
+#### Fenced Job event extension
+
+Live incremental output uses:
+
+```text
+job-events-v1
+```
+
+This extension is workload-agnostic. Control does not interpret chat tokens,
+tool-call fragments or other event payload semantics.
+
+A Worker appends one event with:
+
+```text
+POST /v1/workers/{worker_id}/jobs/{job_id}/events
+```
+
+and includes `job-events-v1`, the current lease token, and, for serving Jobs,
+the same `serving-bindings-v1` runtime-instance epoch used by heartbeat and
+terminal writes. Control accepts the append only while that exact attempt is
+RUNNING and the lease/deadline/Worker/epoch fences remain current.
+
+Every durable event records Job ID, attempt number, monotonically increasing
+per-Job sequence, Worker ID, runtime-instance epoch when applicable, opaque kind
+and payload, and creation time. PostgreSQL serializes appends by locking the Job
+row before allocating the next sequence.
+
+Event buffers are bounded by per-event bytes, event count, total retained bytes,
+and read page size. An overflow is rejected rather than dropping or bypassing
+Control. Streaming executors treat rejected publication as a failed attempt.
+
+The gateway reads events internally from the same Control repository; there is
+no public client event-append authority and no direct runtime-to-client proxy.
 
 ## Authorities
 
@@ -204,6 +243,17 @@ POST /v1/workers/{worker_id}/state
 
 These require Worker authority.
 
+### Worker event publication
+
+```text
+POST /v1/workers/{worker_id}/jobs/{job_id}/events
+```
+
+This requires Worker authority plus `job-events-v1`. For a serving attempt,
+the body also carries `serving-bindings-v1` and the current runtime-instance
+epoch. HTTP 409 indicates stale/cancelled/expired attempt authority; HTTP 429
+indicates that the configured bounded event buffer cannot accept another event.
+
 ### Worker claim/status
 
 ```text
@@ -301,6 +351,10 @@ client_auth = "bearer"
 worker_ttl_seconds = 60
 lease_seconds = 300
 maintenance_interval_seconds = 5
+event_max_count = 4096
+event_max_payload_bytes = 65536
+event_max_total_bytes = 4194304
+event_max_read = 512
 access_log = false
 ```
 

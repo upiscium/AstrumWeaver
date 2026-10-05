@@ -7,6 +7,7 @@ from typing import Any, Mapping
 
 from .contracts import JobRequirements, ResourceShape, WorkerSpec
 from .control.models import (
+    JobEventRecord,
     JobRecord,
     JobStatus,
     JobSubmission,
@@ -27,7 +28,8 @@ from .control.serde import (
 
 PROTOCOL_VERSION = "v1"
 SERVING_EXTENSION = "serving-bindings-v1"
-_SUPPORTED_EXTENSIONS = frozenset({SERVING_EXTENSION})
+JOB_EVENTS_EXTENSION = "job-events-v1"
+_SUPPORTED_EXTENSIONS = frozenset({SERVING_EXTENSION, JOB_EVENTS_EXTENSION})
 
 
 def _extensions(value: Mapping[str, Any]) -> frozenset[str]:
@@ -48,9 +50,31 @@ def _require_serving_extension(value: Mapping[str, Any]) -> None:
         raise ValueError("serving-bindings-v1 extension is required")
 
 
+def _require_job_events_extension(value: Mapping[str, Any]) -> None:
+    if JOB_EVENTS_EXTENSION not in _extensions(value):
+        raise ValueError("job-events-v1 extension is required")
+
 
 def _iso(value: datetime | None) -> str | None:
     return None if value is None else value.isoformat()
+
+
+def job_event_record_to_dict(value: JobEventRecord) -> dict[str, Any]:
+    extensions = [JOB_EVENTS_EXTENSION]
+    if value.runtime_instance_epoch is not None:
+        extensions.append(SERVING_EXTENSION)
+    return {
+        "protocol_version": PROTOCOL_VERSION,
+        "extensions": extensions,
+        "job_id": value.job_id,
+        "attempt": value.attempt,
+        "sequence": value.sequence,
+        "worker_id": value.worker_id,
+        "runtime_instance_epoch": value.runtime_instance_epoch,
+        "kind": value.kind,
+        "payload": dict(value.payload),
+        "created_at": value.created_at.isoformat(),
+    }
 
 
 def worker_record_to_dict(value: WorkerRecord) -> dict[str, Any]:
@@ -189,9 +213,12 @@ def job_request_from_record(value: JobRecord):
 
 
 __all__ = [
+    "JOB_EVENTS_EXTENSION",
     "PROTOCOL_VERSION",
     "SERVING_EXTENSION",
+    "_require_job_events_extension",
     "_require_serving_extension",
+    "job_event_record_to_dict",
     "job_record_to_dict",
     "job_request_from_record",
     "job_submission_from_dict",

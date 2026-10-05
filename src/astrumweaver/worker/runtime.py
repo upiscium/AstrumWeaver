@@ -17,8 +17,15 @@ from typing import Any
 from ..contracts import WorkerSpec
 from ..control.models import WorkerState
 from ..control.serde import worker_spec_from_dict
-from ..transport import PROTOCOL_VERSION, SERVING_EXTENSION
-from ..execution import JobExecutionError, JobExecutor, JobResult
+from ..transport import JOB_EVENTS_EXTENSION, PROTOCOL_VERSION, SERVING_EXTENSION
+from ..execution import (
+    JobEvent,
+    JobEventSink,
+    JobExecutionError,
+    JobExecutor,
+    JobResult,
+    StreamingJobExecutor,
+)
 from ..serving import (
     ServingDeploymentDeclaration,
     ServingJobBinding,
@@ -173,6 +180,17 @@ def load_executor(specifier: str, config: Mapping[str, Any] | None = None) -> Jo
     return executor
 
 
+class _WorkerJobEventSink:
+    def __init__(self, runtime: "WorkerRuntime", claimed: ClaimedJob) -> None:
+        self._runtime = runtime
+        self._claimed = claimed
+
+    async def emit(self, event: JobEvent) -> None:
+        if not isinstance(event, JobEvent):
+            raise TypeError("streaming executor must emit JobEvent values")
+        await self._runtime._publish_job_event(self._claimed, event)
+
+
 class WorkerRuntime:
     """One execution owner with a persistent, job-independent heartbeat deadline.
 
@@ -325,6 +343,8 @@ class WorkerRuntime:
         async with self._control_lock:
             sent_at = time.monotonic()
             try:
+                if isinstance(self.executor, StreamingJobExecutor):
+                    await self.client.require_extension(JOB_EVENTS_EXTENSION)
                 record = await self.client.register(
                     spec=self.spec,
                     max_concurrency=self.max_concurrency,
@@ -493,6 +513,44 @@ class WorkerRuntime:
         ):
             raise RuntimeError("claimed serving attempt identity does not match local runtime")
 
+    async def _publish_job_event(
+        self,
+        claimed: ClaimedJob,
+        event: JobEvent,
+    ) -> None:
+        if self._active is not claimed:
+            raise RuntimeError("Job event belongs to an inactive local attempt")
+        async with self._control_lock:
+            if self._active is not claimed:
+                raise RuntimeError("Job event belongs to an inactive local attempt")
+            self._require_runtime()
+            if time.monotonic() >= self._next_heartbeat_at:
+                await self._heartbeat_locked()
+            if not self.control_available:
+                raise ControlTransportError(0, "Worker authority is unconfirmed")
+            try:
+                await self.client.publish_event(
+                    self.spec.worker_id,
+                    claimed.request.job_id,
+                    claimed.lease_token,
+                    kind=event.kind,
+                    payload=event.payload,
+                    runtime_instance_epoch=(
+                        None
+                        if self.serving is None
+                        else self.serving.runtime_instance.epoch
+                    ),
+                )
+            except ControlTransportError as exc:
+                if exc.status_code == 429:
+                    raise JobExecutionError(
+                        "event_buffer_full",
+                        "Control rejected the bounded Job event buffer",
+                        retryable=False,
+                    ) from exc
+                self._control_failed(exc)
+                raise
+
     async def _execute_claim(self, claimed: ClaimedJob) -> None:
         # The private direct-entry test path also installs the active attempt;
         # normal callers install it under the claim lock before reaching here.
@@ -505,8 +563,17 @@ class WorkerRuntime:
             asyncio.create_task(self.runtime_supervisor.failed.wait(), name="astrumweaver-runtime-failure")
             if self.runtime_supervisor is not None else None
         )
+        execution_call = (
+            self.executor.execute_stream(
+                claimed.request,
+                _WorkerJobEventSink(self, claimed),
+            )
+            if isinstance(self.executor, StreamingJobExecutor)
+            else self.executor.execute(claimed.request)
+        )
         execution = asyncio.create_task(
-            self.executor.execute(claimed.request), name="astrumweaver-job-execution"
+            execution_call,
+            name="astrumweaver-job-execution",
         )
         try:
             while not execution.done():

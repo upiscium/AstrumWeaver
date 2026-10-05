@@ -146,6 +146,47 @@ class JobSubmission:
 
 
 @dataclass(frozen=True, slots=True)
+class JobEventRecord:
+    job_id: str
+    attempt: int
+    sequence: int
+    worker_id: str
+    runtime_instance_epoch: str | None
+    kind: str
+    payload: Mapping[str, Any]
+    created_at: datetime
+
+    def __post_init__(self) -> None:
+        job_id = self.job_id.strip()
+        worker_id = self.worker_id.strip()
+        kind = self.kind.strip()
+        if not job_id:
+            raise ValueError("job_id must not be blank")
+        if type(self.attempt) is not int or self.attempt < 1:
+            raise ValueError("attempt must be a positive integer")
+        if type(self.sequence) is not int or self.sequence < 1:
+            raise ValueError("sequence must be a positive integer")
+        if not worker_id:
+            raise ValueError("worker_id must not be blank")
+        if self.runtime_instance_epoch is not None:
+            epoch = self.runtime_instance_epoch.strip()
+            if not epoch:
+                raise ValueError("runtime_instance_epoch must not be blank")
+            object.__setattr__(self, "runtime_instance_epoch", epoch)
+        if not kind:
+            raise ValueError("kind must not be blank")
+        if not isinstance(self.created_at, datetime):
+            raise TypeError("created_at must be a datetime")
+        if self.created_at.tzinfo is None:
+            raise ValueError("created_at must be timezone-aware")
+        object.__setattr__(self, "job_id", job_id)
+        object.__setattr__(self, "worker_id", worker_id)
+        object.__setattr__(self, "kind", kind)
+        object.__setattr__(self, "payload", _mapping(self.payload))
+        object.__setattr__(self, "created_at", self.created_at.astimezone(UTC))
+
+
+@dataclass(frozen=True, slots=True)
 class JobRecord:
     job_id: str
     capability: str
@@ -228,6 +269,7 @@ class JobRecord:
 
 
 __all__ = [
+    "JobEventRecord",
     "JobRecord",
     "JobStatus",
     "JobSubmission",

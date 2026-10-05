@@ -219,6 +219,7 @@ def test_tool_round_trip_preserves_call_ids_and_argument_json_strings():
                 {
                     "role": "assistant",
                     "content": None,
+                    "reasoning_content": "I should inspect the file.",
                     "tool_calls": [
                         {
                             "id": "call_1",
@@ -262,6 +263,7 @@ def test_tool_round_trip_preserves_call_ids_and_argument_json_strings():
     )
 
     request = compiled.payload["request"]
+    assert request["messages"][1]["reasoning_content"] == "I should inspect the file."
     assert request["messages"][1]["tool_calls"][0]["id"] == "call_1"
     assert (
         request["messages"][1]["tool_calls"][0]["function"]["arguments"]
@@ -274,7 +276,7 @@ def test_tool_round_trip_preserves_call_ids_and_argument_json_strings():
 @pytest.mark.parametrize(
     ("patch", "code"),
     [
-        ({"stream": True}, "streaming_not_supported"),
+        ({"stream": "yes"}, "invalid_request"),
         ({"n": 2}, "unsupported_field"),
         ({"response_format": {"type": "json_object"}}, "unsupported_field"),
         ({"max_tokens": 2048}, "output_limit_exceeded"),
@@ -289,6 +291,47 @@ def test_request_subset_fails_closed(patch, code):
     with pytest.raises(ChatGatewayError) as error:
         compile_chat_request(request, profile(), request_size_bytes=256)
     assert error.value.code == code
+
+
+def test_streaming_request_compiles_to_same_bounded_job_envelope():
+    compiled = compile_chat_request(
+        {
+            "model": "local-code-v1",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            "max_tokens": 32,
+        },
+        profile(),
+        request_size_bytes=256,
+    )
+    assert compiled.payload["request"]["stream"] is True
+    assert "stream_options" not in compiled.payload["request"]
+    assert compiled.payload["request"]["max_tokens"] == 32
+    assert compiled.payload["limits"]["total_tokens"] == 5120
+
+
+@pytest.mark.parametrize(
+    "stream_options",
+    [
+        {"include_usage": False},
+        {"include_usage": True, "other": True},
+        "invalid",
+    ],
+)
+def test_stream_options_fail_closed_outside_pinned_shape(stream_options):
+    with pytest.raises(ChatGatewayError) as error:
+        compile_chat_request(
+            {
+                "model": "local-code-v1",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "stream": True,
+                "stream_options": stream_options,
+            },
+            profile(),
+            request_size_bytes=256,
+        )
+    assert error.value.code == "invalid_request"
 
 
 def test_request_byte_bound_and_missing_tool_feature_fail_closed():

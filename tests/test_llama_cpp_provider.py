@@ -726,6 +726,81 @@ async def test_http_api_uses_health_models_and_openai_endpoints() -> None:
     ]
 
 
+@pytest.mark.asyncio
+async def test_http_api_parses_openai_sse_until_done() -> None:
+    observed: list[dict] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        observed.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            text=(
+                'data: {"choices":[{"index":0,"delta":{"content":"a"},'
+                '"finish_reason":null}]}\n\n'
+                'data: {"choices":[{"index":0,"delta":{"content":"b"},'
+                '"finish_reason":"stop"}]}\n\n'
+                'data: {"choices":[],"usage":{"prompt_tokens":2,'
+                '"completion_tokens":2,"total_tokens":4}}\n\n'
+                'data: [DONE]\n\n'
+            ),
+        )
+
+    api = HttpLlamaCppApi(
+        "http://127.0.0.1:8080",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        chunks = [
+            chunk
+            async for chunk in api.chat_stream(
+                {
+                    "model": "astrumweaver",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": True,
+                }
+            )
+        ]
+    finally:
+        await api.close()
+
+    assert [chunk["choices"] for chunk in chunks[:2]] == [
+        [{"index": 0, "delta": {"content": "a"}, "finish_reason": None}],
+        [{"index": 0, "delta": {"content": "b"}, "finish_reason": "stop"}],
+    ]
+    assert chunks[2]["usage"]["total_tokens"] == 4
+    assert observed[0]["stream"] is True
+
+
+@pytest.mark.asyncio
+async def test_http_api_rejects_non_data_sse_frame() -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            text="event: message\n\ndata: [DONE]\n\n",
+        )
+
+    api = HttpLlamaCppApi(
+        "http://127.0.0.1:8080",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(RuntimeError, match="SSE framing"):
+            _ = [
+                chunk
+                async for chunk in api.chat_stream(
+                    {
+                        "model": "astrumweaver",
+                        "messages": [],
+                        "stream": True,
+                    }
+                )
+            ]
+    finally:
+        await api.close()
+
+
 class FakeApi:
     def __init__(
         self,
@@ -739,6 +814,9 @@ class FakeApi:
         self.chat_started = asyncio.Event()
         self.block_chat = False
         self.chat_payloads: list[dict] = []
+        self.chat_stream_payloads: list[dict] = []
+        self.chat_stream_chunks: list[dict] = []
+        self.chat_stream_error: Exception | None = None
         self.chat_token_payloads: list[dict] = []
         self.chat_input_token_count = 3
         self.completion_payloads: list[dict] = []
@@ -750,6 +828,13 @@ class FakeApi:
         if not self.reachable:
             raise httpx.ConnectError("offline")
         return self.model_ids
+
+    async def chat_stream(self, payload: Mapping[str, object]):
+        self.chat_stream_payloads.append(dict(payload))
+        for chunk in self.chat_stream_chunks:
+            yield dict(chunk)
+        if self.chat_stream_error is not None:
+            raise self.chat_stream_error
 
     async def chat_input_tokens(self, payload: Mapping[str, object]) -> int:
         self.chat_token_payloads.append(dict(payload))
@@ -785,6 +870,229 @@ class FakeApi:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class CollectEventSink:
+    def __init__(self) -> None:
+        self.events = []
+
+    async def emit(self, event) -> None:
+        self.events.append(event)
+
+
+@pytest.mark.asyncio
+async def test_gateway_chat_stream_emits_text_tool_and_usage_chunks():
+    api = FakeApi()
+    api.chat_input_token_count = 12
+    api.chat_stream_chunks = [
+        {
+            "id": "chat-provider",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "astrumweaver",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": "hel"},
+                    "finish_reason": None,
+                }
+            ],
+        },
+        {
+            "id": "chat-provider",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_read",
+                                "type": "function",
+                                "function": {
+                                    "name": "read_file",
+                                    "arguments": "{\"path\":",
+                                },
+                            }
+                        ]
+                    },
+                    "finish_reason": None,
+                }
+            ],
+        },
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {
+                                    "arguments": "\"README.md\"}",
+                                },
+                            }
+                        ]
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+        },
+        {
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 12,
+                "completion_tokens": 4,
+                "total_tokens": 16,
+            },
+        },
+    ]
+    executor = LlamaCppExecutor(
+        api=api,
+        model_ref="/models/qwen.gguf",
+        model_alias="astrumweaver",
+        residency_metadata={},
+        tools_enabled=True,
+    )
+    sink = CollectEventSink()
+    result = await executor.execute_stream(
+        JobRequest(
+            job_id="stream-chat",
+            capability="llm.chat",
+            payload={
+                "schema_version": "chat-job-v1",
+                "adapter_id": "llama-cpp-chat-v1",
+                "request": {
+                    "messages": [{"role": "user", "content": "inspect"}],
+                    "tools": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "read_file",
+                                "parameters": {"type": "object"},
+                            },
+                        }
+                    ],
+                    "tool_choice": "auto",
+                    "max_tokens": 20,
+                    "stream": True,
+                },
+                "limits": {
+                    "input_tokens": 64,
+                    "output_tokens": 32,
+                    "total_tokens": 84,
+                },
+            },
+        ),
+        sink,
+    )
+
+    assert api.chat_stream_payloads[0]["stream"] is True
+    assert api.chat_stream_payloads[0]["stream_options"] == {
+        "include_usage": True
+    }
+    assert len(sink.events) == 4
+    assert all(event.kind == "chat.completion.chunk" for event in sink.events)
+    first_tool = sink.events[1].payload["choices"][0]["delta"]["tool_calls"][0]
+    second_tool = sink.events[2].payload["choices"][0]["delta"]["tool_calls"][0]
+    assert first_tool["id"] == "call_read"
+    assert first_tool["function"]["arguments"] == "{\"path\":"
+    assert second_tool["function"]["arguments"] == "\"README.md\"}"
+    assert sink.events[3].payload["usage"]["total_tokens"] == 16
+    assert result.metrics["total_tokens"] == 16
+    assert result.text == "hel"
+
+
+@pytest.mark.asyncio
+async def test_gateway_chat_stream_rejects_malformed_tool_argument_fragment():
+    api = FakeApi()
+    api.chat_stream_chunks = [
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {
+                                    "arguments": {"not": "a string"},
+                                },
+                            }
+                        ]
+                    },
+                    "finish_reason": None,
+                }
+            ]
+        }
+    ]
+    executor = LlamaCppExecutor(
+        api=api,
+        model_ref="/models/qwen.gguf",
+        model_alias="astrumweaver",
+        residency_metadata={},
+        tools_enabled=True,
+    )
+    with pytest.raises(JobExecutionError) as error:
+        await executor.execute_stream(
+            JobRequest(
+                job_id="bad-stream-chat",
+                capability="llm.chat",
+                payload={
+                    "schema_version": "chat-job-v1",
+                    "adapter_id": "llama-cpp-chat-v1",
+                    "request": {
+                        "messages": [{"role": "user", "content": "inspect"}],
+                        "max_tokens": 8,
+                        "stream": True,
+                    },
+                    "limits": {
+                        "input_tokens": 64,
+                        "output_tokens": 16,
+                        "total_tokens": 80,
+                    },
+                },
+            ),
+            CollectEventSink(),
+        )
+    assert error.value.code == "invalid_provider_response"
+    assert error.value.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_gateway_chat_stream_context_overflow_precedes_provider_stream():
+    api = FakeApi()
+    api.chat_input_token_count = 65
+    executor = LlamaCppExecutor(
+        api=api,
+        model_ref="/models/qwen.gguf",
+        model_alias="astrumweaver",
+        residency_metadata={},
+    )
+    with pytest.raises(JobExecutionError) as error:
+        await executor.execute_stream(
+            JobRequest(
+                job_id="stream-overflow",
+                capability="llm.chat",
+                payload={
+                    "schema_version": "chat-job-v1",
+                    "adapter_id": "llama-cpp-chat-v1",
+                    "request": {
+                        "messages": [{"role": "user", "content": "large"}],
+                        "max_tokens": 8,
+                        "stream": True,
+                    },
+                    "limits": {
+                        "input_tokens": 64,
+                        "output_tokens": 16,
+                        "total_tokens": 80,
+                    },
+                },
+            ),
+            CollectEventSink(),
+        )
+    assert error.value.code == "context_length_exceeded"
+    assert api.chat_stream_payloads == []
 
 
 class FakeProcess:
