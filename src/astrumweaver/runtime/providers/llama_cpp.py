@@ -594,9 +594,10 @@ class LlamaCppExecutor(JobExecutor):
                 retryable=False,
             )
         uses_tools = bool(request.get("tools"))
-        uses_tools = uses_tools or request.get("tool_choice") not in {
-            None, "none"
-        }
+        tool_choice = request.get("tool_choice")
+        uses_tools = uses_tools or (
+            tool_choice is not None and tool_choice != "none"
+        )
         for message in request.get("messages", ()):
             if isinstance(message, Mapping) and (
                 message.get("role") == "tool"
