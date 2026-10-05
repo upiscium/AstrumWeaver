@@ -108,6 +108,7 @@ def test_real_client_runner_uses_isolated_pinned_opencode_shape():
 
     for index, (args, kwargs) in enumerate(fake.calls):
         assert kwargs["check"] is False
+        assert kwargs["stdin"] is subprocess.DEVNULL
         assert kwargs["capture_output"] is True
         assert kwargs["text"] is True
         env = kwargs["env"]
