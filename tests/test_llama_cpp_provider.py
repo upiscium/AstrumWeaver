@@ -726,6 +726,81 @@ async def test_http_api_uses_health_models_and_openai_endpoints() -> None:
     ]
 
 
+@pytest.mark.asyncio
+async def test_http_api_parses_openai_sse_until_done() -> None:
+    observed: list[dict] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        observed.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            text=(
+                'data: {"choices":[{"index":0,"delta":{"content":"a"},'
+                '"finish_reason":null}]}\n\n'
+                'data: {"choices":[{"index":0,"delta":{"content":"b"},'
+                '"finish_reason":"stop"}]}\n\n'
+                'data: {"choices":[],"usage":{"prompt_tokens":2,'
+                '"completion_tokens":2,"total_tokens":4}}\n\n'
+                'data: [DONE]\n\n'
+            ),
+        )
+
+    api = HttpLlamaCppApi(
+        "http://127.0.0.1:8080",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        chunks = [
+            chunk
+            async for chunk in api.chat_stream(
+                {
+                    "model": "astrumweaver",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": True,
+                }
+            )
+        ]
+    finally:
+        await api.close()
+
+    assert [chunk["choices"] for chunk in chunks[:2]] == [
+        [{"index": 0, "delta": {"content": "a"}, "finish_reason": None}],
+        [{"index": 0, "delta": {"content": "b"}, "finish_reason": "stop"}],
+    ]
+    assert chunks[2]["usage"]["total_tokens"] == 4
+    assert observed[0]["stream"] is True
+
+
+@pytest.mark.asyncio
+async def test_http_api_rejects_non_data_sse_frame() -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            text="event: message\n\ndata: [DONE]\n\n",
+        )
+
+    api = HttpLlamaCppApi(
+        "http://127.0.0.1:8080",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(RuntimeError, match="SSE framing"):
+            _ = [
+                chunk
+                async for chunk in api.chat_stream(
+                    {
+                        "model": "astrumweaver",
+                        "messages": [],
+                        "stream": True,
+                    }
+                )
+            ]
+    finally:
+        await api.close()
+
+
 class FakeApi:
     def __init__(
         self,
