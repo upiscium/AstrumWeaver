@@ -183,6 +183,14 @@ class ChatGatewayProfile:
             "object": "model",
             "created": self.created,
             "owned_by": self.owned_by,
+            "x_astrumweaver": {
+                "profile_revision": self.resolved.profile_revision,
+                "deployment_revision": self.resolved.deployment.revision,
+                "serving_contract_revision": self.resolved.contract.revision,
+                "operation_schema": self.resolved.contract.operation_schema,
+                "features": sorted(self.resolved.contract.features),
+                "effective_limits": dict(self.resolved.effective_limits),
+            },
         }
 
     @classmethod
