@@ -64,12 +64,20 @@ The example limits are placeholders and must match the selected
 
 ## Acceptance state
 
-- Stage A schema/provider tests: implemented separately in #104.
+- Stage A schema/provider tests: implemented and integrated through #104.
 - Stage A real OpenCode smoke: **NOT APPLICABLE / BLOCKED BY STREAMING**.
-- Stage B streaming protocol: pending.
-- Plain-chat OpenCode v1.18.30 smoke: pending Stage B.
-- Tool call -> client tool result -> final response smoke: pending Stage B.
-- Real runtime/model/quantization/template identity: not yet selected here.
+- Stage B fenced streaming protocol: implemented in #105; final CI/integration
+  is tracked there.
+- Plain-chat OpenCode v1.18.30 smoke: executable acceptance harness implemented;
+  real runtime execution still required.
+- Tool call -> client tool result -> final response smoke: executable acceptance
+  harness implemented; real runtime execution still required.
+- Real runtime/model/quantization/template identity: must be supplied by the
+  acceptance run and recorded with its exact deployment/contract revisions.
+
+The packaged `astrumweaver-opencode-chat-accept` command performs both real
+client smokes with an isolated temporary OpenCode config/workdir and writes only
+redacted evidence. See [OpenCode chat acceptance](../opencode-chat-acceptance.md).
 
 A later compatibility update must preserve this historical pin rather than
 silently replacing the client version used for acceptance.
