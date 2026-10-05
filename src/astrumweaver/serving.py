@@ -570,3 +570,28 @@ def worker_serving_matches(
         and contract.capability == binding.capability
         and contract.operation_schema == binding.operation_schema
     )
+
+
+def worker_serving_accepts_job(
+    advertisement: WorkerServingAdvertisement | None,
+    capability: str,
+    binding: ServingJobBinding | None,
+) -> bool:
+    """Match a Job without allowing omission of a required serving binding.
+
+    Non-serving Workers keep legacy-v1 behavior. A serving-enabled Worker may
+    also advertise unrelated legacy capabilities, but any capability covered
+    by one of its serving contracts requires an exact ServingJobBinding.
+    """
+
+    if binding is None:
+        return (
+            advertisement is None
+            or not any(
+                contract.capability == capability
+                for contract in advertisement.contracts
+            )
+        )
+    return binding.capability == capability and worker_serving_matches(
+        advertisement, binding
+    )

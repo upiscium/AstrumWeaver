@@ -9,11 +9,15 @@ import pytest
 from astrumweaver import ResourceShape, WorkerSpec
 from astrumweaver.control import (
     ConflictError,
+    DeadlineExceededError,
     InMemoryControlRepository,
     JobStatus,
+    NoCompatibleDeployment,
+    OverloadedError,
     JobSubmission,
     WorkerHeartbeat,
     WorkerRegistration,
+    WorkerState,
     utc_now,
 )
 from astrumweaver.control.api import create_app
@@ -28,7 +32,7 @@ from astrumweaver.serving import (
     resolve_profile,
 )
 from astrumweaver.transport import PROTOCOL_VERSION, SERVING_EXTENSION
-from astrumweaver.worker.client import ClaimedJob
+from astrumweaver.worker.client import ClaimedJob, ControlClient, ControlTransportError
 from astrumweaver.worker.runtime import WorkerRuntime
 
 
@@ -109,6 +113,29 @@ def serving_submission(
     )
 
 
+def serving_epoch(repo, worker_id: str) -> str:
+    serving = repo.get_worker(worker_id).serving
+    assert serving is not None
+    return serving.runtime_instance.epoch
+
+
+def claim_serving(repo, worker_id: str, *, now):
+    return repo.claim_next_job(
+        worker_id,
+        runtime_instance_epoch=serving_epoch(repo, worker_id),
+        now=now,
+    )
+
+
+def set_serving_state(repo, worker_id: str, state: WorkerState, *, now):
+    return repo.set_worker_state(
+        worker_id,
+        state,
+        runtime_instance_epoch=serving_epoch(repo, worker_id),
+        now=now,
+    )
+
+
 def test_serving_job_requires_a_deadline():
     *_, binding, _ = serving_values()
     with pytest.raises(ValueError, match="require deadline"):
@@ -160,8 +187,8 @@ def test_serving_job_claim_is_bound_to_matching_deployment_and_epoch():
     repo.register_worker(serving_worker("right"), now=now)
     job = repo.submit_job(serving_submission(now=now, binding=binding), now=now)
 
-    assert repo.claim_next_job("wrong", now=now) is None
-    claim = repo.claim_next_job("right", now=now)
+    assert claim_serving(repo, "wrong", now=now) is None
+    claim = claim_serving(repo, "right", now=now)
     assert claim is not None
     assert claim.job_id == job.job_id
     assert claim.claimed_deployment_revision == advertisement.deployment_revision
@@ -178,7 +205,7 @@ def test_runtime_epoch_fences_heartbeat_and_terminal_write():
     registration = serving_worker("worker")
     repo.register_worker(registration, now=now)
     job = repo.submit_job(serving_submission(now=now), now=now)
-    claim = repo.claim_next_job("worker", now=now)
+    claim = claim_serving(repo, "worker", now=now)
     assert claim is not None and claim.lease_token
 
     wrong_epoch = "32345678-1234-4234-9234-123456789abc"
@@ -219,7 +246,7 @@ def test_retry_after_restart_binds_new_epoch_and_rejects_old_epoch():
     first = serving_worker("worker")
     repo.register_worker(first, now=now)
     job = repo.submit_job(serving_submission(now=now), now=now)
-    claim1 = repo.claim_next_job("worker", now=now)
+    claim1 = claim_serving(repo, "worker", now=now)
     assert claim1 is not None
 
     retry_at = now + timedelta(seconds=2)
@@ -230,7 +257,7 @@ def test_retry_after_restart_binds_new_epoch_and_rejects_old_epoch():
         "worker", epoch="42345678-1234-4234-9234-123456789abc"
     )
     repo.register_worker(second, now=retry_at)
-    claim2 = repo.claim_next_job("worker", now=retry_at)
+    claim2 = claim_serving(repo, "worker", now=retry_at)
     assert claim2 is not None
     assert claim2.claimed_runtime_instance_epoch == second.serving.runtime_instance.epoch
     assert claim2.claimed_runtime_instance_epoch != claim1.claimed_runtime_instance_epoch
@@ -252,7 +279,7 @@ def test_active_serving_worker_cannot_reregister_with_new_epoch():
     first = serving_worker("worker")
     repo.register_worker(first, now=now)
     repo.submit_job(serving_submission(now=now), now=now)
-    assert repo.claim_next_job("worker", now=now) is not None
+    assert claim_serving(repo, "worker", now=now) is not None
 
     restarted = serving_worker(
         "worker", epoch="52345678-1234-4234-9234-123456789abc"
@@ -273,7 +300,7 @@ def test_deadline_expiry_is_terminal_and_releases_capacity():
         ),
         now=now,
     )
-    assert repo.claim_next_job("worker", now=now) is not None
+    assert claim_serving(repo, "worker", now=now) is not None
 
     expired = repo.expire_deadline_jobs(now=now + timedelta(seconds=2))
     assert [item.job_id for item in expired] == [job.job_id]
@@ -286,6 +313,7 @@ def test_deadline_expiry_is_terminal_and_releases_capacity():
 def test_idempotency_equivalence_includes_serving_binding_and_deadline():
     now = utc_now()
     repo = InMemoryControlRepository()
+    repo.register_worker(serving_worker("worker"), now=now)
     submission = serving_submission(now=now, idempotency_key="same")
     first = repo.submit_job(submission, now=now)
     assert repo.submit_job(submission, now=now).job_id == first.job_id
@@ -404,7 +432,14 @@ async def test_v1_transport_round_trips_serving_identity_and_fences_epoch():
         assert created.status_code == 201
 
         claimed = await client.post(
-            "/v1/workers/transport/jobs/claim", headers=worker_headers
+            "/v1/workers/transport/jobs/claim",
+            headers=worker_headers,
+            json={
+                "protocol_version": PROTOCOL_VERSION,
+                "extensions": [SERVING_EXTENSION],
+                "runtime_instance_epoch":
+                    registration.serving.runtime_instance.epoch,
+            },
         )
         assert claimed.status_code == 200
         body = claimed.json()
@@ -515,3 +550,270 @@ async def test_v1_serving_fields_require_explicit_extension_marker():
             },
         )
         assert missing_job.status_code == 422
+
+
+def test_serving_admission_is_bounded_by_liveness_capacity_and_deadline():
+    now = utc_now()
+    repo = InMemoryControlRepository(worker_ttl_seconds=60)
+    request = serving_submission(now=now)
+
+    with pytest.raises(NoCompatibleDeployment):
+        repo.submit_job(request, now=now)
+
+    registration = serving_worker("worker")
+    repo.register_worker(registration, now=now)
+    accepted = repo.submit_job(request, now=now)
+    claimed = claim_serving(repo, "worker", now=now)
+    assert claimed is not None and claimed.job_id == accepted.job_id
+
+    with pytest.raises(OverloadedError):
+        repo.submit_job(serving_submission(now=now), now=now)
+
+    with pytest.raises(DeadlineExceededError):
+        repo.submit_job(
+            replace(
+                serving_submission(now=now),
+                deadline_at=now - timedelta(seconds=1),
+            ),
+            now=now,
+        )
+
+    draining = InMemoryControlRepository()
+    draining.register_worker(serving_worker("draining"), now=now)
+    set_serving_state(
+        draining, "draining", WorkerState.DRAINING, now=now
+    )
+    with pytest.raises(NoCompatibleDeployment):
+        draining.submit_job(serving_submission(now=now), now=now)
+
+    stale = InMemoryControlRepository(worker_ttl_seconds=60)
+    stale.register_worker(
+        serving_worker("stale"),
+        now=now - timedelta(seconds=61),
+    )
+    with pytest.raises(NoCompatibleDeployment):
+        stale.submit_job(serving_submission(now=now), now=now)
+
+
+def test_idempotent_retry_precedes_transient_admission_recheck():
+    now = utc_now()
+    repo = InMemoryControlRepository()
+    registration = serving_worker("worker")
+    repo.register_worker(registration, now=now)
+    request = serving_submission(now=now, idempotency_key="durable")
+    first = repo.submit_job(request, now=now)
+    claim = claim_serving(repo, "worker", now=now)
+    assert claim is not None
+
+    retry = repo.submit_job(
+        request,
+        now=request.deadline_at + timedelta(seconds=1),
+    )
+    assert retry.job_id == first.job_id
+
+
+@pytest.mark.asyncio
+async def test_serving_admission_http_errors_are_explicit():
+    now = utc_now()
+    repo = InMemoryControlRepository()
+    app = create_app(
+        repo,
+        client_token="client-secret",
+        worker_token="worker-secret",
+        maintenance_interval_seconds=60,
+    )
+    transport = httpx.ASGITransport(app=app)
+    headers = {"authorization": "Bearer client-secret"}
+    *_, binding, _ = serving_values()
+
+    def body(deadline):
+        return {
+            "protocol_version": PROTOCOL_VERSION,
+            "extensions": [SERVING_EXTENSION],
+            "capability": "llm.chat",
+            "payload": {},
+            "requirements": {},
+            "serving": binding.to_dict(),
+            "deadline_at": deadline.isoformat(),
+        }
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://control") as client:
+        missing = await client.post(
+            "/v1/jobs",
+            headers=headers,
+            json=body(now + timedelta(seconds=10)),
+        )
+        assert missing.status_code == 503
+
+        repo.register_worker(serving_worker("worker"), now=utc_now())
+        accepted = await client.post(
+            "/v1/jobs",
+            headers=headers,
+            json=body(now + timedelta(seconds=10)),
+        )
+        assert accepted.status_code == 201
+        claimed = claim_serving(repo, "worker", now=utc_now())
+        assert claimed is not None
+
+        overloaded = await client.post(
+            "/v1/jobs",
+            headers=headers,
+            json=body(now + timedelta(seconds=10)),
+        )
+        assert overloaded.status_code == 429
+
+        expired = await client.post(
+            "/v1/jobs",
+            headers=headers,
+            json=body(now - timedelta(seconds=1)),
+        )
+        assert expired.status_code == 408
+
+
+def test_restart_fences_stale_serving_process_before_new_attempt():
+    now = utc_now()
+    repo = InMemoryControlRepository()
+    first = serving_worker("worker")
+    repo.register_worker(first, now=now)
+    second = serving_worker(
+        "worker", epoch="82345678-1234-4234-9234-123456789abc"
+    )
+    repo.register_worker(second, now=now)
+
+    with pytest.raises(ConflictError, match="runtime instance is stale"):
+        repo.claim_next_job(
+            "worker",
+            runtime_instance_epoch=first.serving.runtime_instance.epoch,
+            now=now,
+        )
+    with pytest.raises(ConflictError, match="runtime instance is stale"):
+        repo.heartbeat_worker(
+            "worker",
+            WorkerHeartbeat(
+                runtime_instance_epoch=first.serving.runtime_instance.epoch
+            ),
+            now=now,
+        )
+    with pytest.raises(ConflictError, match="runtime instance is stale"):
+        repo.set_worker_state(
+            "worker",
+            WorkerState.DRAINING,
+            runtime_instance_epoch=first.serving.runtime_instance.epoch,
+            now=now,
+        )
+
+    assert (
+        repo.claim_next_job(
+            "worker",
+            runtime_instance_epoch=second.serving.runtime_instance.epoch,
+            now=now,
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_serving_worker_negotiates_extension_before_registration():
+    registration = serving_worker("negotiation")
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path == "/v1/ready":
+            return httpx.Response(
+                200,
+                json={"ready": True, "protocol_version": PROTOCOL_VERSION},
+            )
+        if request.url.path == "/v1/workers/register":
+            pytest.fail("serving registration reached an unnegotiated Control")
+        return httpx.Response(404)
+
+    async with ControlClient(
+        "http://legacy-control",
+        "worker-secret",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        with pytest.raises(
+            ControlTransportError,
+            match="does not support required extension",
+        ):
+            await client.register(
+                spec=registration.spec,
+                max_concurrency=1,
+                serving=registration.serving,
+            )
+
+    assert calls == ["/v1/ready"]
+
+
+def test_worker_client_rejects_unnegotiated_serving_response():
+    registration = serving_worker("response-check")
+    response = httpx.Response(
+        200,
+        json={
+            "protocol_version": PROTOCOL_VERSION,
+            "serving": registration.serving.to_dict(),
+        },
+    )
+    with pytest.raises(ControlTransportError, match="omitted the serving extension"):
+        ControlClient._object(response)
+
+    unknown = httpx.Response(
+        200,
+        json={
+            "protocol_version": PROTOCOL_VERSION,
+            "extensions": [SERVING_EXTENSION, "future-v2"],
+        },
+    )
+    with pytest.raises(ControlTransportError, match="unsupported extension"):
+        ControlClient._object(unknown)
+
+
+def test_durable_job_record_rejects_inconsistent_serving_identity():
+    now = utc_now()
+    repo = InMemoryControlRepository()
+    repo.register_worker(serving_worker("worker"), now=now)
+    queued = repo.submit_job(serving_submission(now=now), now=now)
+
+    with pytest.raises(ValueError, match="binding capability"):
+        replace(
+            queued,
+            serving=replace(queued.serving, capability="other.capability"),
+        )
+    with pytest.raises(ValueError, match="require deadline"):
+        replace(queued, deadline_at=None)
+
+    claimed = claim_serving(repo, "worker", now=now)
+    assert claimed is not None
+    with pytest.raises(ValueError, match="deployment revision"):
+        replace(claimed, claimed_deployment_revision=digest("a"))
+    with pytest.raises(ValueError, match="contract revision"):
+        replace(claimed, claimed_serving_contract_revision=digest("b"))
+    with pytest.raises(ValueError, match="requires a serving binding"):
+        replace(claimed, serving=None, deadline_at=None)
+
+
+def test_serving_lease_never_extends_past_request_deadline():
+    now = utc_now()
+    repo = InMemoryControlRepository(lease_seconds=300)
+    registration = serving_worker("worker")
+    repo.register_worker(registration, now=now)
+    request = replace(
+        serving_submission(now=now),
+        deadline_at=now + timedelta(seconds=5),
+    )
+    job = repo.submit_job(request, now=now)
+    claimed = claim_serving(repo, "worker", now=now)
+    assert claimed is not None and claimed.lease_token
+    assert claimed.lease_expires_at == request.deadline_at
+
+    repo.heartbeat_worker(
+        "worker",
+        WorkerHeartbeat(
+            active_job_id=job.job_id,
+            lease_token=claimed.lease_token,
+            runtime_instance_epoch=registration.serving.runtime_instance.epoch,
+        ),
+        now=now + timedelta(seconds=1),
+    )
+    assert repo.get_job(job.job_id).lease_expires_at == request.deadline_at

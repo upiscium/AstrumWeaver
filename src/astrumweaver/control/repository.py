@@ -15,7 +15,7 @@ from uuid import uuid4
 
 from ..execution import JobResult
 from ..scheduling import worker_matches
-from ..serving import worker_serving_matches
+from ..serving import worker_serving_accepts_job
 from .models import (
     JobRecord,
     JobStatus,
@@ -38,6 +38,18 @@ class NotFoundError(RepositoryError):
 
 class ConflictError(RepositoryError):
     """Requested transition conflicts with current durable state."""
+
+
+class DeadlineExceededError(RepositoryError):
+    """A bounded serving request can no longer be admitted."""
+
+
+class NoCompatibleDeployment(RepositoryError):
+    """No live deployment satisfies the immutable serving binding."""
+
+
+class OverloadedError(RepositoryError):
+    """All live compatible serving replicas are at capacity."""
 
 
 class StorageUnavailable(RepositoryError):
@@ -70,6 +82,7 @@ class ControlRepository(Protocol):
         worker_id: str,
         state: WorkerState,
         *,
+        runtime_instance_epoch: str | None = None,
         now: datetime | None = None,
     ) -> WorkerRecord: ...
 
@@ -84,7 +97,11 @@ class ControlRepository(Protocol):
     def get_job(self, job_id: str) -> JobRecord: ...
 
     def claim_next_job(
-        self, worker_id: str, *, now: datetime | None = None
+        self,
+        worker_id: str,
+        *,
+        runtime_instance_epoch: str | None = None,
+        now: datetime | None = None,
     ) -> JobRecord | None: ...
 
     def complete_job(
@@ -125,12 +142,32 @@ def _aware(value: datetime | None) -> datetime:
     return current.astimezone(UTC)
 
 
+def _lease_expiry(
+    timestamp: datetime,
+    lease_seconds: int,
+    deadline_at: datetime | None,
+) -> datetime:
+    expiry = timestamp + timedelta(seconds=lease_seconds)
+    return expiry if deadline_at is None else min(expiry, deadline_at)
+
+
 def _failure_payload(error: str | dict[str, object], *, retryable: bool) -> dict[str, object]:
     if isinstance(error, str):
         return {"message": error, "retryable": retryable}
     payload = dict(error)
     payload["retryable"] = retryable
     return payload
+
+
+def _assert_worker_epoch(
+    worker: WorkerRecord, runtime_instance_epoch: str | None
+) -> None:
+    if worker.serving is None:
+        if runtime_instance_epoch is not None:
+            raise ConflictError("worker has no serving runtime instance")
+        return
+    if runtime_instance_epoch != worker.serving.runtime_instance.epoch:
+        raise ConflictError("worker runtime instance is stale")
 
 
 def _submission_matches(record: JobRecord, submission: JobSubmission) -> bool:
@@ -245,11 +282,13 @@ class InMemoryControlRepository:
         worker_id: str,
         state: WorkerState,
         *,
+        runtime_instance_epoch: str | None = None,
         now: datetime | None = None,
     ) -> WorkerRecord:
         timestamp = _aware(now)
         with self._lock:
             current = self.get_worker(worker_id)
+            _assert_worker_epoch(current, runtime_instance_epoch)
             if state is not WorkerState.OFFLINE:
                 registration = WorkerRegistration(
                     spec=current.spec,
@@ -275,6 +314,7 @@ class InMemoryControlRepository:
         heartbeat = heartbeat or WorkerHeartbeat()
         with self._lock:
             current = self.get_worker(worker_id)
+            _assert_worker_epoch(current, heartbeat.runtime_instance_epoch)
             if current.state is WorkerState.OFFLINE and heartbeat.state in {
                 WorkerState.ONLINE, WorkerState.DRAINING,
             }:
@@ -294,7 +334,9 @@ class InMemoryControlRepository:
                     now=timestamp,
                 )
                 renewed = job.with_updates(
-                    lease_expires_at=timestamp + timedelta(seconds=self.lease_seconds),
+                    lease_expires_at=_lease_expiry(
+                        timestamp, self.lease_seconds, job.deadline_at
+                    ),
                     updated_at=timestamp,
                 )
                 self._jobs[job.job_id] = renewed
@@ -362,12 +404,8 @@ class InMemoryControlRepository:
         self, submission: JobSubmission, *, now: datetime | None = None
     ) -> JobRecord:
         timestamp = _aware(now)
-        if (
-            submission.deadline_at is not None
-            and _aware(submission.deadline_at) <= timestamp
-        ):
-            raise ConflictError("job deadline has expired")
         with self._lock:
+            # Resolve durable idempotency before transient admission state.
             if submission.idempotency_key:
                 existing_id = self._idempotency.get(submission.idempotency_key)
                 if existing_id is not None:
@@ -377,6 +415,37 @@ class InMemoryControlRepository:
                             "idempotency key already belongs to a different job request"
                         )
                     return existing
+
+            if (
+                submission.deadline_at is not None
+                and _aware(submission.deadline_at) <= timestamp
+            ):
+                raise DeadlineExceededError("job deadline has expired")
+
+            if submission.serving is not None:
+                cutoff = timestamp - timedelta(seconds=self.worker_ttl_seconds)
+                compatible = [
+                    worker
+                    for worker in self._workers.values()
+                    if worker.state is WorkerState.ONLINE
+                    and worker.last_seen_at >= cutoff
+                    and submission.capability in worker.spec.capabilities
+                    and worker_matches(worker.spec, submission.requirements)
+                    and worker_serving_accepts_job(
+                        worker.serving, submission.capability, submission.serving
+                    )
+                ]
+                if not compatible:
+                    raise NoCompatibleDeployment(
+                        "no compatible serving deployment is available"
+                    )
+                if all(
+                    worker.active_jobs >= worker.max_concurrency
+                    for worker in compatible
+                ):
+                    raise OverloadedError(
+                        "all compatible serving deployments are at capacity"
+                    )
 
             self._sequence += 1
             record = JobRecord(
@@ -419,11 +488,16 @@ class InMemoryControlRepository:
             return sorted(self._jobs.values(), key=lambda item: item.sequence)
 
     def claim_next_job(
-        self, worker_id: str, *, now: datetime | None = None
+        self,
+        worker_id: str,
+        *,
+        runtime_instance_epoch: str | None = None,
+        now: datetime | None = None,
     ) -> JobRecord | None:
         timestamp = _aware(now)
         with self._lock:
             worker = self.get_worker(worker_id)
+            _assert_worker_epoch(worker, runtime_instance_epoch)
             if timestamp - worker.last_seen_at > timedelta(seconds=self.worker_ttl_seconds):
                 self._workers[worker_id] = replace(worker, state=WorkerState.OFFLINE)
                 return None
@@ -441,7 +515,7 @@ class InMemoryControlRepository:
                 and job.attempts < job.max_attempts
                 and job.capability in worker.spec.capabilities
                 and worker_matches(worker.spec, job.requirements)
-                and worker_serving_matches(worker.serving, job.serving)
+                and worker_serving_accepts_job(worker.serving, job.capability, job.serving)
             ]
             if not eligible:
                 return None
@@ -452,7 +526,9 @@ class InMemoryControlRepository:
                 attempts=selected.attempts + 1,
                 assigned_worker_id=worker_id,
                 lease_token=str(uuid4()),
-                lease_expires_at=timestamp + timedelta(seconds=self.lease_seconds),
+                lease_expires_at=_lease_expiry(
+                    timestamp, self.lease_seconds, selected.deadline_at
+                ),
                 started_at=timestamp,
                 finished_at=None,
                 updated_at=timestamp,
@@ -680,8 +756,11 @@ class InMemoryControlRepository:
 __all__ = [
     "ConflictError",
     "ControlRepository",
+    "DeadlineExceededError",
     "InMemoryControlRepository",
+    "NoCompatibleDeployment",
     "NotFoundError",
+    "OverloadedError",
     "RepositoryError",
     "StorageUnavailable",
 ]

@@ -328,7 +328,7 @@ class WorkerRuntime:
                 state=state,
                 runtime_instance_epoch=(
                     None
-                    if active is None or self.serving is None
+                    if self.serving is None
                     else self.serving.runtime_instance.epoch
                 ),
             )
@@ -379,7 +379,14 @@ class WorkerRuntime:
                             await self._heartbeat_locked()
                         if not self.ready:
                             continue
-                        claimed = await self.client.claim(self.spec.worker_id)
+                        claimed = await self.client.claim(
+                            self.spec.worker_id,
+                            runtime_instance_epoch=(
+                                None
+                                if self.serving is None
+                                else self.serving.runtime_instance.epoch
+                            ),
+                        )
                         self._active = claimed
                     if claimed is None:
                         await self._wait_for_poll()
@@ -412,7 +419,15 @@ class WorkerRuntime:
             async with self._control_lock:
                 if self._registered:
                     with contextlib.suppress(ControlTransportError):
-                        await self.client.set_state(self.spec.worker_id, WorkerState.OFFLINE)
+                        await self.client.set_state(
+                            self.spec.worker_id,
+                            WorkerState.OFFLINE,
+                            runtime_instance_epoch=(
+                                None
+                                if self.serving is None
+                                else self.serving.runtime_instance.epoch
+                            ),
+                        )
                 self._registered = False
 
     async def drain(self) -> None:

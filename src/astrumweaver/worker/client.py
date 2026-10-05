@@ -86,7 +86,42 @@ class ControlClient:
             raise ControlTransportError(502, "Control returned invalid JSON") from exc
         if not isinstance(body, dict):
             raise ControlTransportError(502, "Control response must be an object")
+        raw_extensions = body.get("extensions") or ()
+        if (
+            isinstance(raw_extensions, str)
+            or not isinstance(raw_extensions, (list, tuple, set, frozenset))
+        ):
+            raise ControlTransportError(502, "Control response extensions are invalid")
+        extensions = frozenset(str(item) for item in raw_extensions)
+        if extensions - {SERVING_EXTENSION}:
+            raise ControlTransportError(
+                502, "Control response uses an unsupported extension"
+            )
+        serving_fields = (
+            "serving",
+            "claimed_deployment_revision",
+            "claimed_serving_contract_revision",
+            "claimed_runtime_instance_epoch",
+        )
+        if (
+            any(body.get(field) is not None for field in serving_fields)
+            and SERVING_EXTENSION not in extensions
+        ):
+            raise ControlTransportError(
+                502, "Control response omitted the serving extension"
+            )
         return body
+
+    async def require_extension(self, extension: str) -> None:
+        response = await self._request("GET", "/v1/ready")
+        body = self._object(response)
+        if body.get("protocol_version") != PROTOCOL_VERSION:
+            raise ControlTransportError(502, "Control protocol version is invalid")
+        extensions = frozenset(str(item) for item in body.get("extensions") or ())
+        if extension not in extensions:
+            raise ControlTransportError(
+                409, f"Control does not support required extension: {extension}"
+            )
 
     async def register(
         self,
@@ -96,6 +131,8 @@ class ControlClient:
         metadata: Mapping[str, Any] | None = None,
         serving: WorkerServingAdvertisement | None = None,
     ) -> dict[str, Any]:
+        if serving is not None:
+            await self.require_extension(SERVING_EXTENSION)
         response = await self._request(
             "POST",
             "/v1/workers/register",
@@ -137,16 +174,45 @@ class ControlClient:
         )
         return self._object(response)
 
-    async def set_state(self, worker_id: str, state: WorkerState) -> dict[str, Any]:
+    async def set_state(
+        self,
+        worker_id: str,
+        state: WorkerState,
+        *,
+        runtime_instance_epoch: str | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "protocol_version": PROTOCOL_VERSION,
+            "state": state.value,
+        }
+        if runtime_instance_epoch is not None:
+            body["runtime_instance_epoch"] = runtime_instance_epoch
+            body["extensions"] = [SERVING_EXTENSION]
         response = await self._request(
             "POST",
             f"/v1/workers/{worker_id}/state",
-            json={"protocol_version": PROTOCOL_VERSION, "state": state.value},
+            json=body,
         )
         return self._object(response)
 
-    async def claim(self, worker_id: str) -> ClaimedJob | None:
-        response = await self._request("POST", f"/v1/workers/{worker_id}/jobs/claim")
+    async def claim(
+        self,
+        worker_id: str,
+        *,
+        runtime_instance_epoch: str | None = None,
+    ) -> ClaimedJob | None:
+        kwargs: dict[str, Any] = {}
+        if runtime_instance_epoch is not None:
+            kwargs["json"] = {
+                "protocol_version": PROTOCOL_VERSION,
+                "runtime_instance_epoch": runtime_instance_epoch,
+                "extensions": [SERVING_EXTENSION],
+            }
+        response = await self._request(
+            "POST",
+            f"/v1/workers/{worker_id}/jobs/claim",
+            **kwargs,
+        )
         if response.status_code == 204:
             return None
         body = self._object(response)
