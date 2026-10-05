@@ -58,7 +58,15 @@ the OpenAI-compatible provider still expects an API-key value.
 
 ## Acceptance actions
 
-The runner performs two independent real OpenCode `run --format json`
+Before OpenCode is started, the runner authenticates to the real
+`GET /v1/models` endpoint and verifies the selected model's namespaced
+`x_astrumweaver` metadata. The live gateway must exactly match the expected
+logical-profile revision, deployment revision, serving-contract revision,
+chat operation schema, structured-tools feature, total-context limit and
+output-token limit. A mismatch fails before any OpenCode chat request, so the
+recorded identity is not merely caller-supplied evidence.
+
+The runner then performs two independent real OpenCode `run --format json`
 sessions against the selected logical serving profile.
 
 1. Plain chat requires the final text to be exactly
@@ -89,6 +97,7 @@ export ASTRUMWEAVER_CLIENT_TOKEN='REDACTED'
 astrumweaver-opencode-chat-accept \
   --opencode /absolute/path/to/opencode \
   --profile-id local-code-v1 \
+  --profile-revision sha256:PROFILE_REVISION \
   --revision GIT_REVISION \
   --deployment-revision sha256:DEPLOYMENT_DIGEST \
   --serving-contract-revision sha256:CONTRACT_DIGEST \
@@ -111,8 +120,9 @@ The generated Markdown may contain only:
 - evidence schema/date;
 - AstrumWeaver Git revision;
 - pinned OpenCode, AI SDK and OpenAI-compatible adapter identities;
-- logical profile identifier;
+- logical profile identifier and revision;
 - deployment and serving-contract revisions;
+- live gateway identity-preflight result;
 - PASS/FAIL-scope fields represented by a successful evidence record.
 
 It contains no gateway URL, credential, prompt, tool argument/result, local
@@ -120,7 +130,8 @@ path, source payload, hostname, Worker ID, GPU UUID or model artifact path.
 
 ## What PASS means
 
-A PASS proves the exact pinned OpenCode client can complete:
+A PASS first proves that the live gateway profile identity/limits match the
+explicit acceptance target, then proves the exact pinned OpenCode client can complete:
 
 - one live streamed plain-chat exchange; and
 - one structured tool call -> client tool execution/result -> final model
