@@ -16,10 +16,11 @@ from astrumweaver.control import (
     utc_now,
 )
 from astrumweaver.control.api import create_app
-from astrumweaver.gateway.api import create_chat_router
+from astrumweaver.gateway.api import ChatGatewayService, create_chat_router
 from astrumweaver.gateway.chat import (
     CHAT_OPERATION_SCHEMA,
     LLAMA_CPP_CHAT_ADAPTER,
+    ChatGatewayError,
     ChatGatewayProfile,
     ChatProfileCatalog,
 )
@@ -522,3 +523,36 @@ async def test_known_nonretryable_executor_failure_maps_to_client_error():
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "context_length_exceeded"
+
+
+
+@pytest.mark.asyncio
+async def test_gateway_disconnect_cancels_only_owned_job():
+    repository = InMemoryControlRepository()
+    gateway, advertisement = serving_values(timeout=1.0)
+    register_worker(repository, advertisement)
+    service = ChatGatewayService(
+        repository,
+        ChatProfileCatalog((gateway,)),
+        poll_interval_seconds=0.001,
+    )
+
+    class DisconnectedRequest:
+        async def is_disconnected(self) -> bool:
+            return True
+
+    with pytest.raises(ChatGatewayError) as error:
+        await service.complete(
+            DisconnectedRequest(),
+            {
+                "model": "local-code-v1",
+                "messages": [{"role": "user", "content": "disconnect"}],
+            },
+            request_size_bytes=64,
+        )
+
+    assert error.value.code == "client_disconnected"
+    assert error.value.status_code == 499
+    jobs = repository.list_jobs()
+    assert len(jobs) == 1
+    assert jobs[0].status is JobStatus.CANCELLED
