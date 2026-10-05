@@ -117,13 +117,23 @@ def test_catalog_round_trip_and_models_expose_only_profile_ids():
 
 def test_catalog_rejects_wrong_operation_and_unbounded_profile():
     value = profile()
-    wrong = replace(
-        value.resolved.profile,
+    wrong_contract = replace(
+        value.resolved.contract,
         operation_schema="other-chat-v1",
+    )
+    wrong_profile = replace(
+        value.resolved.profile,
+        serving_contract_revision=wrong_contract.revision,
+        operation_schema="other-chat-v1",
+    )
+    wrong_resolved = resolve_profile(
+        wrong_profile,
+        wrong_contract,
+        value.resolved.deployment,
     )
     with pytest.raises(ChatGatewayError, match="operation schema"):
         ChatGatewayProfile(
-            resolved=replace(value.resolved, profile=wrong),
+            resolved=wrong_resolved,
             adapter_id=LLAMA_CPP_CHAT_ADAPTER,
             request_timeout_seconds=30,
         )
