@@ -82,14 +82,18 @@ The example limits are placeholders and must match the selected
 
 - Stage A schema/provider tests: implemented and integrated through #104.
 - Stage A real OpenCode smoke: **NOT APPLICABLE / BLOCKED BY STREAMING**.
-- Stage B fenced streaming protocol: implemented in #105; final CI/integration
-  is tracked there.
-- Plain-chat OpenCode v1.18.30 smoke: executable acceptance harness implemented;
-  real runtime execution still required.
-- Tool call -> client tool result -> final response smoke: executable acceptance
-  harness implemented; real runtime execution still required.
-- Real runtime/model/quantization/template identity: must be supplied by the
-  acceptance run and recorded with its exact deployment/contract revisions.
+- Stage B fenced streaming protocol: implemented and integrated through #105.
+- Live gateway identity preflight: **PASS** on AstrumWeaver
+  `35fb7295bb8802c63df5b66da006563ce2fa255a`.
+- Plain-chat OpenCode v1.18.30 streamed smoke: **PASS**.
+- Structured tool call -> client tool result -> final response smoke: **PASS**.
+- Exact runtime/model/quantization/template identity is bound by deployment
+  revision
+  `sha256:43ced97ef6aaa2b0408a9990b13344c936d33705941af5a67697ef23f9ab3fb3`
+  and serving-contract revision
+  `sha256:d476ebd2c0af5ff9ff988ae64080bbcabce6c139df0450b54defbf5665f2cd5f`.
+- Canonical redacted evidence:
+  [`validation/opencode/chat-v1.md`](../../validation/opencode/chat-v1.md).
 
 The packaged `astrumweaver-opencode-chat-accept` command first validates the
 live gateway's namespaced model metadata against the expected profile revision,
