@@ -259,13 +259,13 @@ async def test_embedding_request_uses_durable_binding_and_preserves_order():
     )
     assert body["x_astrumweaver"]["input_type"] == "query"
 
-    payload = dict(claimed.request.payload)
+    payload = dict(claimed.payload)
     assert payload["embedding_space_id"] == profile.embedding_space_id
     assert payload["request"]["input"] == [
         QUERY_PREFIX + "alpha",
         QUERY_PREFIX + "beta",
     ]
-    assert claimed.request.metadata["serving"] == profile.binding.to_dict()
+    assert claimed.serving == profile.binding
 
 
 @pytest.mark.asyncio
