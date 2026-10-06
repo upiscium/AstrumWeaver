@@ -253,6 +253,16 @@ class EmbeddingGatewayProfile:
                 "invalid_profile",
                 "serving contract does not bind the embedding space identity",
             )
+        required_runtime_features = {
+            "float",
+            f"pooling-{self.space.pooling}",
+            f"normalization-{self.space.normalization}",
+        }
+        if not required_runtime_features <= self.resolved.contract.features:
+            raise EmbeddingGatewayError(
+                "invalid_profile",
+                "serving contract does not prove embedding runtime semantics",
+            )
 
         limits = dict(self.resolved.effective_limits)
         if _REQUIRED_LIMITS - limits.keys():
