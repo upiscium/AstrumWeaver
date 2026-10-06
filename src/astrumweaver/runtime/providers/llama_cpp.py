@@ -1156,6 +1156,8 @@ class LlamaCppManagedRuntime(ManagedRuntime):
         startup_timeout_seconds: float,
         launch_policy: LlamaCppLaunchPolicy,
         tools_enabled: bool = False,
+        embeddings: bool = False,
+        pooling: str | None = None,
     ) -> None:
         self.api = api
         self.process = process
@@ -1170,6 +1172,8 @@ class LlamaCppManagedRuntime(ManagedRuntime):
             model_ref=model_ref,
             model_alias=model_alias,
             tools_enabled=tools_enabled,
+            embeddings=embeddings,
+            pooling=pooling,
             residency_metadata={
                 "residency_policy": context.demand.residency_policy.value,
                 "gpu_topology": context.demand.gpu_topology.value,
@@ -1608,7 +1612,13 @@ class LlamaCppProvider(RuntimeProvider):
                 "no_webui": self.config.no_webui,
                 "jinja": self.config.jinja,
                 "chat_template_file": self.config.chat_template_file,
-                "capabilities": sorted(LLAMA_CPP_CAPABILITIES),
+                "embeddings": self.config.embeddings,
+                "pooling": self.config.pooling,
+                "capabilities": sorted(
+                    LLAMA_CPP_EMBEDDING_CAPABILITIES
+                    if self.config.embeddings
+                    else LLAMA_CPP_CAPABILITIES
+                ),
             },
             model_preparation=ModelPreparationPolicy.REFERENCE_ONLY,
             model_ref=context.demand.model.model_ref,
@@ -1651,6 +1661,28 @@ class LlamaCppProvider(RuntimeProvider):
         if chat_template_file is not None and not jinja:
             raise ValueError(
                 "llama.cpp chat_template_file requires jinja=true"
+            )
+        embeddings = cfg.get("embeddings", self.config.embeddings)
+        if type(embeddings) is not bool:
+            raise ValueError("llama.cpp deployment embeddings must be boolean")
+        raw_pooling = cfg.get("pooling", self.config.pooling)
+        pooling = (
+            None
+            if raw_pooling is None
+            else _nonblank(str(raw_pooling), "pooling")
+        )
+        if embeddings:
+            if jinja or chat_template_file is not None:
+                raise ValueError(
+                    "llama.cpp embedding deployment cannot enable chat templates"
+                )
+            if pooling not in {"mean", "cls", "last"}:
+                raise ValueError(
+                    "llama.cpp embedding deployment requires supported pooling"
+                )
+        elif pooling is not None:
+            raise ValueError(
+                "llama.cpp deployment pooling requires embeddings=true"
             )
 
         split_mode = LlamaCppSplitMode(
@@ -1704,6 +1736,8 @@ class LlamaCppProvider(RuntimeProvider):
             no_webui=bool(cfg.get("no_webui", self.config.no_webui)),
             jinja=jinja,
             chat_template_file=chat_template_file,
+            embeddings=embeddings,
+            pooling=pooling,
         )
 
         return LlamaCppManagedRuntime(
@@ -1715,4 +1749,6 @@ class LlamaCppProvider(RuntimeProvider):
             startup_timeout_seconds=self.config.startup_timeout_seconds,
             launch_policy=policy,
             tools_enabled=jinja,
+            embeddings=embeddings,
+            pooling=pooling,
         )
