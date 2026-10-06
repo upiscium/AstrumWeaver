@@ -31,6 +31,12 @@ from ...gateway.chat import (
     ChatGatewayError,
     validate_chat_stream_chunk,
 )
+from ...gateway.embedding import (
+    EMBEDDING_JOB_SCHEMA,
+    LLAMA_CPP_EMBEDDING_ADAPTER,
+    EmbeddingGatewayError,
+    validate_embedding_response,
+)
 from ..contracts import (
     CompatibilityReason,
     GPUTopology,
@@ -50,6 +56,7 @@ from ..contracts import (
 
 LLAMA_CPP_PROVIDER_ID = "llama-cpp"
 LLAMA_CPP_CAPABILITIES = frozenset({"llm.chat", "text.generate"})
+LLAMA_CPP_EMBEDDING_CAPABILITIES = frozenset({"text.embed"})
 
 
 def _nonblank(value: str, field_name: str) -> str:
@@ -87,6 +94,8 @@ class LlamaCppProviderConfig:
     no_webui: bool = True
     jinja: bool = False
     chat_template_file: str | None = None
+    embeddings: bool = False
+    pooling: str | None = None
 
     def __post_init__(self) -> None:
         base_url = _nonblank(self.base_url, "base_url").rstrip("/")
@@ -120,6 +129,21 @@ class LlamaCppProviderConfig:
             raise ValueError("main_gpu must not be negative")
         if type(self.jinja) is not bool:
             raise TypeError("jinja must be boolean")
+        if type(self.embeddings) is not bool:
+            raise TypeError("embeddings must be boolean")
+        if self.embeddings:
+            if self.jinja or self.chat_template_file is not None:
+                raise ValueError(
+                    "embedding mode cannot enable chat templates"
+                )
+            pooling = _nonblank(self.pooling or "", "pooling")
+            if pooling not in {"mean", "cls", "last"}:
+                raise ValueError(
+                    "embedding mode pooling must be mean, cls, or last"
+                )
+            object.__setattr__(self, "pooling", pooling)
+        elif self.pooling is not None:
+            raise ValueError("pooling requires embeddings=true")
         if self.chat_template_file is not None:
             template = _nonblank(
                 self.chat_template_file,
