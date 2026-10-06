@@ -98,7 +98,9 @@ def serving_values(*, timeout: float = 1.0):
         space=space,
         adapter_id=LLAMA_CPP_EMBEDDING_ADAPTER,
         query_prefix=QUERY_PREFIX,
+        query_suffix="",
         document_prefix="",
+        document_suffix="",
         request_timeout_seconds=timeout,
         max_attempts=2,
     )
