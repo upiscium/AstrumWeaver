@@ -41,15 +41,15 @@ private project material.
 
 Canonical baseline digest:
 
-`sha256:35cc690e909857f306f3ccf130ae3af244df1c742470a91a3f7cfd9f2fb289f4`
+`sha256:8d4c7698bb470532db53923745b63565a590a147268274c5dd0782e236f6d58f`
 
 Acceptance checker identities:
 
 | Task | Kind | Checker SHA-256 | Write | Max changed paths | Max completed tool calls |
 | --- | --- | --- | --- | ---: | ---: |
-| task-01 | discovery | `sha256:9dafceeecffecb2887668cad5f6ac93294e3244bfc67e403ef6824d5ed4ea0aa` | no | 1 | 12 |
-| task-02 | test_addition | `sha256:1aa016f109b429a1fe80df3c736f2a2c2a41d55c05d45843b8b0f2f9f9cce9aa` | yes | 1 | 16 |
-| task-03 | scoped_fix | `sha256:97e9c5e999794323c12db830c7e0800321874ed51cd01795bb88e0ed6117b82c` | yes | 1 | 16 |
+| task-01 | discovery | `sha256:a43e9e604f727214208bb28c6f226a607dc3b4aa66e2d7b243a94698abe0057f` | no | 1 | 12 |
+| task-02 | test_addition | `sha256:36636778d13edf7de70d0836f4e110e43a4f35062e11e43cc8f776b349a0c597` | yes | 1 | 16 |
+| task-03 | scoped_fix | `sha256:be24825892c0415738f3b933e9be020701de85637ab5d81af709dc1fcd237744` | yes | 1 | 16 |
 
 For task-01, any modification is rejected even though the schema keeps a positive
 path budget. For write tasks, the pilot runner must additionally enforce the
