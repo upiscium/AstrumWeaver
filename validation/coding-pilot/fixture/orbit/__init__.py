@@ -1,0 +1,1 @@
+"""Synthetic package for the #97 coding pilot."""
