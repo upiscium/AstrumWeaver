@@ -495,6 +495,9 @@ def compile_embedding_request(
         },
         "limits": {
             "item_tokens": limits["item_tokens"],
+            "item_bytes": limits["item_bytes"],
+            "batch_items": limits["batch_items"],
+            "batch_bytes": limits["batch_bytes"],
             "aggregate_tokens": limits["aggregate_tokens"],
             "dimensions": profile.space.dimensions,
         },
