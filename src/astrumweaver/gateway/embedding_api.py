@@ -254,6 +254,7 @@ def _space_object(profile: EmbeddingGatewayProfile) -> dict[str, object]:
             "pooling": profile.space.pooling,
             "normalization": profile.space.normalization,
             "input_types": ["query", "document"],
+            "space": profile.space.to_dict(),
             "effective_limits": dict(profile.resolved.effective_limits),
         },
     }
