@@ -11,6 +11,10 @@ from typing import Any
 import uvicorn
 
 from ..gateway.api import create_chat_router, load_chat_catalog
+from ..gateway.embedding_api import (
+    create_embedding_router,
+    load_embedding_catalog,
+)
 from .api import create_app
 from .auth import ClientAuthMode
 from .postgres import PostgresControlRepository
@@ -25,6 +29,7 @@ def build_app(config_path: str):
     config = _load_toml(config_path)
     section = dict(config.get("control") or {})
     chat_section = dict(config.get("chat_gateway") or {})
+    embedding_section = dict(config.get("embedding_gateway") or {})
 
     database_url = os.environ.get("ASTRUMWEAVER_DATABASE_URL", "")
     client_token = os.environ.get("ASTRUMWEAVER_CLIENT_TOKEN", "")
@@ -90,6 +95,34 @@ def build_app(config_path: str):
                 client_token=client_token or None,
                 poll_interval_seconds=float(
                     chat_section.get("poll_interval_seconds", 0.05)
+                ),
+            )
+        )
+
+    embedding_enabled = embedding_section.get("enabled", False)
+    if type(embedding_enabled) is not bool:
+        raise RuntimeError("embedding_gateway.enabled must be boolean")
+    if embedding_enabled:
+        catalog_path = str(
+            embedding_section.get("catalog", "")
+        ).strip()
+        if not catalog_path:
+            raise RuntimeError(
+                "embedding_gateway.catalog is required when "
+                "embedding gateway is enabled"
+            )
+        embedding_catalog = load_embedding_catalog(catalog_path)
+        app.include_router(
+            create_embedding_router(
+                repository,
+                embedding_catalog,
+                client_auth=client_auth,
+                client_token=client_token or None,
+                poll_interval_seconds=float(
+                    embedding_section.get(
+                        "poll_interval_seconds",
+                        0.05,
+                    )
                 ),
             )
         )
