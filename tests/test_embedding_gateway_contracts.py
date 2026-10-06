@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import math
 
 import pytest
 
@@ -257,17 +258,20 @@ def test_compile_enforces_batch_and_byte_bounds():
 
 
 def response(dimensions=1024):
+    first = [0.0] * dimensions
+    first[0] = 1.0
+    second = [1.0 / math.sqrt(dimensions)] * dimensions
     return {
         "object": "list",
         "data": [
             {
                 "object": "embedding",
-                "embedding": [0.0] * dimensions,
+                "embedding": first,
                 "index": 0,
             },
             {
                 "object": "embedding",
-                "embedding": [0.5] * dimensions,
+                "embedding": second,
                 "index": 1,
             },
         ],
@@ -304,3 +308,8 @@ def test_embedding_response_rejects_wrong_dimension_order_and_nonfinite():
     nonfinite["data"][0]["embedding"][0] = float("nan")
     with pytest.raises(EmbeddingGatewayError, match="non-finite"):
         validate_embedding_response(nonfinite, item_count=2, dimensions=1024)
+
+    unnormalized = response()
+    unnormalized["data"][0]["embedding"][0] = 2.0
+    with pytest.raises(EmbeddingGatewayError, match="l2 normalized"):
+        validate_embedding_response(unnormalized, item_count=2, dimensions=1024)
