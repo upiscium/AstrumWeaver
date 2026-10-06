@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 
 import httpx
 import pytest
@@ -180,12 +181,13 @@ async def complete_next(
 
 
 def provider_result(count: int = 2, dimensions: int = 3):
+    value = 1.0 / math.sqrt(dimensions)
     return {
         "object": "list",
         "data": [
             {
                 "object": "embedding",
-                "embedding": [float(index + 1)] * dimensions,
+                "embedding": [value] * dimensions,
                 "index": index,
             }
             for index in range(count)
