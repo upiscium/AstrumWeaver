@@ -248,6 +248,11 @@ class EmbeddingGatewayProfile:
                 "invalid_profile",
                 "first embedding adapter requires l2 normalization",
             )
+        if self.resolved.contract.semantic_revision != self.embedding_space_id:
+            raise EmbeddingGatewayError(
+                "invalid_profile",
+                "serving contract does not bind the embedding space identity",
+            )
 
         limits = dict(self.resolved.effective_limits)
         if _REQUIRED_LIMITS - limits.keys():
