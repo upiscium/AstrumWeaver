@@ -291,7 +291,7 @@ class EmbeddingAcceptanceRunner:
 
     def _client(self) -> httpx.Client:
         return httpx.Client(
-            base_url=self.base_url,
+            base_url=self.base_url + "/",
             headers={
                 "authorization": f"Bearer {self.client_token}",
             },
@@ -319,7 +319,7 @@ class EmbeddingAcceptanceRunner:
 
     def _preflight(self, client: httpx.Client) -> tuple[EmbeddingSpaceIdentity, Mapping[str, Any]]:
         response = self._check_response(
-            client.get("/embedding-spaces"),
+            client.get("embedding-spaces"),
             "identity preflight",
         )
         data = response.get("data")
@@ -389,7 +389,7 @@ class EmbeddingAcceptanceRunner:
     ) -> tuple[list[list[float]], Mapping[str, Any]]:
         body = self._check_response(
             client.post(
-                "/embeddings",
+                "embeddings",
                 json={
                     "model": self.profile_id,
                     "input": inputs,
