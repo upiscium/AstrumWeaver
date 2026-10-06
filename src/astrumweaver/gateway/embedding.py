@@ -106,10 +106,16 @@ def _revision(payload: Mapping[str, object]) -> str:
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
-def text_policy_digest(value: str) -> str:
-    if not isinstance(value, str):
-        raise TypeError("preprocessing text must be a string")
-    return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+def text_policy_digest(prefix: str, suffix: str = "") -> str:
+    if not isinstance(prefix, str) or not isinstance(suffix, str):
+        raise TypeError("preprocessing prefix/suffix must be strings")
+    encoded = json.dumps(
+        {"prefix": prefix, "suffix": suffix},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,7 +187,9 @@ class EmbeddingGatewayProfile:
     space: EmbeddingSpaceIdentity
     adapter_id: str
     query_prefix: str
+    query_suffix: str
     document_prefix: str
+    document_suffix: str
     request_timeout_seconds: float
     max_attempts: int = 2
 
@@ -230,13 +238,16 @@ class EmbeddingGatewayProfile:
                     "invalid_profile",
                     "embedding space does not match deployment identity",
                 )
-        if text_policy_digest(self.query_prefix) != self.space.query_preprocess_sha256:
+        if (
+            text_policy_digest(self.query_prefix, self.query_suffix)
+            != self.space.query_preprocess_sha256
+        ):
             raise EmbeddingGatewayError(
                 "invalid_profile",
                 "query preprocessing does not match embedding space",
             )
         if (
-            text_policy_digest(self.document_prefix)
+            text_policy_digest(self.document_prefix, self.document_suffix)
             != self.space.document_preprocess_sha256
         ):
             raise EmbeddingGatewayError(
@@ -327,7 +338,9 @@ class EmbeddingGatewayProfile:
                 space=space,
                 adapter_id=data["adapter_id"],
                 query_prefix=data.get("query_prefix", ""),
+                query_suffix=data.get("query_suffix", ""),
                 document_prefix=data.get("document_prefix", ""),
+                document_suffix=data.get("document_suffix", ""),
                 request_timeout_seconds=data.get("request_timeout_seconds", 60.0),
                 max_attempts=data.get("max_attempts", 2),
             )
@@ -471,8 +484,11 @@ def compile_embedding_request(
             "batch_too_large",
             "embedding request exceeds the profile batch-item limit",
         )
-    prefix = profile.query_prefix if input_type == "query" else profile.document_prefix
-    processed = [prefix + item for item in items]
+    if input_type == "query":
+        prefix, suffix = profile.query_prefix, profile.query_suffix
+    else:
+        prefix, suffix = profile.document_prefix, profile.document_suffix
+    processed = [prefix + item + suffix for item in items]
     sizes = [len(item.encode("utf-8")) for item in processed]
     if any(size > limits["item_bytes"] for size in sizes):
         raise EmbeddingGatewayError(
