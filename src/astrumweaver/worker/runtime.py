@@ -23,6 +23,7 @@ from ..execution import (
     JobEventSink,
     JobExecutionError,
     JobExecutor,
+    JobRequest,
     JobResult,
     StreamingJobExecutor,
 )
