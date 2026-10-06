@@ -180,6 +180,11 @@ def _load_fixture(path: Path) -> _Fixture:
     )
 
 
+def _require_same_space(expected: str, actual: str) -> None:
+    if expected != actual:
+        raise EmbeddingAcceptanceError("embedding space mismatch")
+
+
 def _vectors(body: object, *, expected_count: int, dimensions: int) -> list[list[float]]:
     if not isinstance(body, Mapping):
         raise EmbeddingAcceptanceError(
@@ -359,10 +364,15 @@ class EmbeddingAcceptanceRunner:
                 raise EmbeddingAcceptanceError(
                     "live embedding identity does not match the acceptance target"
                 )
-        if space.embedding_space_id != self.embedding_space_id:
+        try:
+            _require_same_space(
+                self.embedding_space_id,
+                space.embedding_space_id,
+            )
+        except EmbeddingAcceptanceError as exc:
             raise EmbeddingAcceptanceError(
                 "live embedding space descriptor hash does not match its ID"
-            )
+            ) from exc
         if space.normalization != "l2":
             raise EmbeddingAcceptanceError(
                 "acceptance requires l2-normalized embeddings"
@@ -451,10 +461,10 @@ class EmbeddingAcceptanceRunner:
         # Negative control: an index/query pin from another immutable space must
         # be rejected even if dimensions happen to be equal.
         try:
-            if self.incompatible_space_id != self.embedding_space_id:
-                raise EmbeddingAcceptanceError(
-                    "embedding space mismatch"
-                )
+            _require_same_space(
+                self.incompatible_space_id,
+                self.embedding_space_id,
+            )
         except EmbeddingAcceptanceError:
             incompatible_rejected = "PASS"
         else:  # pragma: no cover - constructor already prevents this.
