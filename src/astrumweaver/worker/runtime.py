@@ -513,6 +513,28 @@ class WorkerRuntime:
         ):
             raise RuntimeError("claimed serving attempt identity does not match local runtime")
 
+    def _executor_request(self, claimed: ClaimedJob) -> JobRequest:
+        """Attach locally revalidated serving semantics for workload adapters."""
+        raw_binding = claimed.request.metadata.get("serving")
+        if raw_binding is None:
+            return claimed.request
+        if self.serving is None:
+            raise RuntimeError("serving claim has no local serving advertisement")
+        binding = ServingJobBinding.from_dict(raw_binding)
+        contract = self.serving.contract_by_revision(
+            binding.serving_contract_revision
+        )
+        if contract is None:
+            raise RuntimeError("claimed serving contract is unavailable locally")
+        metadata = dict(claimed.request.metadata)
+        metadata["serving_semantic_revision"] = contract.semantic_revision
+        return JobRequest(
+            job_id=claimed.request.job_id,
+            capability=claimed.request.capability,
+            payload=claimed.request.payload,
+            metadata=metadata,
+        )
+
     async def _publish_job_event(
         self,
         claimed: ClaimedJob,
@@ -558,6 +580,7 @@ class WorkerRuntime:
             raise RuntimeError("Worker already owns a different local attempt")
         self._require_runtime()
         self._validate_claim_serving(claimed)
+        executor_request = self._executor_request(claimed)
         self._active = claimed
         runtime_failure = (
             asyncio.create_task(self.runtime_supervisor.failed.wait(), name="astrumweaver-runtime-failure")
@@ -565,11 +588,11 @@ class WorkerRuntime:
         )
         execution_call = (
             self.executor.execute_stream(
-                claimed.request,
+                executor_request,
                 _WorkerJobEventSink(self, claimed),
             )
             if isinstance(self.executor, StreamingJobExecutor)
-            else self.executor.execute(claimed.request)
+            else self.executor.execute(executor_request)
         )
         execution = asyncio.create_task(
             execution_call,
