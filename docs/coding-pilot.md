@@ -119,6 +119,19 @@ Per observed run, record when available:
 A metric that was not observed is null plus the corresponding measurement gap.
 The recorder preserves null as UNKNOWN.
 
+One OpenCode task may create multiple durable Jobs. The first coding-pilot run
+used an exclusive Job-sequence window per task, with no concurrent client work.
+For that run:
+
+- queue wait is the sum of `created_at -> started_at` across Jobs in the task window;
+- generation time is the sum of `started_at -> finished_at` across those Jobs;
+- TTFT is `started_at -> first durable visible Job event` for the first Job;
+- wall time remains the complete OpenCode client invocation;
+- completed tool calls are counted from completed OpenCode `tool_use` events.
+
+These aggregation rules are part of the procedure and must not be silently
+changed when comparing a later lane or repeat run.
+
 For repeated tasks, the public report uses lane-level counts and medians. It does
 not create a universal quality score.
 
@@ -138,6 +151,22 @@ NOT_RUN records.
 
 Therefore a local-only first pilot normally remains `experimental` until a
 genuine direct-remote baseline exists.
+
+## First delegated-local observation
+
+The first single-Worker run is recorded in
+[`validation/coding-pilot/coding-v1.md`](../validation/coding-pilot/coding-v1.md).
+
+The delegated-local lane observed three tasks: two were accepted and one was
+rejected, for an observed accepted rate of `0.667`. The rejected discovery run
+completed client tool calls within budget and made no file changes, but the
+pinned correctness checker rejected the final answer. It is retained as a model
+quality failure rather than rerun away.
+
+The test-addition and scoped-fix runs each changed only their one permitted path
+and passed their independent checker. Direct-remote remains explicitly
+`NOT_RUN`; observed remote usage and electrical cost remain UNKNOWN. The
+coding adapter disposition is therefore `experimental`, not accepted.
 
 ## Recorder
 
