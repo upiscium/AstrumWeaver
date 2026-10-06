@@ -573,6 +573,13 @@ def validate_embedding_response(
                     status_code=502,
                 )
             converted.append(float(component))
+        norm = math.sqrt(sum(component * component for component in converted))
+        if not math.isfinite(norm) or abs(norm - 1.0) > 1e-3:
+            raise EmbeddingGatewayError(
+                "invalid_provider_response",
+                "embedding backend returned a vector that is not l2 normalized",
+                status_code=502,
+            )
         normalized.append(
             {
                 "object": "embedding",
