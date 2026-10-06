@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from collections.abc import Mapping
 
 import httpx
@@ -874,12 +875,13 @@ class FakeApi:
     async def embeddings(self, payload: Mapping[str, object]):
         self.embedding_payloads.append(dict(payload))
         inputs = list(payload["input"])
+        value = 1.0 / math.sqrt(self.embedding_dimensions)
         return {
             "object": "list",
             "data": [
                 {
                     "object": "embedding",
-                    "embedding": [float(index + 1)] * self.embedding_dimensions,
+                    "embedding": [value] * self.embedding_dimensions,
                     "index": index,
                 }
                 for index, _ in enumerate(inputs)
