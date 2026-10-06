@@ -820,6 +820,9 @@ class FakeApi:
         self.chat_token_payloads: list[dict] = []
         self.chat_input_token_count = 3
         self.completion_payloads: list[dict] = []
+        self.embedding_payloads: list[dict] = []
+        self.tokenized_contents: list[str] = []
+        self.embedding_dimensions = 3
 
     async def health(self) -> bool:
         return self.reachable
@@ -867,6 +870,29 @@ class FakeApi:
             "choices": [{"text": "generated"}],
             "usage": {"total_tokens": 4},
         }
+
+    async def embeddings(self, payload: Mapping[str, object]):
+        self.embedding_payloads.append(dict(payload))
+        inputs = list(payload["input"])
+        return {
+            "object": "list",
+            "data": [
+                {
+                    "object": "embedding",
+                    "embedding": [float(index + 1)] * self.embedding_dimensions,
+                    "index": index,
+                }
+                for index, _ in enumerate(inputs)
+            ],
+            "usage": {
+                "prompt_tokens": sum(len(item.split()) for item in inputs),
+                "total_tokens": sum(len(item.split()) for item in inputs),
+            },
+        }
+
+    async def tokenize(self, content: str) -> int:
+        self.tokenized_contents.append(content)
+        return len(content.split())
 
     async def close(self) -> None:
         self.closed = True
