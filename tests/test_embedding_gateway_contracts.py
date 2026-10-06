@@ -62,7 +62,9 @@ def values():
         capability="text.embed",
         operation_schema=EMBEDDING_OPERATION_SCHEMA,
         validation_evidence_sha256=digest("6"),
-        features=frozenset({"float"}),
+        features=frozenset(
+            {"float", "pooling-last", "normalization-l2"}
+        ),
         limits={
             "item_tokens": 256,
             "item_bytes": 4096,
@@ -79,7 +81,9 @@ def values():
         serving_contract_revision=contract.revision,
         capability="text.embed",
         operation_schema=EMBEDDING_OPERATION_SCHEMA,
-        required_features=frozenset({"float"}),
+        required_features=frozenset(
+            {"float", "pooling-last", "normalization-l2"}
+        ),
         limits={},
     )
     resolved = resolve_profile(logical, contract, deployment)
