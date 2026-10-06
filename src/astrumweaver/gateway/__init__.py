@@ -13,6 +13,23 @@ from .chat import (
     normalize_chat_completion,
 )
 
+from .embedding import (
+    EMBEDDING_CATALOG_SCHEMA,
+    EMBEDDING_JOB_SCHEMA,
+    EMBEDDING_OPERATION_SCHEMA,
+    EMBEDDING_SPACE_SCHEMA,
+    LLAMA_CPP_EMBEDDING_ADAPTER,
+    CompiledEmbeddingRequest,
+    EmbeddingGatewayError,
+    EmbeddingGatewayProfile,
+    EmbeddingProfileCatalog,
+    EmbeddingSpaceIdentity,
+    compile_embedding_request,
+    normalize_embedding_response,
+    text_policy_digest,
+    validate_embedding_response,
+)
+
 __all__ = [
     "CHAT_CATALOG_SCHEMA",
     "CHAT_JOB_SCHEMA",
@@ -24,4 +41,18 @@ __all__ = [
     "CompiledChatRequest",
     "compile_chat_request",
     "normalize_chat_completion",
+    "EMBEDDING_CATALOG_SCHEMA",
+    "EMBEDDING_JOB_SCHEMA",
+    "EMBEDDING_OPERATION_SCHEMA",
+    "EMBEDDING_SPACE_SCHEMA",
+    "LLAMA_CPP_EMBEDDING_ADAPTER",
+    "CompiledEmbeddingRequest",
+    "EmbeddingGatewayError",
+    "EmbeddingGatewayProfile",
+    "EmbeddingProfileCatalog",
+    "EmbeddingSpaceIdentity",
+    "compile_embedding_request",
+    "normalize_embedding_response",
+    "text_policy_digest",
+    "validate_embedding_response",
 ]
