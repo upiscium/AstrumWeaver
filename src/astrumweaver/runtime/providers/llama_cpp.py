@@ -266,6 +266,10 @@ class LlamaCppApi(Protocol):
 
     async def completion(self, payload: Mapping[str, Any]) -> Mapping[str, Any]: ...
 
+    async def embeddings(self, payload: Mapping[str, Any]) -> Mapping[str, Any]: ...
+
+    async def tokenize(self, content: str) -> int: ...
+
     async def close(self) -> None: ...
 
 
@@ -377,6 +381,32 @@ class HttpLlamaCppApi:
             json=payload,
         )
 
+    async def embeddings(
+        self,
+        payload: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        return await self._json(
+            "POST",
+            "/v1/embeddings",
+            json=payload,
+        )
+
+    async def tokenize(self, content: str) -> int:
+        body = await self._json(
+            "POST",
+            "/tokenize",
+            json={"content": content, "add_special": False},
+        )
+        tokens = body.get("tokens")
+        if not isinstance(tokens, list) or any(
+            isinstance(token, bool) or not isinstance(token, int)
+            for token in tokens
+        ):
+            raise RuntimeError(
+                "llama.cpp tokenize endpoint returned invalid tokens"
+            )
+        return len(tokens)
+
     async def close(self) -> None:
         await self._client.aclose()
 
@@ -406,6 +436,8 @@ class LlamaCppSubprocessController:
         no_webui: bool,
         jinja: bool = False,
         chat_template_file: str | None = None,
+        embeddings: bool = False,
+        pooling: str | None = None,
     ) -> None:
         self.executable = executable
         self.base_url = base_url
@@ -418,6 +450,8 @@ class LlamaCppSubprocessController:
         self.no_webui = no_webui
         self.jinja = jinja
         self.chat_template_file = chat_template_file
+        self.embeddings = embeddings
+        self.pooling = pooling
         self._process: asyncio.subprocess.Process | None = None
 
     @property
@@ -458,6 +492,13 @@ class LlamaCppSubprocessController:
             args.extend(
                 ["--chat-template-file", self.chat_template_file]
             )
+        if self.embeddings:
+            args.append("--embeddings")
+            if self.pooling is None:
+                raise RuntimeError(
+                    "embedding-mode llama.cpp process requires pooling"
+                )
+            args.extend(["--pooling", self.pooling])
 
         if self.gpu_uuids:
             visible = [f"CUDA{index}" for index in range(len(self.gpu_uuids))]
