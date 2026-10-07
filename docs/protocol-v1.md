@@ -446,6 +446,47 @@ query/document preprocessing, adapter identity or deployment revision changes
 the immutable embedding-space identity. Indexing and reindexing remain client
 responsibilities.
 
+### Optional decision gateway
+
+#96 may mount the experimental native System-One decision surface independently
+of chat and embedding:
+
+```toml
+[decision_gateway]
+enabled = true
+catalog = "/etc/astrumweaver/decision-catalog.json"
+poll_interval_seconds = 0.05
+```
+
+When enabled, the configured Client authentication policy protects:
+
+```text
+GET  /v1/decision-profiles
+POST /v1/decisions
+```
+
+`GET /v1/decision-profiles` exposes only configured logical profiles and their
+exact deployment/contract/profile/decision-semantics revisions, score kind,
+provider score semantics, calibration status/reference, abstention threshold,
+shadow-mode status, recommendation-only authority and effective limits.
+
+The first `POST /v1/decisions` contract requires the exact profile revision,
+bounded non-empty state/question text and an ordered list of unique choice IDs
+with labels. Multi-token labels are supported. The gateway maps choices to
+positional provider keys, compiles one durable `decision.system_one` Job and
+waits within the reviewed deadline.
+
+The Worker rechecks the decision-semantics revision and byte/count/token bounds,
+then invokes the provider-local llama.cpp `/v1/systemone` endpoint. A managed
+decision deployment is not Ready unless llama.cpp `/v1/models` explicitly
+advertises native `decisions` output for the configured alias.
+
+Returned scores are finite normalized probabilities over the supplied choice
+set using the model/provider temperature semantics. They are explicitly not
+treated as calibrated correctness probabilities. The first profile is
+shadow-mode only; abstention is a successful observation and decision output
+grants no execution, permission, review or release authority.
+
 ## Database migration
 
 Apply packaged migrations explicitly:

@@ -34,6 +34,26 @@ The provider does not own:
 - arbitrary model download without explicit setup policy
 - Control-plane runtime-specific scheduling
 
+## Native decision mode
+
+The provider can be configured with `decision = true` for a deployment whose
+GGUF model exposes llama.cpp's native System-One decision head.
+
+Decision mode is mutually exclusive with embedding mode and does not enable
+chat/Jinja templates. It does not require a separate llama-server CLI switch;
+llama.cpp discovers the decision head from model metadata.
+
+AstrumWeaver does not trust configuration alone. After startup, and again in
+runtime health checks, the provider inspects `/v1/models` and requires the
+configured alias to advertise `architecture.output_modalities` containing
+`decisions`. A normal generation model therefore cannot become Ready as a
+`decision.system_one` Worker merely because its Worker configuration claims the
+capability.
+
+Provider execution uses `/v1/systemone`. Scores are exposed only through the
+reviewed #96 decision adapter and retain its explicit uncalibrated,
+choice-set-probability semantics.
+
 ## Model format
 
 The initial provider requires:
