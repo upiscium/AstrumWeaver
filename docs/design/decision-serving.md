@@ -207,3 +207,35 @@ promote the model to an authority. A poor accuracy or non-zero false-safe count
 is retained as evidence rather than rerun away.
 
 See [Decision shadow acceptance](../decision-shadow-acceptance.md).
+
+## Observed real shadow acceptance
+
+The first real native OpenJev shadow run completed on 2026-10-07 against
+AstrumWeaver revision
+`fd412bee45a8c3f1c2487d4878137f7348d4c868`.
+
+The live deployment/profile/contract/semantics identity was preflighted before
+the fixture was run. All three labelled cases and the reversed-order probe
+completed through the durable decision Job path.
+
+Observed quality is deliberately retained as measurement rather than promoted
+to an acceptance threshold:
+
+- 3 cases, all answered;
+- 2 correct / 1 incorrect;
+- overall and answered accuracy: 0.666667;
+- deliberate-unknown abstention: 0/1;
+- false-safe count: 0;
+- reversed-order probe did not change the selected decision;
+- median end-to-end wall latency: 22521.894 ms;
+- median provider/Worker execution: 22462.674 ms;
+- median queue wait: 13.030 ms;
+- median wall-minus-execution overhead: 69.910 ms.
+
+The result is therefore `OBSERVED_ONLY`: protocol, identity, score validation
+and shadow-mode execution passed, while the small fixture does not establish
+model quality or calibration. In particular, the failure to abstain on the
+deliberate unknown is retained as a real limitation.
+
+Canonical redacted evidence is
+[`validation/decision/shadow-v1.md`](../../validation/decision/shadow-v1.md).
