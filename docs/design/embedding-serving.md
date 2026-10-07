@@ -84,8 +84,28 @@ profile mutation after enqueue, unsupported input/encoding/dimensions, query vs
 document preprocessing, vector dimension/finite/order checks, batch/token/byte
 overflow, cancellation and stale serving identity.
 
-A later real acceptance run uses a disposable retrieval fixture and an
+The real acceptance run uses a disposable retrieval fixture and an
 intentionally incompatible-space negative control sent to the live gateway.
 The negative control must receive `409 embedding_space_mismatch`; a local
 digest comparison alone is not acceptance evidence. It does not modify a
 production index.
+
+## Accepted first embedding deployment
+
+Real acceptance on source revision
+`b31954e206085043f849dbc39849b92f35249e9c` passed with the pinned
+`notes-embed-v1` space:
+
+- Qwen3-Embedding-0.6B Q8_0;
+- 1024 dimensions, `pooling=last`, L2 normalization;
+- query-specific reviewed preprocessing and plain document preprocessing;
+- 4-document / 4-query disposable retrieval fixture;
+- 4/4 top-1 correct with minimum observed score margin `0.250874`
+  against the required `0.100000`;
+- live incompatible-space request rejected with
+  `409 embedding_space_mismatch` before durable admission.
+
+Canonical redacted evidence is
+[`validation/embedding/embedding-v1.md`](../../validation/embedding/embedding-v1.md).
+The evidence binds the exact model/tokenizer/deployment/profile/contract/space
+identities without publishing fixture text or deployment-local paths.
