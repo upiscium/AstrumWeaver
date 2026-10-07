@@ -106,6 +106,7 @@ Proxmox is a supported deployment environment, not an AstrumWeaver dependency. A
 - [Runtime Setup Backend](docs/runtime-setup.md)
 - [OpenCode Chat Acceptance](docs/opencode-chat-acceptance.md)
 - [Decision Shadow Acceptance](docs/decision-shadow-acceptance.md)
+- [Liquid d1-3B System-One Acceptance](docs/decision-d1-3b-acceptance.md) — new experimental text-only profile; prior OpenJev evidence retained
 - [Interactive Worker/runtime Setup TUI](docs/setup-tui.md)
 
 ## License

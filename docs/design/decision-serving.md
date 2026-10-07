@@ -239,3 +239,21 @@ deliberate unknown is retained as a real limitation.
 
 Canonical redacted evidence is
 [`validation/decision/shadow-v1.md`](../../validation/decision/shadow-v1.md).
+
+## Additional model qualification: Liquid AI d1-3B
+
+For **new, experimental, text-only System-One deployments**, the preferred
+candidate is now `LiquidAI/d1-3B` Q4_K_M rather than reusing the historical
+OpenJev identity. The initial native d1 release requires an updated llama.cpp
+build recognizing the `lfm2-d1` decision model type. Exact verified model,
+runtime, profile, serving-contract, and semantics revisions, plus real CPU-only
+shadow observations, are recorded in
+[Liquid d1-3B acceptance](../decision-d1-3b-acceptance.md).
+
+The successful provider and durable-Job protocol run establishes **text-only
+experimental compatibility**, not empirical correctness calibration or
+permission to act on model choices. The five-case held-out fixture observed
+2/5 correct, two abstentions, and zero false-safe results under its narrow
+scenario definitions. No matched comparison to the older three-case OpenJev
+fixture has been performed. The previous OpenJev evidence remains immutable
+and reproducible.
