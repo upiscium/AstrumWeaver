@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from collections.abc import Mapping
 
 import httpx
@@ -820,6 +821,9 @@ class FakeApi:
         self.chat_token_payloads: list[dict] = []
         self.chat_input_token_count = 3
         self.completion_payloads: list[dict] = []
+        self.embedding_payloads: list[dict] = []
+        self.tokenized_contents: list[str] = []
+        self.embedding_dimensions = 3
 
     async def health(self) -> bool:
         return self.reachable
@@ -867,6 +871,30 @@ class FakeApi:
             "choices": [{"text": "generated"}],
             "usage": {"total_tokens": 4},
         }
+
+    async def embeddings(self, payload: Mapping[str, object]):
+        self.embedding_payloads.append(dict(payload))
+        inputs = list(payload["input"])
+        value = 1.0 / math.sqrt(self.embedding_dimensions)
+        return {
+            "object": "list",
+            "data": [
+                {
+                    "object": "embedding",
+                    "embedding": [value] * self.embedding_dimensions,
+                    "index": index,
+                }
+                for index, _ in enumerate(inputs)
+            ],
+            "usage": {
+                "prompt_tokens": sum(len(item.split()) for item in inputs),
+                "total_tokens": sum(len(item.split()) for item in inputs),
+            },
+        }
+
+    async def tokenize(self, content: str) -> int:
+        self.tokenized_contents.append(content)
+        return len(content.split())
 
     async def close(self) -> None:
         self.closed = True
@@ -1691,3 +1719,181 @@ def test_llama_cpp_executor_advertises_tools_only_with_jinja() -> None:
 
     assert plain.serving_features["llm.chat"] == frozenset()
     assert tools.serving_features["llm.chat"] == frozenset({"tools"})
+
+
+def test_llama_cpp_embedding_mode_is_explicit_and_exclusive() -> None:
+    with pytest.raises(ValueError, match="pooling"):
+        LlamaCppProviderConfig(embeddings=True)
+    with pytest.raises(ValueError, match="cannot enable chat templates"):
+        LlamaCppProviderConfig(
+            embeddings=True,
+            pooling="last",
+            jinja=True,
+        )
+    with pytest.raises(ValueError, match="requires embeddings"):
+        LlamaCppProviderConfig(pooling="last")
+
+    provider = LlamaCppProvider(
+        LlamaCppProviderConfig(
+            embeddings=True,
+            pooling="last",
+        )
+    )
+    intent = provider.setup_intent(context())
+    assert intent.configuration["embeddings"] is True
+    assert intent.configuration["pooling"] == "last"
+    assert intent.configuration["capabilities"] == ["text.embed"]
+
+
+def test_llama_cpp_embedding_process_uses_dedicated_mode_and_pooling() -> None:
+    controller = LlamaCppSubprocessController(
+        executable="llama-server",
+        base_url="http://127.0.0.1:8080",
+        model_ref="/models/embed.gguf",
+        model_alias="astrumweaver",
+        gpu_uuids=(),
+        context_size=4096,
+        launch_policy=LlamaCppLaunchPolicy(
+            gpu_layers=0,
+            split_mode=LlamaCppSplitMode.NONE,
+            fit=False,
+            tensor_split=None,
+            fit_target_mb=None,
+            main_gpu=0,
+            cpu_moe=False,
+            n_cpu_moe=None,
+            n_cpu_ffn=None,
+        ),
+        offline=True,
+        no_webui=True,
+        embeddings=True,
+        pooling="last",
+    )
+    command = controller.command()
+    assert "--embeddings" in command
+    assert command[command.index("--pooling") + 1] == "last"
+    assert "--jinja" not in command
+
+
+@pytest.mark.asyncio
+async def test_embedding_executor_rechecks_space_limits_and_vectors() -> None:
+    api = FakeApi()
+    executor = LlamaCppExecutor(
+        api=api,
+        model_ref="/models/embed.gguf",
+        model_alias="astrumweaver",
+        residency_metadata={},
+        embeddings=True,
+        pooling="last",
+    )
+    space = "sha256:" + "e" * 64
+    result = await executor.execute(
+        JobRequest(
+            job_id="embed-job",
+            capability="text.embed",
+            payload={
+                "schema_version": "embedding-job-v1",
+                "adapter_id": "llama-cpp-embedding-v1",
+                "embedding_space_id": space,
+                "request": {
+                    "input": ["alpha beta", "gamma"],
+                    "encoding_format": "float",
+                },
+                "limits": {
+                    "item_tokens": 4,
+                    "item_bytes": 64,
+                    "batch_items": 4,
+                    "batch_bytes": 128,
+                    "aggregate_tokens": 6,
+                    "dimensions": 3,
+                },
+            },
+            metadata={"serving_semantic_revision": space},
+        )
+    )
+
+    assert executor.capabilities == frozenset({"text.embed"})
+    assert executor.serving_features["text.embed"] == frozenset(
+        {"float", "pooling-last", "normalization-l2"}
+    )
+    assert api.tokenized_contents == ["alpha beta", "gamma"]
+    assert api.embedding_payloads == [
+        {
+            "input": ["alpha beta", "gamma"],
+            "encoding_format": "float",
+            "model": "astrumweaver",
+        }
+    ]
+    assert [item["index"] for item in result.outputs["data"]] == [0, 1]
+    assert len(result.outputs["data"][0]["embedding"]) == 3
+    assert result.metadata["embedding_space_id"] == space
+    assert result.metadata["pooling"] == "last"
+    assert result.metadata["normalization"] == "l2"
+
+
+@pytest.mark.asyncio
+async def test_embedding_executor_fails_closed_on_space_or_token_mismatch() -> None:
+    api = FakeApi()
+    executor = LlamaCppExecutor(
+        api=api,
+        model_ref="/models/embed.gguf",
+        model_alias="astrumweaver",
+        residency_metadata={},
+        embeddings=True,
+        pooling="last",
+    )
+    space = "sha256:" + "e" * 64
+    base_payload = {
+        "schema_version": "embedding-job-v1",
+        "adapter_id": "llama-cpp-embedding-v1",
+        "embedding_space_id": space,
+        "request": {
+            "input": ["one two three"],
+            "encoding_format": "float",
+        },
+        "limits": {
+            "item_tokens": 2,
+            "item_bytes": 64,
+            "batch_items": 4,
+            "batch_bytes": 128,
+            "aggregate_tokens": 4,
+            "dimensions": 3,
+        },
+    }
+
+    with pytest.raises(JobExecutionError) as wrong_space:
+        await executor.execute(
+            JobRequest(
+                job_id="embed-space-mismatch",
+                capability="text.embed",
+                payload=base_payload,
+                metadata={
+                    "serving_semantic_revision": "sha256:" + "f" * 64
+                },
+            )
+        )
+    assert wrong_space.value.code == "embedding_space_mismatch"
+    assert api.embedding_payloads == []
+
+    with pytest.raises(JobExecutionError) as overflow:
+        await executor.execute(
+            JobRequest(
+                job_id="embed-token-overflow",
+                capability="text.embed",
+                payload=base_payload,
+                metadata={"serving_semantic_revision": space},
+            )
+        )
+    assert overflow.value.code == "embedding_input_exceeded"
+    assert api.embedding_payloads == []
+
+
+def test_generation_executor_does_not_advertise_embedding_capability() -> None:
+    executor = LlamaCppExecutor(
+        api=FakeApi(),
+        model_ref="/models/chat.gguf",
+        model_alias="astrumweaver",
+        residency_metadata={},
+    )
+    assert executor.capabilities == frozenset({"llm.chat", "text.generate"})
+    assert "text.embed" not in executor.capabilities

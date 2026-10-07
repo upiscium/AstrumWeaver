@@ -90,6 +90,40 @@ The first implementation refuses to attach to an already-running external llama.
 
 #31 may replace the subprocess controller with deployment-specific NixOS/systemd service controllers without changing the provider/executor contracts.
 
+## Dedicated embedding mode
+
+#95 adds an explicit llama.cpp embedding deployment mode. It is not enabled by
+default and is mutually exclusive with the current chat-template/tool mode.
+
+Provider configuration freezes:
+
+```text
+embeddings = true
+pooling = "last"   # first accepted retrieval profile
+```
+
+The managed process adds:
+
+```text
+--embeddings
+--pooling last
+```
+
+and the executor advertises only:
+
+```text
+text.embed
+```
+
+rather than `llm.chat` / `text.generate`. The first adapter supports vector
+pooling policies `mean`, `cls`, and `last`; an exact serving profile also
+binds the selected pooling policy and `normalization-l2` as serving features.
+
+The adapter calls the local `/tokenize` endpoint to recheck per-item and
+aggregate token bounds, then `/v1/embeddings` for the vector batch. Returned
+vectors are accepted only when count, input ordering, dimensions and finite
+components match the immutable embedding-space contract.
+
 ## GPU identity
 
 AstrumWeaver restricts the subprocess with:

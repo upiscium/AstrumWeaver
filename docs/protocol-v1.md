@@ -400,6 +400,52 @@ deadline, and cancels only that owned Job on gateway timeout or disconnect.
 `stream=true` remains unsupported until the separate #94 Stage B fenced event
 channel exists.
 
+### Optional embedding gateway
+
+#95 may mount the bounded embedding edge surface independently of the chat
+gateway:
+
+```toml
+[embedding_gateway]
+enabled = true
+catalog = "/etc/astrumweaver/embedding-catalog.json"
+poll_interval_seconds = 0.05
+```
+
+When enabled, the configured Client authentication policy protects:
+
+```text
+GET  /v1/embedding-spaces
+POST /v1/embeddings
+```
+
+`GET /v1/embedding-spaces` is an AstrumWeaver namespaced discovery surface.
+It exposes configured logical profile IDs, immutable `embedding_space_id`
+values, resolved deployment/contract/profile revisions, dimensions,
+pooling/normalization policy, supported input roles, and effective limits. It
+does not present these fields as standard OpenAI model metadata.
+
+The first `POST /v1/embeddings` subset accepts one string or a non-empty
+array of strings, `encoding_format = "float"` (or omission), the required
+`x_astrumweaver_input_type` value `query` or `document`, and the required
+`x_astrumweaver_embedding_space_id` pin. The supplied space ID must exactly
+match the configured profile or the request fails before admission with
+`409 embedding_space_mismatch`. Token-array input, base64 encoding,
+caller-selected dimensions, mixed input policies and unknown fields fail closed.
+
+Each accepted request compiles to a durable `text.embed` Job carrying the
+exact #93 serving binding. The Worker locally revalidates the claimed serving
+contract semantic revision before the provider adapter executes. Batch count,
+per-item/aggregate byte limits and request bytes are checked at the gateway;
+per-item and aggregate token limits are rechecked with the active runtime
+tokenizer. Provider results must preserve input ordering and contain finite
+vectors of the configured dimension. A batch is all-or-error.
+
+Changing model, quantization, tokenizer, pooling, normalization, dimensions,
+query/document preprocessing, adapter identity or deployment revision changes
+the immutable embedding-space identity. Indexing and reindexing remain client
+responsibilities.
+
 ## Database migration
 
 Apply packaged migrations explicitly:

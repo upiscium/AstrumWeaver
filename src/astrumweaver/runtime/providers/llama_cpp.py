@@ -31,6 +31,12 @@ from ...gateway.chat import (
     ChatGatewayError,
     validate_chat_stream_chunk,
 )
+from ...gateway.embedding import (
+    EMBEDDING_JOB_SCHEMA,
+    LLAMA_CPP_EMBEDDING_ADAPTER,
+    EmbeddingGatewayError,
+    validate_embedding_response,
+)
 from ..contracts import (
     CompatibilityReason,
     GPUTopology,
@@ -50,6 +56,7 @@ from ..contracts import (
 
 LLAMA_CPP_PROVIDER_ID = "llama-cpp"
 LLAMA_CPP_CAPABILITIES = frozenset({"llm.chat", "text.generate"})
+LLAMA_CPP_EMBEDDING_CAPABILITIES = frozenset({"text.embed"})
 
 
 def _nonblank(value: str, field_name: str) -> str:
@@ -87,6 +94,8 @@ class LlamaCppProviderConfig:
     no_webui: bool = True
     jinja: bool = False
     chat_template_file: str | None = None
+    embeddings: bool = False
+    pooling: str | None = None
 
     def __post_init__(self) -> None:
         base_url = _nonblank(self.base_url, "base_url").rstrip("/")
@@ -120,6 +129,21 @@ class LlamaCppProviderConfig:
             raise ValueError("main_gpu must not be negative")
         if type(self.jinja) is not bool:
             raise TypeError("jinja must be boolean")
+        if type(self.embeddings) is not bool:
+            raise TypeError("embeddings must be boolean")
+        if self.embeddings:
+            if self.jinja or self.chat_template_file is not None:
+                raise ValueError(
+                    "embedding mode cannot enable chat templates"
+                )
+            pooling = _nonblank(self.pooling or "", "pooling")
+            if pooling not in {"mean", "cls", "last"}:
+                raise ValueError(
+                    "embedding mode pooling must be mean, cls, or last"
+                )
+            object.__setattr__(self, "pooling", pooling)
+        elif self.pooling is not None:
+            raise ValueError("pooling requires embeddings=true")
         if self.chat_template_file is not None:
             template = _nonblank(
                 self.chat_template_file,
@@ -242,6 +266,10 @@ class LlamaCppApi(Protocol):
 
     async def completion(self, payload: Mapping[str, Any]) -> Mapping[str, Any]: ...
 
+    async def embeddings(self, payload: Mapping[str, Any]) -> Mapping[str, Any]: ...
+
+    async def tokenize(self, content: str) -> int: ...
+
     async def close(self) -> None: ...
 
 
@@ -353,6 +381,32 @@ class HttpLlamaCppApi:
             json=payload,
         )
 
+    async def embeddings(
+        self,
+        payload: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        return await self._json(
+            "POST",
+            "/v1/embeddings",
+            json=payload,
+        )
+
+    async def tokenize(self, content: str) -> int:
+        body = await self._json(
+            "POST",
+            "/tokenize",
+            json={"content": content, "add_special": False},
+        )
+        tokens = body.get("tokens")
+        if not isinstance(tokens, list) or any(
+            isinstance(token, bool) or not isinstance(token, int)
+            for token in tokens
+        ):
+            raise RuntimeError(
+                "llama.cpp tokenize endpoint returned invalid tokens"
+            )
+        return len(tokens)
+
     async def close(self) -> None:
         await self._client.aclose()
 
@@ -382,6 +436,8 @@ class LlamaCppSubprocessController:
         no_webui: bool,
         jinja: bool = False,
         chat_template_file: str | None = None,
+        embeddings: bool = False,
+        pooling: str | None = None,
     ) -> None:
         self.executable = executable
         self.base_url = base_url
@@ -394,6 +450,8 @@ class LlamaCppSubprocessController:
         self.no_webui = no_webui
         self.jinja = jinja
         self.chat_template_file = chat_template_file
+        self.embeddings = embeddings
+        self.pooling = pooling
         self._process: asyncio.subprocess.Process | None = None
 
     @property
@@ -434,6 +492,13 @@ class LlamaCppSubprocessController:
             args.extend(
                 ["--chat-template-file", self.chat_template_file]
             )
+        if self.embeddings:
+            args.append("--embeddings")
+            if self.pooling is None:
+                raise RuntimeError(
+                    "embedding-mode llama.cpp process requires pooling"
+                )
+            args.extend(["--pooling", self.pooling])
 
         if self.gpu_uuids:
             visible = [f"CUDA{index}" for index in range(len(self.gpu_uuids))]
@@ -523,6 +588,8 @@ class LlamaCppExecutor(JobExecutor):
         model_alias: str,
         residency_metadata: Mapping[str, Any],
         tools_enabled: bool = False,
+        embeddings: bool = False,
+        pooling: str | None = None,
     ) -> None:
         self.api = api
         self.model_ref = _nonblank(model_ref, "model_ref")
@@ -530,14 +597,49 @@ class LlamaCppExecutor(JobExecutor):
         self.residency_metadata = dict(residency_metadata)
         if type(tools_enabled) is not bool:
             raise TypeError("tools_enabled must be boolean")
-        self.tools_enabled = tools_enabled
-        self.serving_features = {
-            "llm.chat": (
-                frozenset({"tools"})
-                if tools_enabled
-                else frozenset()
+        if type(embeddings) is not bool:
+            raise TypeError("embeddings must be boolean")
+        if embeddings and tools_enabled:
+            raise ValueError(
+                "llama.cpp executor cannot mix embedding and chat modes"
             )
-        }
+        if embeddings:
+            normalized_pooling = _nonblank(pooling or "", "pooling")
+            if normalized_pooling not in {"mean", "cls", "last"}:
+                raise ValueError(
+                    "embedding pooling must be mean, cls, or last"
+                )
+        else:
+            if pooling is not None:
+                raise ValueError("pooling requires embedding mode")
+            normalized_pooling = None
+        self.tools_enabled = tools_enabled
+        self.embedding_mode = embeddings
+        self.pooling = normalized_pooling
+        self.capabilities = (
+            LLAMA_CPP_EMBEDDING_CAPABILITIES
+            if embeddings
+            else LLAMA_CPP_CAPABILITIES
+        )
+        self.serving_features = (
+            {
+                "text.embed": frozenset(
+                    {
+                        "float",
+                        f"pooling-{normalized_pooling}",
+                        "normalization-l2",
+                    }
+                )
+            }
+            if embeddings
+            else {
+                "llm.chat": (
+                    frozenset({"tools"})
+                    if tools_enabled
+                    else frozenset()
+                )
+            }
+        )
         self._inflight: dict[str, asyncio.Task[Any]] = {}
 
     def _payload(self, job: JobRequest) -> dict[str, Any]:
@@ -659,6 +761,144 @@ class LlamaCppExecutor(JobExecutor):
         request["model"] = self.model_alias
         return request, limits
 
+    def _gateway_embedding_payload(
+        self,
+        job: JobRequest,
+    ) -> tuple[dict[str, Any], dict[str, int], str]:
+        envelope = dict(job.payload)
+        if envelope.get("schema_version") != EMBEDDING_JOB_SCHEMA:
+            raise JobExecutionError(
+                "invalid_embedding_job",
+                "embedding job requires the reviewed gateway envelope",
+                retryable=False,
+            )
+        if set(envelope) != {
+            "schema_version",
+            "adapter_id",
+            "embedding_space_id",
+            "request",
+            "limits",
+        }:
+            raise JobExecutionError(
+                "invalid_embedding_job",
+                "embedding job envelope uses unsupported fields",
+                retryable=False,
+            )
+        if envelope.get("adapter_id") != LLAMA_CPP_EMBEDDING_ADAPTER:
+            raise JobExecutionError(
+                "unsupported_embedding_adapter",
+                "embedding job targets an unsupported provider adapter",
+                retryable=False,
+            )
+        space_id = envelope.get("embedding_space_id")
+        semantic_revision = job.metadata.get("serving_semantic_revision")
+        if (
+            not isinstance(space_id, str)
+            or semantic_revision != space_id
+        ):
+            raise JobExecutionError(
+                "embedding_space_mismatch",
+                "embedding job does not match the locally verified serving space",
+                retryable=False,
+            )
+        raw_request = envelope.get("request")
+        raw_limits = envelope.get("limits")
+        if not isinstance(raw_request, Mapping) or not isinstance(raw_limits, Mapping):
+            raise JobExecutionError(
+                "invalid_embedding_job",
+                "embedding job request/limits must be objects",
+                retryable=False,
+            )
+        request = dict(raw_request)
+        if set(request) != {"input", "encoding_format"}:
+            raise JobExecutionError(
+                "invalid_embedding_job",
+                "embedding runtime request uses unsupported fields",
+                retryable=False,
+            )
+        inputs = request.get("input")
+        if (
+            not isinstance(inputs, list)
+            or not inputs
+            or any(not isinstance(item, str) or not item for item in inputs)
+        ):
+            raise JobExecutionError(
+                "invalid_embedding_job",
+                "embedding runtime input must be non-empty strings",
+                retryable=False,
+            )
+        if request.get("encoding_format") != "float":
+            raise JobExecutionError(
+                "unsupported_embedding_encoding",
+                "embedding runtime supports only float vectors",
+                retryable=False,
+            )
+
+        required_limits = (
+            "item_tokens",
+            "item_bytes",
+            "batch_items",
+            "batch_bytes",
+            "aggregate_tokens",
+            "dimensions",
+        )
+        limits: dict[str, int] = {}
+        for key in required_limits:
+            value = raw_limits.get(key)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise JobExecutionError(
+                    "invalid_embedding_job",
+                    "embedding job limits must be positive integers",
+                    retryable=False,
+                )
+            limits[key] = value
+        if set(raw_limits) != set(required_limits):
+            raise JobExecutionError(
+                "invalid_embedding_job",
+                "embedding job limits use unsupported fields",
+                retryable=False,
+            )
+        if len(inputs) > limits["batch_items"]:
+            raise JobExecutionError(
+                "embedding_batch_exceeded",
+                "embedding job exceeds the bound batch-item limit",
+                retryable=False,
+            )
+        sizes = [len(item.encode("utf-8")) for item in inputs]
+        if any(size > limits["item_bytes"] for size in sizes):
+            raise JobExecutionError(
+                "embedding_input_exceeded",
+                "embedding item exceeds the bound byte limit",
+                retryable=False,
+            )
+        if sum(sizes) > limits["batch_bytes"]:
+            raise JobExecutionError(
+                "embedding_batch_exceeded",
+                "embedding batch exceeds the bound byte limit",
+                retryable=False,
+            )
+        request["model"] = self.model_alias
+        return request, limits, space_id
+
+    async def _enforce_embedding_token_limits(
+        self,
+        inputs: list[str],
+        limits: Mapping[str, int],
+    ) -> None:
+        counts = [await self.api.tokenize(item) for item in inputs]
+        if any(count > limits["item_tokens"] for count in counts):
+            raise JobExecutionError(
+                "embedding_input_exceeded",
+                "embedding item exceeds the bound token limit",
+                retryable=False,
+            )
+        if sum(counts) > limits["aggregate_tokens"]:
+            raise JobExecutionError(
+                "embedding_batch_exceeded",
+                "embedding batch exceeds the aggregate token limit",
+                retryable=False,
+            )
+
     async def _enforce_chat_limits(
         self,
         payload: Mapping[str, Any],
@@ -683,6 +923,52 @@ class LlamaCppExecutor(JobExecutor):
         if job.capability not in self.capabilities:
             raise ValueError(
                 f"llama.cpp executor does not support capability: {job.capability}"
+            )
+
+        if job.capability == "text.embed":
+            payload, limits, space_id = self._gateway_embedding_payload(job)
+            inputs = list(payload["input"])
+            await self._enforce_embedding_token_limits(inputs, limits)
+            call = self.api.embeddings(payload)
+            task = asyncio.create_task(call)
+            self._inflight[job.job_id] = task
+            try:
+                response = await task
+            finally:
+                self._inflight.pop(job.job_id, None)
+            try:
+                data, usage = validate_embedding_response(
+                    response,
+                    item_count=len(inputs),
+                    dimensions=limits["dimensions"],
+                )
+            except EmbeddingGatewayError as exc:
+                raise JobExecutionError(
+                    "invalid_provider_response",
+                    "llama.cpp returned invalid embedding vectors",
+                    retryable=False,
+                ) from exc
+            metrics = {
+                key: value
+                for key, value in usage.items()
+                if isinstance(value, int)
+            }
+            return JobResult(
+                outputs={
+                    "object": "list",
+                    "data": data,
+                    "model": self.model_alias,
+                    "usage": usage,
+                },
+                metrics=metrics,
+                metadata={
+                    "runtime_provider": LLAMA_CPP_PROVIDER_ID,
+                    "model": self.model_ref,
+                    "model_alias": self.model_alias,
+                    "embedding_space_id": space_id,
+                    "pooling": self.pooling,
+                    "normalization": "l2",
+                },
             )
 
         gateway_chat = (
@@ -870,6 +1156,8 @@ class LlamaCppManagedRuntime(ManagedRuntime):
         startup_timeout_seconds: float,
         launch_policy: LlamaCppLaunchPolicy,
         tools_enabled: bool = False,
+        embeddings: bool = False,
+        pooling: str | None = None,
     ) -> None:
         self.api = api
         self.process = process
@@ -884,6 +1172,8 @@ class LlamaCppManagedRuntime(ManagedRuntime):
             model_ref=model_ref,
             model_alias=model_alias,
             tools_enabled=tools_enabled,
+            embeddings=embeddings,
+            pooling=pooling,
             residency_metadata={
                 "residency_policy": context.demand.residency_policy.value,
                 "gpu_topology": context.demand.gpu_topology.value,
@@ -1322,7 +1612,13 @@ class LlamaCppProvider(RuntimeProvider):
                 "no_webui": self.config.no_webui,
                 "jinja": self.config.jinja,
                 "chat_template_file": self.config.chat_template_file,
-                "capabilities": sorted(LLAMA_CPP_CAPABILITIES),
+                "embeddings": self.config.embeddings,
+                "pooling": self.config.pooling,
+                "capabilities": sorted(
+                    LLAMA_CPP_EMBEDDING_CAPABILITIES
+                    if self.config.embeddings
+                    else LLAMA_CPP_CAPABILITIES
+                ),
             },
             model_preparation=ModelPreparationPolicy.REFERENCE_ONLY,
             model_ref=context.demand.model.model_ref,
@@ -1365,6 +1661,28 @@ class LlamaCppProvider(RuntimeProvider):
         if chat_template_file is not None and not jinja:
             raise ValueError(
                 "llama.cpp chat_template_file requires jinja=true"
+            )
+        embeddings = cfg.get("embeddings", self.config.embeddings)
+        if type(embeddings) is not bool:
+            raise ValueError("llama.cpp deployment embeddings must be boolean")
+        raw_pooling = cfg.get("pooling", self.config.pooling)
+        pooling = (
+            None
+            if raw_pooling is None
+            else _nonblank(str(raw_pooling), "pooling")
+        )
+        if embeddings:
+            if jinja or chat_template_file is not None:
+                raise ValueError(
+                    "llama.cpp embedding deployment cannot enable chat templates"
+                )
+            if pooling not in {"mean", "cls", "last"}:
+                raise ValueError(
+                    "llama.cpp embedding deployment requires supported pooling"
+                )
+        elif pooling is not None:
+            raise ValueError(
+                "llama.cpp deployment pooling requires embeddings=true"
             )
 
         split_mode = LlamaCppSplitMode(
@@ -1418,6 +1736,8 @@ class LlamaCppProvider(RuntimeProvider):
             no_webui=bool(cfg.get("no_webui", self.config.no_webui)),
             jinja=jinja,
             chat_template_file=chat_template_file,
+            embeddings=embeddings,
+            pooling=pooling,
         )
 
         return LlamaCppManagedRuntime(
@@ -1429,4 +1749,6 @@ class LlamaCppProvider(RuntimeProvider):
             startup_timeout_seconds=self.config.startup_timeout_seconds,
             launch_policy=policy,
             tools_enabled=jinja,
+            embeddings=embeddings,
+            pooling=pooling,
         )
