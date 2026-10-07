@@ -248,6 +248,7 @@ async def test_embedding_request_uses_durable_binding_and_preserves_order():
                     "input": ["alpha", "beta"],
                     "encoding_format": "float",
                     "x_astrumweaver_input_type": "query",
+                    "x_astrumweaver_embedding_space_id": profile.embedding_space_id,
                 },
             )
         )
@@ -291,6 +292,7 @@ async def test_embedding_gateway_rejects_unsupported_shape_before_admission():
                 "model": "notes-embed-v1",
                 "input": [[1, 2, 3]],
                 "x_astrumweaver_input_type": "document",
+                "x_astrumweaver_embedding_space_id": profile.embedding_space_id,
             },
         )
         dimensions = await client.post(
@@ -301,6 +303,7 @@ async def test_embedding_gateway_rejects_unsupported_shape_before_admission():
                 "input": "alpha",
                 "dimensions": 2,
                 "x_astrumweaver_input_type": "document",
+                "x_astrumweaver_embedding_space_id": profile.embedding_space_id,
             },
         )
 
@@ -329,6 +332,7 @@ async def test_embedding_gateway_rejects_invalid_provider_vector_batch():
                     "model": "notes-embed-v1",
                     "input": ["alpha", "beta"],
                     "x_astrumweaver_input_type": "document",
+                    "x_astrumweaver_embedding_space_id": profile.embedding_space_id,
                 },
             )
         )
@@ -361,6 +365,7 @@ async def test_embedding_gateway_timeout_cancels_only_owned_job():
                 "model": "notes-embed-v1",
                 "input": "alpha",
                 "x_astrumweaver_input_type": "document",
+                "x_astrumweaver_embedding_space_id": profile.embedding_space_id,
             },
         )
 
@@ -368,3 +373,31 @@ async def test_embedding_gateway_timeout_cancels_only_owned_job():
     jobs = repository.list_jobs()
     assert len(jobs) == 1
     assert jobs[0].status.value == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_embedding_gateway_rejects_incompatible_space_before_admission():
+    repository = InMemoryControlRepository()
+    profile, advertisement = serving_values()
+    register_worker(repository, advertisement)
+    app = app_with_gateway(repository, profile)
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://control",
+    ) as client:
+        response = await client.post(
+            "/v1/embeddings",
+            headers={"authorization": f"Bearer {CLIENT_TOKEN}"},
+            json={
+                "model": profile.profile_id,
+                "input": "alpha",
+                "x_astrumweaver_input_type": "document",
+                "x_astrumweaver_embedding_space_id": digest("f"),
+            },
+        )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "embedding_space_mismatch"
+    assert repository.list_jobs() == []
