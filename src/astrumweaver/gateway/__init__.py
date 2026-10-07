@@ -13,6 +13,25 @@ from .chat import (
     normalize_chat_completion,
 )
 
+
+from .decision import (
+    DECISION_CATALOG_SCHEMA,
+    DECISION_JOB_SCHEMA,
+    DECISION_OPERATION_SCHEMA,
+    DECISION_SCORE_KIND,
+    DECISION_SEMANTICS_SCHEMA,
+    LLAMA_CPP_SCORE_SEMANTICS,
+    LLAMA_CPP_SYSTEM_ONE_ADAPTER,
+    CompiledDecisionRequest,
+    DecisionGatewayError,
+    DecisionGatewayProfile,
+    DecisionProfileCatalog,
+    DecisionSemanticsIdentity,
+    compile_decision_request,
+    normalize_decision_response,
+    validate_decision_provider_response,
+)
+
 from .embedding import (
     EMBEDDING_CATALOG_SCHEMA,
     EMBEDDING_JOB_SCHEMA,
@@ -41,6 +60,21 @@ __all__ = [
     "CompiledChatRequest",
     "compile_chat_request",
     "normalize_chat_completion",
+    "DECISION_CATALOG_SCHEMA",
+    "DECISION_JOB_SCHEMA",
+    "DECISION_OPERATION_SCHEMA",
+    "DECISION_SCORE_KIND",
+    "DECISION_SEMANTICS_SCHEMA",
+    "LLAMA_CPP_SCORE_SEMANTICS",
+    "LLAMA_CPP_SYSTEM_ONE_ADAPTER",
+    "CompiledDecisionRequest",
+    "DecisionGatewayError",
+    "DecisionGatewayProfile",
+    "DecisionProfileCatalog",
+    "DecisionSemanticsIdentity",
+    "compile_decision_request",
+    "normalize_decision_response",
+    "validate_decision_provider_response",
     "EMBEDDING_CATALOG_SCHEMA",
     "EMBEDDING_JOB_SCHEMA",
     "EMBEDDING_OPERATION_SCHEMA",
