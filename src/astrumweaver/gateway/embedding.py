@@ -43,6 +43,7 @@ _ALLOWED_REQUEST_FIELDS = frozenset(
         "input",
         "encoding_format",
         "x_astrumweaver_input_type",
+        "x_astrumweaver_embedding_space_id",
     }
 )
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
@@ -441,6 +442,19 @@ def compile_embedding_request(
             "request model does not match the configured embedding profile",
             status_code=404,
         )
+    requested_space = data.get("x_astrumweaver_embedding_space_id")
+    if not isinstance(requested_space, str) or _DIGEST.fullmatch(requested_space) is None:
+        raise EmbeddingGatewayError(
+            "invalid_request",
+            "x_astrumweaver_embedding_space_id must be a sha256 digest",
+        )
+    if requested_space != profile.embedding_space_id:
+        raise EmbeddingGatewayError(
+            "embedding_space_mismatch",
+            "requested embedding space does not match the configured profile",
+            status_code=409,
+        )
+
     encoding = data.get("encoding_format", "float")
     if encoding != "float":
         raise EmbeddingGatewayError(
