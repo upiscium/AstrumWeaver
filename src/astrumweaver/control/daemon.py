@@ -15,6 +15,10 @@ from ..gateway.embedding_api import (
     create_embedding_router,
     load_embedding_catalog,
 )
+from ..gateway.decision_api import (
+    create_decision_router,
+    load_decision_catalog,
+)
 from .api import create_app
 from .auth import ClientAuthMode
 from .postgres import PostgresControlRepository
@@ -30,6 +34,7 @@ def build_app(config_path: str):
     section = dict(config.get("control") or {})
     chat_section = dict(config.get("chat_gateway") or {})
     embedding_section = dict(config.get("embedding_gateway") or {})
+    decision_section = dict(config.get("decision_gateway") or {})
 
     database_url = os.environ.get("ASTRUMWEAVER_DATABASE_URL", "")
     client_token = os.environ.get("ASTRUMWEAVER_CLIENT_TOKEN", "")
@@ -120,6 +125,34 @@ def build_app(config_path: str):
                 client_token=client_token or None,
                 poll_interval_seconds=float(
                     embedding_section.get(
+                        "poll_interval_seconds",
+                        0.05,
+                    )
+                ),
+            )
+        )
+
+    decision_enabled = decision_section.get("enabled", False)
+    if type(decision_enabled) is not bool:
+        raise RuntimeError("decision_gateway.enabled must be boolean")
+    if decision_enabled:
+        catalog_path = str(
+            decision_section.get("catalog", "")
+        ).strip()
+        if not catalog_path:
+            raise RuntimeError(
+                "decision_gateway.catalog is required when "
+                "decision gateway is enabled"
+            )
+        decision_catalog = load_decision_catalog(catalog_path)
+        app.include_router(
+            create_decision_router(
+                repository,
+                decision_catalog,
+                client_auth=client_auth,
+                client_token=client_token or None,
+                poll_interval_seconds=float(
+                    decision_section.get(
                         "poll_interval_seconds",
                         0.05,
                     )

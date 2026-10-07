@@ -808,9 +808,11 @@ class FakeApi:
         *,
         reachable: bool = True,
         models: tuple[str, ...] = ("astrumweaver",),
+        decision_capable: bool = False,
     ) -> None:
         self.reachable = reachable
         self.model_ids = models
+        self.decision_capable_value = decision_capable
         self.closed = False
         self.chat_started = asyncio.Event()
         self.block_chat = False
@@ -822,6 +824,7 @@ class FakeApi:
         self.chat_input_token_count = 3
         self.completion_payloads: list[dict] = []
         self.embedding_payloads: list[dict] = []
+        self.decision_payloads: list[dict] = []
         self.tokenized_contents: list[str] = []
         self.embedding_dimensions = 3
 
@@ -891,6 +894,32 @@ class FakeApi:
                 "total_tokens": sum(len(item.split()) for item in inputs),
             },
         }
+
+    async def system_one(self, payload: Mapping[str, object]):
+        self.decision_payloads.append(dict(payload))
+        return {
+            "model": "astrumweaver",
+            "answers": {
+                "decision": {
+                    "type": "choice",
+                    "choice": "0000",
+                    "probabilities": {
+                        "0000": 0.7,
+                        "0001": 0.2,
+                        "0002": 0.1,
+                    },
+                    "confidence": 0.55,
+                }
+            },
+            "usage": {"input_tokens": 12, "output_tokens": 0},
+        }
+
+    async def decision_capable(self, model_id: str) -> bool:
+        return (
+            self.reachable
+            and model_id in self.model_ids
+            and self.decision_capable_value
+        )
 
     async def tokenize(self, content: str) -> int:
         self.tokenized_contents.append(content)
@@ -1897,3 +1926,316 @@ def test_generation_executor_does_not_advertise_embedding_capability() -> None:
     )
     assert executor.capabilities == frozenset({"llm.chat", "text.generate"})
     assert "text.embed" not in executor.capabilities
+
+
+def test_llama_cpp_decision_mode_is_explicit_and_exclusive() -> None:
+    with pytest.raises(ValueError, match="mix embedding and decision"):
+        LlamaCppProviderConfig(
+            embeddings=True,
+            pooling="last",
+            decision=True,
+        )
+    with pytest.raises(ValueError, match="decision mode cannot enable chat templates"):
+        LlamaCppProviderConfig(
+            decision=True,
+            jinja=True,
+        )
+
+    provider = LlamaCppProvider(
+        LlamaCppProviderConfig(decision=True)
+    )
+    intent = provider.setup_intent(context())
+    assert intent.configuration["decision"] is True
+    assert intent.configuration["embeddings"] is False
+    assert intent.configuration["capabilities"] == ["decision.system_one"]
+
+
+@pytest.mark.asyncio
+async def test_http_llama_cpp_system_one_and_native_decision_probe() -> None:
+    requests: list[tuple[str, str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = (
+            json.loads(request.content)
+            if request.content
+            else None
+        )
+        requests.append((request.method, request.url.path, body))
+        if request.url.path == "/v1/models":
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "id": "astrumweaver",
+                            "architecture": {
+                                "input_modalities": ["text"],
+                                "output_modalities": ["decisions"],
+                            },
+                        }
+                    ]
+                },
+            )
+        if request.url.path == "/v1/systemone":
+            return httpx.Response(
+                200,
+                json={
+                    "model": "astrumweaver",
+                    "answers": {
+                        "decision": {
+                            "type": "choice",
+                            "choice": "0000",
+                            "probabilities": {
+                                "0000": 0.75,
+                                "0001": 0.25,
+                            },
+                        }
+                    },
+                    "usage": {
+                        "input_tokens": 5,
+                        "output_tokens": 0,
+                    },
+                },
+            )
+        raise AssertionError(request.url.path)
+
+    api = HttpLlamaCppApi(
+        "http://127.0.0.1:8080",
+        transport=httpx.MockTransport(handler),
+    )
+    payload = {
+        "state": "state",
+        "questions": {
+            "decision": {
+                "type": "choice",
+                "instructions": "choose",
+                "criteria": {
+                    "0000": "inspect carefully",
+                    "0001": "retry blindly",
+                },
+            }
+        },
+    }
+    try:
+        assert await api.decision_capable("astrumweaver") is True
+        assert await api.decision_capable("other") is False
+        response = await api.system_one(payload)
+    finally:
+        await api.close()
+
+    assert response["answers"]["decision"]["choice"] == "0000"
+    assert ("POST", "/v1/systemone", payload) in requests
+
+
+@pytest.mark.asyncio
+async def test_decision_executor_rechecks_semantics_limits_and_provider_scores() -> None:
+    api = FakeApi(decision_capable=True)
+    executor = LlamaCppExecutor(
+        api=api,
+        model_ref="/models/openjev.gguf",
+        model_alias="astrumweaver",
+        residency_metadata={},
+        decision=True,
+    )
+    semantics = "sha256:" + "d" * 64
+    payload = {
+        "schema_version": "decision-job-v1",
+        "adapter_id": "llama-cpp-system-one-v1",
+        "decision_semantics_id": semantics,
+        "choice_ids": ["inspect", "retry", "human"],
+        "provider_choice_keys": ["0000", "0001", "0002"],
+        "request": {
+            "state": "a dependency update broke the tests",
+            "questions": {
+                "decision": {
+                    "type": "choice",
+                    "instructions": "what should happen next",
+                    "criteria": {
+                        "0000": "inspect the failure carefully",
+                        "0001": "retry without changing anything",
+                        "0002": "ask a human for review",
+                    },
+                }
+            },
+        },
+        "limits": {
+            "state_bytes": 256,
+            "question_bytes": 128,
+            "choice_count": 4,
+            "choice_id_bytes": 64,
+            "choice_label_bytes": 128,
+            "state_tokens": 16,
+            "question_tokens": 16,
+            "choice_label_tokens": 8,
+            "aggregate_tokens": 40,
+        },
+    }
+
+    result = await executor.execute(
+        JobRequest(
+            job_id="decision",
+            capability="decision.system_one",
+            payload=payload,
+            metadata={"serving_semantic_revision": semantics},
+        )
+    )
+
+    assert executor.capabilities == frozenset({"decision.system_one"})
+    assert executor.serving_features["decision.system_one"] == frozenset(
+        {
+            "native-decision-head",
+            "choice-probabilities",
+            "multi-token-choice-labels",
+            "provider-temperature-softmax",
+        }
+    )
+    assert api.tokenized_contents == [
+        "a dependency update broke the tests",
+        "what should happen next",
+        "inspect the failure carefully",
+        "retry without changing anything",
+        "ask a human for review",
+    ]
+    assert api.decision_payloads == [payload["request"]]
+    assert result.metrics == {"input_tokens": 12, "output_tokens": 0}
+    assert result.metadata["decision_semantics_id"] == semantics
+    assert result.metadata["score_kind"] == "choice_set_probability"
+    assert result.metadata["calibration_status"] == "uncalibrated"
+
+
+@pytest.mark.asyncio
+async def test_decision_executor_fails_closed_before_provider_call() -> None:
+    api = FakeApi(decision_capable=True)
+    executor = LlamaCppExecutor(
+        api=api,
+        model_ref="/models/openjev.gguf",
+        model_alias="astrumweaver",
+        residency_metadata={},
+        decision=True,
+    )
+    semantics = "sha256:" + "d" * 64
+    payload = {
+        "schema_version": "decision-job-v1",
+        "adapter_id": "llama-cpp-system-one-v1",
+        "decision_semantics_id": semantics,
+        "choice_ids": ["inspect", "retry", "human"],
+        "provider_choice_keys": ["0000", "0001", "0002"],
+        "request": {
+            "state": "one two three",
+            "questions": {
+                "decision": {
+                    "type": "choice",
+                    "instructions": "choose next action",
+                    "criteria": {
+                        "0000": "inspect carefully",
+                        "0001": "retry now",
+                        "0002": "ask human",
+                    },
+                }
+            },
+        },
+        "limits": {
+            "state_bytes": 256,
+            "question_bytes": 128,
+            "choice_count": 4,
+            "choice_id_bytes": 64,
+            "choice_label_bytes": 128,
+            "state_tokens": 2,
+            "question_tokens": 16,
+            "choice_label_tokens": 8,
+            "aggregate_tokens": 40,
+        },
+    }
+
+    with pytest.raises(JobExecutionError) as wrong_semantics:
+        await executor.execute(
+            JobRequest(
+                job_id="wrong-semantics",
+                capability="decision.system_one",
+                payload=payload,
+                metadata={
+                    "serving_semantic_revision":
+                        "sha256:" + "e" * 64
+                },
+            )
+        )
+    assert wrong_semantics.value.code == "decision_semantics_mismatch"
+    assert api.decision_payloads == []
+
+    with pytest.raises(JobExecutionError) as overflow:
+        await executor.execute(
+            JobRequest(
+                job_id="token-overflow",
+                capability="decision.system_one",
+                payload=payload,
+                metadata={"serving_semantic_revision": semantics},
+            )
+        )
+    assert overflow.value.code == "decision_input_exceeded"
+    assert api.decision_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_managed_decision_runtime_requires_native_decision_model() -> None:
+    incapable_api = FakeApi(
+        reachable=False,
+        decision_capable=False,
+    )
+    incapable_process = FakeProcess(incapable_api)
+    incapable = LlamaCppManagedRuntime(
+        api=incapable_api,
+        process=incapable_process,
+        context=context(),
+        model_ref="/models/plain.gguf",
+        model_alias="astrumweaver",
+        startup_timeout_seconds=1.0,
+        launch_policy=LlamaCppLaunchPolicy(
+            gpu_layers=0,
+            split_mode=LlamaCppSplitMode.NONE,
+            fit=False,
+            tensor_split=None,
+            fit_target_mb=None,
+            main_gpu=0,
+            cpu_moe=False,
+            n_cpu_moe=None,
+            n_cpu_ffn=None,
+        ),
+        decision=True,
+    )
+
+    with pytest.raises(RuntimeError, match="native decision"):
+        await incapable.start()
+    assert incapable_process.stops == 1
+
+    api = FakeApi(
+        reachable=False,
+        decision_capable=True,
+    )
+    process = FakeProcess(api)
+    runtime = LlamaCppManagedRuntime(
+        api=api,
+        process=process,
+        context=context(),
+        model_ref="/models/openjev.gguf",
+        model_alias="astrumweaver",
+        startup_timeout_seconds=1.0,
+        launch_policy=LlamaCppLaunchPolicy(
+            gpu_layers=0,
+            split_mode=LlamaCppSplitMode.NONE,
+            fit=False,
+            tensor_split=None,
+            fit_target_mb=None,
+            main_gpu=0,
+            cpu_moe=False,
+            n_cpu_moe=None,
+            n_cpu_ffn=None,
+        ),
+        decision=True,
+    )
+
+    await runtime.start()
+    assert (await runtime.health()).ready
+    assert runtime.executor().capabilities == frozenset(
+        {"decision.system_one"}
+    )
+    await runtime.stop()
