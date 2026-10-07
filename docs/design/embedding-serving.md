@@ -13,6 +13,8 @@ The public edge surface is a documented subset of `POST /v1/embeddings`:
 - `model` is a configured logical serving profile ID;
 - `input` is one string or a non-empty array of strings;
 - `encoding_format` is omitted or exactly `float`;
+- `x_astrumweaver_embedding_space_id` is required and must exactly match the
+  configured immutable space before admission;
 - token-array input, base64 output, arbitrary dimensions and undocumented fields
   fail closed;
 - AstrumWeaver adds a namespaced response extension carrying the immutable
@@ -35,8 +37,10 @@ change vector semantics:
 - provider adapter identity.
 
 Equal dimensions or a similar model name never imply compatibility. A profile
-revision resolves exactly one approved space. Changing any field above requires
-a new space identity and client-owned reindex/migration.
+revision resolves exactly one approved space. Each embedding request also pins
+the expected `embedding_space_id`; a stale or incompatible client is rejected
+before a durable Job is admitted. Changing any field above requires a new space
+identity and client-owned reindex/migration.
 
 The gateway accepts an explicit namespaced input role, `query` or `document`,
 so a retrieval model may use different reviewed preprocessing for query and
@@ -81,5 +85,7 @@ document preprocessing, vector dimension/finite/order checks, batch/token/byte
 overflow, cancellation and stale serving identity.
 
 A later real acceptance run uses a disposable retrieval fixture and an
-intentionally incompatible-space negative control. It does not modify a
+intentionally incompatible-space negative control sent to the live gateway.
+The negative control must receive `409 embedding_space_mismatch`; a local
+digest comparison alone is not acceptance evidence. It does not modify a
 production index.
