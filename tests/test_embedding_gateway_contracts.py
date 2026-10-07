@@ -175,6 +175,7 @@ def test_compile_query_and_document_apply_exact_reviewed_policy():
             "input": ["alpha", "beta"],
             "encoding_format": "float",
             "x_astrumweaver_input_type": "query",
+            "x_astrumweaver_embedding_space_id": gateway.embedding_space_id,
         },
         gateway,
         request_size_bytes=100,
@@ -191,6 +192,7 @@ def test_compile_query_and_document_apply_exact_reviewed_policy():
             "model": gateway.profile_id,
             "input": "alpha",
             "x_astrumweaver_input_type": "document",
+            "x_astrumweaver_embedding_space_id": gateway.embedding_space_id,
         },
         gateway,
         request_size_bytes=60,
@@ -227,8 +229,36 @@ def test_compile_query_and_document_apply_exact_reviewed_policy():
 )
 def test_compile_rejects_unsupported_embedding_shapes(body):
     _, _, _, gateway = values()
+    pinned = {
+        **body,
+        "x_astrumweaver_embedding_space_id": gateway.embedding_space_id,
+    }
     with pytest.raises(EmbeddingGatewayError):
-        compile_embedding_request(body, gateway, request_size_bytes=100)
+        compile_embedding_request(pinned, gateway, request_size_bytes=100)
+
+
+def test_compile_requires_exact_embedding_space_pin():
+    _, _, _, gateway = values()
+    body = {
+        "model": gateway.profile_id,
+        "input": "alpha",
+        "x_astrumweaver_input_type": "document",
+    }
+
+    with pytest.raises(EmbeddingGatewayError, match="must be a sha256 digest"):
+        compile_embedding_request(body, gateway, request_size_bytes=60)
+
+    with pytest.raises(EmbeddingGatewayError) as mismatch:
+        compile_embedding_request(
+            {
+                **body,
+                "x_astrumweaver_embedding_space_id": digest("f"),
+            },
+            gateway,
+            request_size_bytes=60,
+        )
+    assert mismatch.value.code == "embedding_space_mismatch"
+    assert mismatch.value.status_code == 409
 
 
 def test_compile_enforces_batch_and_byte_bounds():
@@ -240,6 +270,7 @@ def test_compile_enforces_batch_and_byte_bounds():
                 "model": gateway.profile_id,
                 "input": ["a", "b", "c", "d", "e"],
                 "x_astrumweaver_input_type": "document",
+                "x_astrumweaver_embedding_space_id": gateway.embedding_space_id,
             },
             gateway,
             request_size_bytes=100,
@@ -251,6 +282,7 @@ def test_compile_enforces_batch_and_byte_bounds():
                 "model": gateway.profile_id,
                 "input": "x" * 4097,
                 "x_astrumweaver_input_type": "document",
+                "x_astrumweaver_embedding_space_id": gateway.embedding_space_id,
             },
             gateway,
             request_size_bytes=5000,
