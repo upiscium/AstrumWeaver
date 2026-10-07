@@ -50,11 +50,11 @@ def fixture(tmp_path):
             {
                 "schema_version": "embedding-acceptance-fixture-v1",
                 "documents": [
-                    {"id": "d1", "text": "alpha"},
-                    {"id": "d2", "text": "beta"},
+                    {"id": "private-document-alpha", "text": "alpha"},
+                    {"id": "private-document-beta", "text": "beta"},
                 ],
                 "queries": [
-                    {"text": "find alpha", "expected_document_id": "d1"},
+                    {"text": "find alpha", "expected_document_id": "private-document-alpha"},
                 ],
             }
         ),
@@ -266,8 +266,8 @@ def test_embedding_acceptance_public_evidence_omits_private_values(tmp_path):
         "alpha",
         "beta",
         "find alpha",
-        "d1",
-        "d2",
+        "private-document-alpha",
+        "private-document-beta",
         str(tmp_path),
     ):
         assert private_value not in markdown
