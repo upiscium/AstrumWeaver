@@ -395,6 +395,7 @@ class EmbeddingAcceptanceRunner:
                     "input": inputs,
                     "encoding_format": "float",
                     "x_astrumweaver_input_type": input_type,
+                    "x_astrumweaver_embedding_space_id": self.embedding_space_id,
                 },
             ),
             f"{input_type} batch",
@@ -430,6 +431,35 @@ class EmbeddingAcceptanceRunner:
                 dimensions=space.dimensions,
             )
 
+            negative = client.post(
+                "embeddings",
+                json={
+                    "model": self.profile_id,
+                    "input": [self.fixture.documents[0][1]],
+                    "encoding_format": "float",
+                    "x_astrumweaver_input_type": "document",
+                    "x_astrumweaver_embedding_space_id": self.incompatible_space_id,
+                },
+            )
+            if negative.status_code != 409:
+                raise EmbeddingAcceptanceError(
+                    "incompatible embedding space was not rejected by the live gateway"
+                )
+            try:
+                negative_body = negative.json()
+            except ValueError as exc:
+                raise EmbeddingAcceptanceError(
+                    "incompatible-space rejection returned invalid JSON"
+                ) from exc
+            if (
+                not isinstance(negative_body, Mapping)
+                or not isinstance(negative_body.get("error"), Mapping)
+                or negative_body["error"].get("code") != "embedding_space_mismatch"
+            ):
+                raise EmbeddingAcceptanceError(
+                    "incompatible-space rejection used an unexpected error contract"
+                )
+
         index_by_id = {
             document_id: index
             for index, (document_id, _) in enumerate(self.fixture.documents)
@@ -458,19 +488,7 @@ class EmbeddingAcceptanceRunner:
                 )
             margins.append(margin)
 
-        # Negative control: an index/query pin from another immutable space must
-        # be rejected even if dimensions happen to be equal.
-        try:
-            _require_same_space(
-                self.incompatible_space_id,
-                self.embedding_space_id,
-            )
-        except EmbeddingAcceptanceError:
-            incompatible_rejected = "PASS"
-        else:  # pragma: no cover - constructor already prevents this.
-            raise EmbeddingAcceptanceError(
-                "incompatible embedding space was not rejected"
-            )
+        incompatible_rejected = "PASS"
 
         return EmbeddingAcceptanceEvidence(
             evidence_version="embedding-serving-v1",
