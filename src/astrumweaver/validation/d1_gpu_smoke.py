@@ -165,9 +165,11 @@ def _validate_models(models: dict[str, Any]) -> None:
     if not isinstance(data, list) or len(data) != 1:
         raise SmokeError("runtime_model_advertisement_invalid")
     architecture = data[0].get("architecture") if isinstance(data[0], dict) else None
+    outputs = architecture.get("output_modalities") if isinstance(architecture, dict) else None
     if (not isinstance(architecture, dict)
             or architecture.get("input_modalities") != ["text"]
-            or "decisions" not in architecture.get("output_modalities", [])):
+            or not isinstance(outputs, list)
+            or "decisions" not in outputs):
         raise SmokeError("runtime_not_native_text_decision")
 
 
@@ -185,23 +187,33 @@ def _probe(base: str, state: str, question: str,
     result = _request_json(base, "/v1/systemone", request)
     elapsed_ms = (time.perf_counter() - start) * 1000
     try:
-        assert set(result) == {"answers", "model", "usage"}
-        assert set(result["answers"]) == {"decision"}
-        answer = result["answers"]["decision"]
-        assert answer["type"] == "choice"
+        if set(result) != {"answers", "model", "usage"}:
+            raise SmokeError("runtime_decision_protocol_invalid")
+        answers = result["answers"]
+        if not isinstance(answers, dict) or set(answers) != {"decision"}:
+            raise SmokeError("runtime_decision_protocol_invalid")
+        answer = answers["decision"]
+        if answer["type"] != "choice":
+            raise SmokeError("runtime_decision_protocol_invalid")
         probs = answer["probabilities"]
-        assert set(probs) == set(keys)
+        if not isinstance(probs, dict) or set(probs) != set(keys):
+            raise SmokeError("runtime_decision_protocol_invalid")
         scores = [probs[k] for k in keys]
-        assert all(type(v) in (int, float) and math.isfinite(v) and 0 <= v <= 1 for v in scores)
-        assert abs(sum(scores) - 1.0) <= 0.0001
+        if not all(type(v) in (int, float) and math.isfinite(v) and 0 <= v <= 1
+                   for v in scores):
+            raise SmokeError("runtime_decision_protocol_invalid")
+        if abs(sum(scores) - 1.0) > 0.0001:
+            raise SmokeError("runtime_decision_protocol_invalid")
         selected = answer["choice"]
-        assert selected in keys and scores[keys.index(selected)] >= max(scores) - 1e-8
-        assert result["usage"]["output_tokens"] == 0
-    except (AssertionError, TypeError, KeyError, ValueError, IndexError) as exc:
+        if selected not in keys or scores[keys.index(selected)] < max(scores) - 1e-8:
+            raise SmokeError("runtime_decision_protocol_invalid")
+        usage = result["usage"]
+        if type(usage["output_tokens"]) is not int or usage["output_tokens"] != 0:
+            raise SmokeError("runtime_decision_protocol_invalid")
+    except (TypeError, KeyError, ValueError, IndexError) as exc:
         raise SmokeError("runtime_decision_protocol_invalid") from exc
     chosen = choices[keys.index(selected)][0] if max(scores) >= 0.65 else None
     return chosen, elapsed_ms
-
 
 def _stop_owned_server(process: subprocess.Popen[bytes]) -> None:
     if process.poll() is not None:

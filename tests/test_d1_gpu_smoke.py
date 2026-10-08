@@ -62,6 +62,8 @@ def test_model_modality_requires_native_decision_head():
         {"data": []},
         {"data": [{"architecture": {"input_modalities": ["text"], "output_modalities": ["text"]}}]},
         {"data": [{"architecture": {"input_modalities": ["image"], "output_modalities": ["decisions"]}}]},
+        {"data": [{"architecture": {"input_modalities": ["text"], "output_modalities": None}}]},
+        {"data": [{"architecture": {"input_modalities": ["text"], "output_modalities": 0}}]},
     ):
         with pytest.raises(smoke.SmokeError, match="runtime_"):
             smoke._validate_models(bad)
@@ -83,6 +85,10 @@ def test_invalid_probability_or_output_tokens_rejected(monkeypatch):
         smoke._probe("http://127.0.0.1:1", "state", "question",
                      (("a", "alpha"), ("b", "beta")))
     correct["answers"]["decision"]["probabilities"]["0000"] = 0.8
+    correct["usage"]["output_tokens"] = False
+    with pytest.raises(smoke.SmokeError, match="runtime_decision_protocol_invalid"):
+        smoke._probe("http://127.0.0.1:1", "state", "question",
+                     (("a", "alpha"), ("b", "beta")))
     correct["usage"]["output_tokens"] = 1
     with pytest.raises(smoke.SmokeError, match="runtime_decision_protocol_invalid"):
         smoke._probe("http://127.0.0.1:1", "state", "question",
