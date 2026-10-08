@@ -21,6 +21,22 @@
       installer = pkgs.callPackage ./nix/installer-support.nix {
         inherit astrumweaver integration;
       };
+      # Experimental opt-in GPU runtime, distinct from the default Worker.
+      cudaPkgs = import nixpkgs {
+        inherit system;
+        config.allowUnfree = true;
+      };
+      decisionLlamaCuda = cudaArch:
+        let
+          core = cudaPkgs.callPackage ./nix/decision-llama-cuda.nix { inherit cudaArch; };
+          driverBridge = cudaPkgs.callPackage ./nix/decision-llama-driver-bridge.nix {
+            inherit core;
+          };
+        in
+        cudaPkgs.buildEnv {
+          name = "astrumweaver-d1-decision-cuda-sm${cudaArch}-runtime";
+          paths = [ core driverBridge ];
+        };
       fakeNvidia = pkgs.writeShellScriptBin "nvidia-smi" ''
         if [ "$1" = "--query-gpu=uuid" ]; then
           echo GPU-example-smoke
@@ -164,6 +180,8 @@
     {
       packages.${system} = {
         inherit astrumweaver control worker installer integration;
+        decision-llama-cuda-sm61 = decisionLlamaCuda "61";
+        decision-llama-cuda-sm86 = decisionLlamaCuda "86";
         default = astrumweaver;
       };
 

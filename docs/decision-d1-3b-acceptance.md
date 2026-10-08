@@ -1,5 +1,8 @@
 # Liquid AI d1-3B System-One acceptance
 
+For the repeatable **GPU runtime package and isolated hardware procedure**,
+see [d1-3B GPU deployment](decision-d1-3b-gpu-deployment.md).
+
 Tracking: #91, #96, #114. This is an additional immutable deployment qualification, **not** a replacement for historical OpenJev evidence.
 
 ## Exact model target
