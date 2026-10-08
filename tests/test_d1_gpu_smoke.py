@@ -191,6 +191,14 @@ HTTPServer(("127.0.0.1", port),Handler).serve_forever()
 @pytest.mark.parametrize("bad_modality", [False, True])
 def test_owned_server_cleanup_and_no_public_model_data(tmp_path, monkeypatch, bad_modality):
     monkeypatch.setattr(smoke, "_require_nix_store_package", lambda _: None)
+    # GitHub's container isolation can hide ss(8) listener PID metadata even
+    # from the test owner. This stub asserts the guard is invoked; the
+    # dedicated owner/PID tests below validate fail-closed security semantics.
+    owner_checks = []
+    monkeypatch.setattr(
+        smoke, "_require_owned_loopback_listener",
+        lambda port, group: owner_checks.append((port, group)),
+    )
     # Encode provider behavior in executable test code, rather than passing
     # a hidden environment variable to the untrusted inference subprocess.
     fake = _SERVER.replace(
@@ -233,6 +241,8 @@ def test_owned_server_cleanup_and_no_public_model_data(tmp_path, monkeypatch, ba
         assert "GPU-fake" not in json.dumps(data)
         assert str(model) not in json.dumps(data)
         assert evidence.stat().st_mode & 0o777 == 0o600
+    assert owner_checks and all(p == port and isinstance(group, int) and group > 0
+                                for p, group in owner_checks)
     with socket.socket() as sock:
         assert sock.connect_ex(("127.0.0.1", port)) != 0
 
@@ -248,6 +258,14 @@ def test_listener_must_belong_to_owned_process_group(monkeypatch):
     monkeypatch.setattr(smoke.subprocess, "run",
                         lambda *a, **k: SimpleNamespace(stdout=""))
     with pytest.raises(smoke.SmokeError, match="owned_listener_not_ready"):
+        smoke._require_owned_loopback_listener(18311, 731)
+    monkeypatch.setattr(
+        smoke.subprocess, "run",
+        lambda *a, **k: SimpleNamespace(
+            stdout="LISTEN 0 10 127.0.0.1:18311 0.0.0.0:*\\n",
+        ),
+    )
+    with pytest.raises(smoke.SmokeError, match="listener_ownership_unverified"):
         smoke._require_owned_loopback_listener(18311, 731)
 
 
