@@ -65,14 +65,14 @@ class Managed:
 
 
 @asynccontextmanager
-async def supervised(managed=None, repo=None, *, interval=0.02, timeout=0.2):
+async def supervised(managed=None, repo=None, *, interval=0.02, timeout=0.2, heartbeat=0.025):
     managed = managed or Managed()
     repo = repo or InMemoryControlRepository()
     supervisor = RuntimeHealthSupervisor(managed, interval_seconds=interval, timeout_seconds=timeout)
     async with ObservedClient(repo) as client:
         worker = WorkerRuntime(
             spec=SPEC, max_concurrency=1, executor=managed.executor(), client=client,
-            poll_interval_seconds=0.005, heartbeat_interval_seconds=0.025,
+            poll_interval_seconds=0.005, heartbeat_interval_seconds=heartbeat,
             runtime_supervisor=supervisor,
         )
         task = asyncio.create_task(worker.run_forever())
@@ -137,6 +137,22 @@ async def test_post_ready_fault_latches_readiness_and_preserves_queued_attempts(
             assert health["runtime_available"] is False
             assert "private-sentinel" not in str(health)
         assert "private-sentinel" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_fast_supervised_execution_does_not_wait_for_heartbeat_deadline():
+    # The healthy-runtime failure watcher intentionally stays pending.  A
+    # completed execution must wake the Worker immediately, not at the next
+    # heartbeat timeout as asyncio.wait(ALL_COMPLETED) would do.
+    async with supervised(heartbeat=1.5) as (repo, managed, _, client, worker, _):
+        assert worker.ready
+        job = submit(repo)[0]
+        await asyncio.wait_for(
+            eventually(lambda: repo.get_job(job.job_id).status is JobStatus.SUCCEEDED),
+            timeout=0.6,
+        )
+        assert managed.executor().finished.is_set()
+        assert client.count("complete") == 1
 
 
 @pytest.mark.asyncio

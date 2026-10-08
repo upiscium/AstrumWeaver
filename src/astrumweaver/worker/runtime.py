@@ -607,6 +607,7 @@ class WorkerRuntime:
                 await asyncio.wait(
                     {execution} if runtime_failure is None else {execution, runtime_failure},
                     timeout=max(0.0, self._next_heartbeat_at - time.monotonic()),
+                    return_when=asyncio.FIRST_COMPLETED,
                 )
 
             self._require_runtime()
