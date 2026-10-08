@@ -3,7 +3,11 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import socket
+import subprocess
+import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -119,6 +123,7 @@ def test_gpu_enumeration_rejects_malformed_snapshot(monkeypatch):
 
 
 def test_missing_model_digest_is_fail_closed(tmp_path, monkeypatch):
+    monkeypatch.setattr(smoke, "_require_nix_store_package", lambda _: None)
     package = _package(tmp_path)
     model = tmp_path / "wrong.gguf"
     model.write_bytes(b"not d1")
@@ -132,6 +137,7 @@ def test_missing_model_digest_is_fail_closed(tmp_path, monkeypatch):
 
 
 def test_existing_gpu_load_requires_explicit_acknowledgement(tmp_path, monkeypatch):
+    monkeypatch.setattr(smoke, "_require_nix_store_package", lambda _: None)
     package = _package(tmp_path)
     model = tmp_path / "model.gguf"
     model.write_bytes(b"placeholder")
@@ -162,6 +168,8 @@ class Handler(BaseHTTPRequestHandler):
             self.reply({"status": "ok"})
         elif self.path == "/v1/models":
             output=["text"] if os.getenv("TEST_BAD_MODALITY") else ["decisions"]
+            if os.getenv("ASTRUMWEAVER_WORKER_TOKEN"):
+                output=["text"]
             self.reply({"data":[{"architecture":{"input_modalities":["text"],
                                                    "output_modalities":output}}]})
         else: self.send_error(404)
@@ -182,7 +190,14 @@ HTTPServer(("127.0.0.1", port),Handler).serve_forever()
 
 @pytest.mark.parametrize("bad_modality", [False, True])
 def test_owned_server_cleanup_and_no_public_model_data(tmp_path, monkeypatch, bad_modality):
-    package = _package(tmp_path, server=_SERVER)
+    monkeypatch.setattr(smoke, "_require_nix_store_package", lambda _: None)
+    # Encode provider behavior in executable test code, rather than passing
+    # a hidden environment variable to the untrusted inference subprocess.
+    fake = _SERVER.replace(
+        'output=["text"] if os.getenv("TEST_BAD_MODALITY") else ["decisions"]',
+        'output=["text"]' if bad_modality else 'output=["decisions"]',
+    )
+    package = _package(tmp_path, server=fake)
     model = tmp_path / "model.gguf"
     model.write_bytes(b"placeholder")
     driver = tmp_path / "libcuda.so.1"
@@ -194,8 +209,8 @@ def test_owned_server_cleanup_and_no_public_model_data(tmp_path, monkeypatch, ba
     monkeypatch.setattr(smoke, "_gpu_snapshot", lambda: next(calls))
     monkeypatch.setattr(smoke, "_file_sha256",
                         lambda p: smoke.MODEL_SHA256 if p == model else "fake-runtime-digest")
-    if bad_modality:
-        monkeypatch.setenv("TEST_BAD_MODALITY", "1")
+    # Runtime must NOT inherit secrets from this operator process.
+    monkeypatch.setenv("ASTRUMWEAVER_WORKER_TOKEN", "test-secret-must-not-leak")
     port = _port()
     evidence = tmp_path / "private.json"
     if bad_modality:
@@ -220,3 +235,76 @@ def test_owned_server_cleanup_and_no_public_model_data(tmp_path, monkeypatch, ba
         assert evidence.stat().st_mode & 0o777 == 0o600
     with socket.socket() as sock:
         assert sock.connect_ex(("127.0.0.1", port)) != 0
+
+
+def test_listener_must_belong_to_owned_process_group(monkeypatch):
+    out = 'LISTEN 0 10 127.0.0.1:18311 0.0.0.0:* users:(("server",pid=421,fd=4))\\n'
+    monkeypatch.setattr(smoke.subprocess, "run",
+                        lambda *a, **k: SimpleNamespace(stdout=out))
+    monkeypatch.setattr(smoke.os, "getpgid", lambda pid: 731)
+    smoke._require_owned_loopback_listener(18311, 731)
+    with pytest.raises(smoke.SmokeError, match="owned_by_other_process"):
+        smoke._require_owned_loopback_listener(18311, 999)
+    monkeypatch.setattr(smoke.subprocess, "run",
+                        lambda *a, **k: SimpleNamespace(stdout=""))
+    with pytest.raises(smoke.SmokeError, match="owned_listener_not_ready"):
+        smoke._require_owned_loopback_listener(18311, 731)
+
+
+def test_parent_exit_must_not_leave_child_listener_alive():
+    # The wrapper's parent may exit abnormally while llama-server is alive.
+    # Cleanup owns the entire new_session process group, not just Popen.poll.
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    child = (
+        "import socket,time; "
+        "s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); "
+        f"s.bind(('127.0.0.1',{port})); s.listen(); time.sleep(30)"
+    )
+    parent = f"import subprocess,sys; subprocess.Popen([sys.executable,'-c',{child!r}])"
+    proc = subprocess.Popen(
+        [sys.executable, "-c", parent],
+        start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    try:
+        deadline = time.monotonic() + 4
+        while time.monotonic() < deadline:
+            with socket.socket() as sock:
+                bound = sock.connect_ex(("127.0.0.1", port)) == 0
+            if bound and proc.poll() is not None:
+                break
+            time.sleep(0.03)
+        else:
+            pytest.fail("fake parent/child start preflight failed")
+        smoke._stop_owned_server(proc)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            with socket.socket() as sock:
+                if sock.connect_ex(("127.0.0.1", port)) != 0:
+                    break
+            time.sleep(0.03)
+        else:
+            pytest.fail("owned subprocess group still listening")
+    finally:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait(timeout=3)
+
+
+def test_only_real_nix_store_artifacts_admitted(tmp_path):
+    package = _package(tmp_path)
+    with pytest.raises(smoke.SmokeError, match="runtime_package_not_a_nix_store_output"):
+        smoke._require_nix_store_package(package)
+    with pytest.raises(smoke.SmokeError, match="runtime_package_not_accessible"):
+        smoke._require_nix_store_package(tmp_path / "missing-artifact")
+
+
+def test_pinned_package_real_store_path_is_accepted_when_provided():
+    import os
+    path = os.getenv("ASTRUMWEAVER_TEST_NIX_PACKAGE")
+    if not path:
+        pytest.skip("standalone Nix package requires authorized GPU test host")
+    smoke._require_nix_store_package(Path(path))

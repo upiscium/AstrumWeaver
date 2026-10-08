@@ -55,7 +55,9 @@ and existing GPU load over 128 MiB unless explicit
 reviewed **test**, not GPU reassignment or production resource sharing.
 
 The NVIDIA host driver and GPU passthrough must already be working.
-AstrumWeaver does not install drivers, virtual machines or hypervisors.
+The test host must provide `nvidia-smi`, `ldconfig`, and Linux
+`ss` (from `iproute2`) for fail-closed GPU and loopback-process-ownership
+checks. AstrumWeaver does not install drivers, virtual machines or hypervisors.
 
 ## Pin the existing model separately
 
@@ -122,14 +124,24 @@ does not coordinate with the Worker scheduler or reserve GPU ownership.
 The probe performs:
 
 1. GPU count/capability/VRAM preflight and exact pinned package provenance;
+   the package **must resolve to a top-level `/nix/store` output**. A
+   writable directory containing forged metadata is rejected;
 2. streaming GGUF SHA-256 verification **before starting a subprocess**;
 3. temporary loopback llama-server (`--offline --no-webui`, 4096 context,
    concurrency 1, all GPU layers, `--fit off`);
-4. `/health` and `/v1/models` text-input / native-decisions output validation;
+4. confirmation that the loopback listener belongs to the **owned
+   subprocess group before any HTTP request**, then `/health` and
+   `/v1/models` text-input/native-decisions output validation;
 5. measured incremental VRAM on **every** selected GPU, five synthetic
    choice requests and a reversed-choice ordering probe, finite normalized
    scores and zero output tokens;
-6. owned-process termination and port-release checks even on error.
+6. bounded termination of the entire owned process group, including
+   cases where the launcher parent exits before the GPU child, and
+   port-release checks even on error.
+
+The subprocess inherits only a minimal environment plus the selected GPU
+IDs and driver-library path; ambient Worker/Client bearer tokens and cloud
+secrets are never forwarded into the smoke-owned inference process.
 
 Result is a **new** mode-0600 JSON file. It contains only aggregate
 measurements and public artifact digests, not GPU UUIDs, URLs, paths,
@@ -165,6 +177,12 @@ runtime closure and use the wrapper path in a **new** reviewed
 `RuntimeDeploymentSpec`. Use the existing `astrumweaver-setup-tui` /
 `SetupPlan` approval path for any host mutations. The launcher respects
 the Worker-scoped `CUDA_VISIBLE_DEVICES` and never grants GPU ownership.
+
+The dedicated launcher also strips ambient process credentials before
+spawning llama-server. This is essential when the Worker Provider passes
+its own environment to a managed runtime: the child receives only
+the GPU visibility, driver search path, and necessary basic OS variables,
+**not** Worker/Client bearer tokens or cloud API credentials.
 
 The driver shim prefers the standard NixOS
 `/run/opengl-driver/lib/libcuda.so.1` and then well-known generic Linux

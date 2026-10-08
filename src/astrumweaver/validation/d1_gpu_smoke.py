@@ -60,6 +60,18 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _require_nix_store_package(package: Path) -> None:
+    """Test artifact must resolve to an immutable, top-level Nix store output."""
+    try:
+        resolved = package.resolve(strict=True)
+    except OSError as exc:
+        raise SmokeError("runtime_package_not_accessible") from exc
+    if (not resolved.is_dir()
+            or resolved.parent != Path("/nix/store")
+            or re.fullmatch(r"[0-9a-z]{32}-.+", resolved.name) is None):
+        raise SmokeError("runtime_package_not_a_nix_store_output")
+
+
 def _package_binary(package: Path, gpu_count: int, capabilities: tuple[str, ...]) -> Path:
     if not package.is_absolute():
         raise SmokeError("runtime_package_must_be_absolute")
@@ -143,6 +155,35 @@ def _check_unused_loopback_port(port: int) -> None:
         raise SmokeError("isolated_port_already_in_use") from exc
 
 
+def _require_owned_loopback_listener(port: int, process_group: int) -> None:
+    """Fail closed if the endpoint belongs to anyone outside our subprocess group."""
+    try:
+        proc = subprocess.run(
+            ["ss", "-H", "-ltnp", f"( sport = :{port} )"],
+            capture_output=True, text=True, check=True, timeout=4,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise SmokeError("listener_ownership_preflight_unavailable") from exc
+    lines = [line for line in proc.stdout.splitlines() if line.strip()]
+    if not lines:
+        raise SmokeError("owned_listener_not_ready")
+    # A listener may bind only loopback. The -p PID information is required;
+    # a hidden/missing owner cannot be trusted for sending private fixture data.
+    for line in lines:
+        if f"127.0.0.1:{port}" not in line:
+            raise SmokeError("unexpected_listener_bind_address")
+        pids = re.findall(r"pid=(\d+)", line)
+        if not pids:
+            raise SmokeError("listener_ownership_unverified")
+        for pid in pids:
+            try:
+                if os.getpgid(int(pid)) == process_group:
+                    return
+            except (OSError, ValueError):
+                continue
+    raise SmokeError("isolated_loopback_port_owned_by_other_process")
+
+
 def _request_json(base: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     data = None if payload is None else json.dumps(payload, separators=(",", ":")).encode()
     req = urllib.request.Request(
@@ -216,20 +257,33 @@ def _probe(base: str, state: str, question: str,
     return chosen, elapsed_ms
 
 def _stop_owned_server(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is not None:
-        return
+    # The launcher can exit before its spawned server. Never treat a reaped
+    # parent as proof that the *whole* owned process group has stopped.
     try:
         os.killpg(process.pid, signal.SIGTERM)
-        process.wait(timeout=8)
-    except (ProcessLookupError, subprocess.TimeoutExpired):
-        if process.poll() is None:
-            os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    if process.poll() is None:
+        try:
+            process.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            pass
+    # Any remaining child in this new_session process group is ours.
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    if process.poll() is None:
+        try:
             process.wait(timeout=5)
+        except subprocess.TimeoutExpired as exc:
+            raise SmokeError("owned_runtime_cleanup_timed_out") from exc
 
 
 def run_smoke(*, package: Path, model: Path, evidence: Path, gpu_count: int,
               port: int, allow_shared_gpu: bool, startup_seconds: float,
               driver_library: Path | None = None) -> dict[str, Any]:
+    _require_nix_store_package(package)
     before = _gpu_snapshot()
     if gpu_count != len(before):
         raise SmokeError("gpu_count_does_not_match_visible_devices")
@@ -257,10 +311,13 @@ def run_smoke(*, package: Path, model: Path, evidence: Path, gpu_count: int,
             "--device", ",".join("CUDA" + str(i) for i in range(gpu_count)),
             "--fit", "off", "--offline", "--no-webui",
         ]
-        env = os.environ.copy()
-        # The package's dedicated launcher creates and cleans the driver-only
-        # shim. Never insert the host's glibc/libstdc++ into a Nix runtime.
-        env.pop("LD_LIBRARY_PATH", None)
+        # Do not forward authentication tokens, cloud credentials, proxy
+        # secrets, or other ambient host variables into an inference process.
+        env = {
+            key: os.environ[key]
+            for key in ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL")
+            if key in os.environ
+        }
         env["ASTRUMWEAVER_LIBCUDA_SO"] = str(libcuda)
         env["CUDA_VISIBLE_DEVICES"] = ",".join(row[0] for row in before)
         with log_path.open("wb") as log:
@@ -275,9 +332,14 @@ def run_smoke(*, package: Path, model: Path, evidence: Path, gpu_count: int,
                     if proc.poll() is not None:
                         raise SmokeError("owned_runtime_exited_before_ready")
                     try:
+                        _require_owned_loopback_listener(port, proc.pid)
                         _request_json(base, "/health")
                         break
-                    except SmokeError:
+                    except SmokeError as exc:
+                        # In particular, do not send a request to a foreign
+                        # listener that won the bind race after port preflight.
+                        if str(exc) not in {"owned_listener_not_ready", "runtime_http_request_failed"}:
+                            raise
                         if time.monotonic() >= deadline:
                             raise SmokeError("owned_runtime_startup_timed_out") from None
                         time.sleep(0.25)
