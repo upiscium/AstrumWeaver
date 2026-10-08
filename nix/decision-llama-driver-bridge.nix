@@ -9,11 +9,6 @@ writeShellApplication {
   text = ''
     set -euo pipefail
 
-    # Static queries do not load CUDA. Avoid creating an unnecessary shim.
-    if [[ "$#" -eq 1 && ("$1" == "--version" || "$1" == "--help") ]]; then
-      exec "${core}/bin/llama-server" "$@"
-    fi
-
     driver="''${ASTRUMWEAVER_LIBCUDA_SO:-}"
     if [[ -z "$driver" ]]; then
       for candidate in \
