@@ -11,3 +11,7 @@ credentials or private repository material here. Those remain private run data.
 
 See `docs/coding-pilot.md` for the canonical baseline/checker digests, budgets,
 lane semantics and evidence procedure.
+
+The later genuinely observed direct-remote lane is recorded separately in
+[`direct-remote-v1.md`](direct-remote-v1.md), without rewriting the historical
+[`coding-v1.md`](coding-v1.md) snapshot.
