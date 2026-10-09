@@ -24,6 +24,9 @@ from .contracts import (
     RuntimeSetupIntent,
 )
 from .providers import (
+    DUAL_LLAMA_CPP_PROVIDER_ID,
+    DualLlamaCppProvider,
+    DualLlamaCppProviderConfig,
     EXLLAMAV3_PROVIDER_ID,
     FREETOKEN_PROVIDER_ID,
     LLAMA_CPP_PROVIDER_ID,
@@ -239,6 +242,7 @@ _PROVIDER_TYPES: Mapping[
     str,
     tuple[type[Any], type[Any]],
 ] = {
+    DUAL_LLAMA_CPP_PROVIDER_ID: (DualLlamaCppProvider, DualLlamaCppProviderConfig),
     OLLAMA_PROVIDER_ID: (OllamaProvider, OllamaProviderConfig),
     LLAMA_CPP_PROVIDER_ID: (
         LlamaCppProvider,

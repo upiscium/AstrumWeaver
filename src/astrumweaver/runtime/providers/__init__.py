@@ -22,6 +22,12 @@ __all__ = [
     "OllamaProvider",
     "OllamaProviderConfig",
     "OllamaSubprocessController",
+    "DUAL_LLAMA_CPP_PROVIDER_ID",
+    "DualLlamaCppExecutor",
+    "DualLlamaCppManagedRuntime",
+    "DualLlamaCppProvider",
+    "DualLlamaCppProviderConfig",
+    "DualModelPin",
     "LLAMA_CPP_CAPABILITIES",
     "LLAMA_CPP_PROVIDER_ID",
     "HttpLlamaCppApi",
@@ -138,4 +144,14 @@ from .exllamav3 import (
     ExLlamaV3ProviderConfig,
     ExLlamaV3SubprocessController,
     HttpExLlamaV3Api,
+)
+
+
+from .dual_llama_cpp import (
+    DUAL_LLAMA_CPP_PROVIDER_ID,
+    DualLlamaCppExecutor,
+    DualLlamaCppManagedRuntime,
+    DualLlamaCppProvider,
+    DualLlamaCppProviderConfig,
+    DualModelPin,
 )

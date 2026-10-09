@@ -19,6 +19,9 @@ from ..serving import (
     ServingDeploymentDeclaration,
     WorkerServingAdvertisement,
 )
+from ..runtime.providers.dual_llama_cpp import (
+    DUAL_LLAMA_CPP_PROVIDER_ID, DualLlamaCppProviderConfig,
+)
 from ..runtime import (
     RuntimeDeploymentSpec,
     RuntimeLifecycleManager,
@@ -86,6 +89,10 @@ def _build_serving_advertisement(
         raise RuntimeError(
             "serving deployment provider does not match runtime deployment"
         )
+    if runtime_deployment is not None and runtime_deployment.provider_id == DUAL_LLAMA_CPP_PROVIDER_ID:
+        frozen = DualLlamaCppProviderConfig(**dict(runtime_deployment.provider_config))
+        if declaration.deployment.model_artifact_sha256 != "sha256:" + frozen.bundle_sha256:
+            raise RuntimeError("dual serving declaration does not bind both pinned models")
     contract_capabilities = frozenset(
         contract.capability for contract in declaration.contracts
     )
@@ -173,6 +180,15 @@ def _run_gpu_preflight(
     )
 
 
+def _require_runtime_concurrency(
+    deployment: RuntimeDeploymentSpec,
+    max_concurrency: int,
+) -> None:
+    if (getattr(deployment, "provider_id", None) == DUAL_LLAMA_CPP_PROVIDER_ID
+            and max_concurrency != 1):
+        raise RuntimeError("dual runtime requires max_concurrency=1")
+
+
 async def run_worker(
     config_path: str,
     runtime_manifest_path: str | None = None,
@@ -230,6 +246,9 @@ async def run_worker(
     try:
         if runtime_manifest:
             deployment = _load_runtime_deployment(runtime_manifest)
+            _require_runtime_concurrency(
+                deployment, int(worker_section.get("max_concurrency", 1)),
+            )
             managed_runtime = managed_runtime_from_deployment(
                 deployment,
                 worker=spec,
