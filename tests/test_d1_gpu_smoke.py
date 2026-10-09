@@ -326,3 +326,53 @@ def test_pinned_package_real_store_path_is_accepted_when_provided():
     if not path:
         pytest.skip("standalone Nix package requires authorized GPU test host")
     smoke._require_nix_store_package(Path(path))
+
+
+def test_native_http_never_uses_ambient_proxy_or_redirects(monkeypatch):
+    """A local probe must not be forwarded through user HTTP_PROXY or 302s."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            if self.path == "/redirect":
+                self.send_response(302)
+                self.send_header("Location", "/health")
+                self.end_headers()
+                return
+            if self.path == "/oversize":
+                body = b"x" * (smoke.MAX_NATIVE_HTTP_BODY_BYTES + 1)
+            else:
+                body = b'{"status":"ok"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+            except BrokenPipeError:
+                pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        # With NO_PROXY cleared, urllib.request.urlopen() would connect to
+        # this invalid user-configured HTTP proxy instead of to loopback.
+        monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+        monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
+        monkeypatch.setenv("NO_PROXY", "")
+        monkeypatch.setenv("no_proxy", "")
+        base = f"http://127.0.0.1:{server.server_port}"
+        assert smoke._request_json(base, "/health") == {"status": "ok"}
+        with pytest.raises(smoke.SmokeError, match="runtime_http_redirect_rejected"):
+            smoke._request_json(base, "/redirect")
+        with pytest.raises(smoke.SmokeError, match="runtime_http_response_too_large"):
+            smoke._request_json(base, "/oversize")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)

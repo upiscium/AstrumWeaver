@@ -28,6 +28,20 @@ SOURCE_REVISION = "bd4eeaa047006cb1fe71999fbd11134b5836e167"
 MODEL_SHA256 = "16aff27ea2eefdc32b9897f43854a5d3170c1dc8dccb9c756905af30a4e22402"
 MIN_GPU_LOAD_MIB = 64
 MAX_ALLOWED_BASELINE_MIB = 128
+MAX_NATIVE_HTTP_BODY_BYTES = 1024 * 1024
+
+
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        raise SmokeError("runtime_http_redirect_rejected")
+
+
+# This client NEVER uses ambient proxy settings (including HTTP_PROXY on an
+# operator's host) and NEVER follows redirects off the owned loopback service.
+# Use one opener for the scope of this smoke, not the global urllib opener.
+_NATIVE_HTTP_OPENER = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}), _NoRedirects()
+)
 
 CHOICES = (
     ("local-check", "Continue only with reviewed low-risk local operations after tests pass"),
@@ -190,10 +204,14 @@ def _request_json(base: str, path: str, payload: dict[str, Any] | None = None) -
         base + path, data=data, headers={"Content-Type": "application/json"}
     )
     try:
-        with urllib.request.urlopen(req, timeout=25) as response:
+        with _NATIVE_HTTP_OPENER.open(req, timeout=25) as response:
             if response.status != 200:
                 raise SmokeError("runtime_http_status_not_ok")
-            value = json.load(response)
+            # Bounded response, regardless of Content-Length or chunking.
+            body = response.read(MAX_NATIVE_HTTP_BODY_BYTES + 1)
+            if len(body) > MAX_NATIVE_HTTP_BODY_BYTES:
+                raise SmokeError("runtime_http_response_too_large")
+            value = json.loads(body)
         if not isinstance(value, dict):
             raise SmokeError("runtime_response_is_not_an_object")
         return value

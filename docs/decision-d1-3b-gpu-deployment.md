@@ -132,6 +132,8 @@ The probe performs:
 4. confirmation that the loopback listener belongs to the **owned
    subprocess group before any HTTP request**, then `/health` and
    `/v1/models` text-input/native-decisions output validation;
+   the native HTTP client ignores ambient proxies, rejects redirects
+   and limits JSON responses to 1 MiB;
 5. measured incremental VRAM on **every** selected GPU, five synthetic
    choice requests and a reversed-choice ordering probe, finite normalized
    scores and zero output tokens;
