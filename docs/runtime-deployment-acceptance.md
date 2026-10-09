@@ -5,14 +5,14 @@ Issue #31 requires more than recording a selected GPU UUID set.
 A valid subset deployment must prove one of two outcomes:
 
 - the Worker can access exactly its configured physical GPUs and may start, or
-- the environment cannot enforce that subset and AstrumWeaver fails closed
+- the environment cannot enforce that subset and TSUMGI fails closed
   before starting the Worker.
 
 A host-visible GPU superset is never accepted from configuration text alone.
 
 ## Isolation contract
 
-For a GPU subset Worker, AstrumWeaver uses two independent checks:
+For a GPU subset Worker, TSUMGI uses two independent checks:
 
 ```text
 host-visible GPU superset
@@ -42,7 +42,7 @@ Worker daemon run the same isolated-access semantics inside the final Worker
 service context.
 
 For a non-isolated Worker, the original exact-visible rule remains unchanged:
-raw NVIDIA-visible UUIDs must exactly equal the Worker contract. AstrumWeaver
+raw NVIDIA-visible UUIDs must exactly equal the Worker contract. TSUMGI
 does not reinterpret a raw superset as safe unless the explicit isolated-access
 contract is present and actual device access proves the boundary.
 
@@ -203,7 +203,7 @@ validation/runtime-deployment/gpu-subset-e2e.md
 The generated evidence contains only:
 
 - date
-- public AstrumWeaver revision
+- public TSUMGI revision
 - deployment path
 - outcome (`ENFORCED_SUBSET` or `FAIL_CLOSED`)
 - host-visible GPU count
@@ -227,7 +227,7 @@ satisfied:
 - `ENFORCED_SUBSET`: actual in-service device access was enforced and the
   Worker reached ready+registered state.
 - `FAIL_CLOSED`: enforcement was unavailable, the Worker was never started,
-  and AstrumWeaver correctly required an external visibility boundary.
+  and TSUMGI correctly required an external visibility boundary.
 
 ## Current v0.x boundary
 

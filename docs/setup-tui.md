@@ -1,6 +1,6 @@
 # Interactive Setup TUI
 
-AstrumWeaver provides a keyboard-first terminal setup wizard.
+TSUMGI provides a keyboard-first terminal setup wizard.
 
 For the recommended generic-systemd installation using the dedicated installer
 profile, run it with the profile path directly:
@@ -336,7 +336,7 @@ while preserving `nixos-rebuild` as the operator-owned mutation boundary.
 RuntimeProvider-first generation requires the reviewed provider/demand and an
 explicit runtime package attribute path supplied by the operator. It never
 invents a package expression. The generated module must be imported together
-with the AstrumWeaver NixOS module; host prerequisites and applying the reviewed
+with the TSUMGI NixOS module; host prerequisites and applying the reviewed
 configuration remain operator responsibilities.
 
 ### NixOS runtime package input

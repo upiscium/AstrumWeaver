@@ -47,9 +47,9 @@ def test_first_run_documentation_links_resolve() -> None:
 def test_installation_guide_tracks_supported_package_surface() -> None:
     text = (ROOT / "docs/installation.md").read_text(encoding="utf-8")
 
-    assert "github:upiscium/AstrumWeaver#control" in text
-    assert "github:upiscium/AstrumWeaver#worker" in text
-    assert "github:upiscium/AstrumWeaver#installer" in text
+    assert "github:upiscium/TSUMGI#control" in text
+    assert "github:upiscium/TSUMGI#worker" in text
+    assert "github:upiscium/TSUMGI#installer" in text
     assert "astrumweaver-setup-tui" in text
     assert "The default TUI mode is `first-run`" in text
     assert "astrumweaver-setup-control-plane" in text

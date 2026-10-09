@@ -1,6 +1,8 @@
-# AstrumWeaver
+# TSUMGI
 
-AstrumWeaver is a deployment-agnostic compute fabric for scheduling capability-based workloads across heterogeneous compute nodes.
+TSUMGI is a deployment-agnostic compute fabric for scheduling capability-based workloads across heterogeneous compute nodes.
+
+> **Name transition:** TSUMGI is the project name. Existing `astrumweaver` runtime identifiers are unchanged in this phase. See [Naming and compatibility](docs/naming.md).
 
 It is GPU-first, but its control-plane contracts are intentionally not tied to LLMs, a particular accelerator generation, Proxmox, or a one-GPU-per-worker topology.
 
@@ -8,7 +10,7 @@ It is GPU-first, but its control-plane contracts are intentionally not tied to L
 
 ## Start here
 
-If you want to **install and run AstrumWeaver**, start with these two pages:
+If you want to **install and run TSUMGI**, start with these two pages:
 
 1. [Installation](docs/installation.md) — choose NixOS or generic systemd and install the Control/Worker packages.
 2. [Getting Started](docs/getting-started.md) — bring up Control + one Worker and complete a real `debug.echo` job.
@@ -20,7 +22,7 @@ PostgreSQL → Control → Worker → debug.echo
 ```
 
 Verify this path before adding Ollama, llama.cpp, vLLM, FreeToken, or ExLlamaV3.
-That keeps base AstrumWeaver installation problems separate from model-runtime
+That keeps base TSUMGI installation problems separate from model-runtime
 problems.
 
 Current supported installation paths are:
@@ -28,17 +30,17 @@ Current supported installation paths are:
 - **NixOS x86_64-linux:** flake + NixOS module — recommended.
 - **Other systemd Linux x86_64:** Nix `#installer` package + first-run TUI.
   The standard llama.cpp RuntimeBackend is provisioned through a separate
-  AstrumWeaver-managed Nix profile; see
+  TSUMGI-managed Nix profile; see
   [Installation — RuntimeBackend Nix profile](docs/installation.md#runtimebackend-nix-profile).
 - **pip-only:** useful for development, but not currently a complete supported host deployment.
 
-AstrumWeaver assumes the Linux node, networking, PostgreSQL service, GPU
+TSUMGI assumes the Linux node, networking, PostgreSQL service, GPU
 passthrough/device exposure, and NVIDIA host driver already exist.
 
 
 ## Scope
 
-AstrumWeaver owns the compute-fabric layer:
+TSUMGI owns the compute-fabric layer:
 
 - durable job/control state
 - worker registration, health, drain, and lifecycle state
@@ -46,10 +48,10 @@ AstrumWeaver owns the compute-fabric layer:
 - job leases, fencing, retries, and recovery
 - accelerator identity verification
 - executor lifecycle
-- deployment of AstrumWeaver services onto an existing Linux node
+- deployment of TSUMGI services onto an existing Linux node
 - job result/artifact metadata needed by the fabric
 
-AstrumWeaver does **not** provision the infrastructure underneath a node. In particular, it does not create or configure:
+TSUMGI does **not** provision the infrastructure underneath a node. In particular, it does not create or configure:
 
 - virtual machines or containers
 - bare-metal operating systems
@@ -59,7 +61,7 @@ AstrumWeaver does **not** provision the infrastructure underneath a node. In par
 - host storage pools
 - NVIDIA host drivers
 
-A node enters AstrumWeaver only after the surrounding infrastructure already satisfies the [Host Prerequisite Contract](docs/host-contract.md).
+A node enters TSUMGI only after the surrounding infrastructure already satisfies the [Host Prerequisite Contract](docs/host-contract.md).
 
 ## Architecture boundary
 
@@ -70,7 +72,7 @@ Infrastructure / virtualization layer
                     │ already-provisioned Linux node
                     ▼
         ┌────────────────────────┐
-        │      AstrumWeaver      │
+        │         TSUMGI         │
         │                        │
         │  Control ─── Workers   │
         │             │          │
@@ -78,7 +80,7 @@ Infrastructure / virtualization layer
         └────────────────────────┘
 ```
 
-Proxmox is a supported deployment environment, not an AstrumWeaver dependency. A Proxmox VM, a Proxmox LXC, a bare-metal Linux host, or another Linux VM may all become workers when they satisfy the same host contract.
+Proxmox is a supported deployment environment, not a TSUMGI dependency. A Proxmox VM, a Proxmox LXC, a bare-metal Linux host, or another Linux VM may all become workers when they satisfy the same host contract.
 
 ## Design principles
 
@@ -90,6 +92,7 @@ Proxmox is a supported deployment environment, not an AstrumWeaver dependency. A
 - Existing development machines may later participate as drainable/borrowable workers without reprovisioning.
 
 ## Documentation
+- [Naming and compatibility](docs/naming.md)
 
 - [Installation](docs/installation.md)
 - [Getting Started](docs/getting-started.md)

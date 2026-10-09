@@ -1,6 +1,6 @@
 # llama.cpp Runtime Provider
 
-AstrumWeaver supports llama.cpp as the primary generic GGUF RuntimeProvider.
+TSUMGI supports llama.cpp as the primary generic GGUF RuntimeProvider.
 
 Its main role is to cover the execution shapes that need more explicit model-placement control than Ollama provides:
 
@@ -37,19 +37,19 @@ The provider does not own:
 ## Generic systemd package boundary
 
 On generic systemd Linux, the standard llama.cpp installation path is managed
-by AstrumWeaver's dedicated Nix RuntimeBackend profile:
+by TSUMGI's dedicated Nix RuntimeBackend profile:
 
 ```text
 /nix/var/nix/profiles/astrumweaver-runtime-llama-cpp
 ```
 
-The AstrumWeaver flake output used by that profile is `#runtime-llama-cpp`,
+The TSUMGI flake output used by that profile is `#runtime-llama-cpp`,
 which is explicitly backed by nixpkgs `llama-cpp-cuda`. The Worker runtime
 deployment records the stable executable
 `/nix/var/nix/profiles/astrumweaver-runtime-llama-cpp/bin/llama-server`.
 
 The generic-systemd prerequisite check validates the Nix profile provenance
-against the same AstrumWeaver candidate as the installer. A different
+against the same TSUMGI candidate as the installer. A different
 `llama-server` on ambient `PATH` is intentionally irrelevant. Installation,
 candidate upgrade, and profile rollback are documented under
 [Installation — RuntimeBackend Nix profile](installation.md#runtimebackend-nix-profile).
@@ -105,7 +105,7 @@ The first implementation refuses to attach to an already-running external llama.
 
 ## GPU identity
 
-AstrumWeaver restricts the subprocess with:
+TSUMGI restricts the subprocess with:
 
 ```text
 CUDA_VISIBLE_DEVICES=<exact Worker GPU UUID set>
@@ -178,7 +178,7 @@ For `single_gpu`:
 --main-gpu 0
 ```
 
-AstrumWeaver exposes only the Worker-owned GPU to the process, so a non-zero main-GPU index is invalid.
+TSUMGI exposes only the Worker-owned GPU to the process, so a non-zero main-GPU index is invalid.
 
 ## Multi GPU
 
@@ -202,7 +202,7 @@ The operator may configure:
 tensor_split = [2, 1]
 ```
 
-AstrumWeaver then emits:
+TSUMGI then emits:
 
 ```text
 --tensor-split 2,1
@@ -281,7 +281,7 @@ A future provider revision may add finer-grained tensor overrides, but those sho
 
 When no explicit `tensor_split` is supplied, llama.cpp's own fit/device-memory logic is used.
 
-AstrumWeaver deliberately does not invent per-GPU VRAM proportions from the current aggregate WorkerSpec.
+TSUMGI deliberately does not invent per-GPU VRAM proportions from the current aggregate WorkerSpec.
 
 This avoids duplicating llama.cpp's placement heuristics and is especially useful for heterogeneous Worker GPU sets.
 
@@ -392,7 +392,7 @@ The initial ManagedRuntime owns one local server process.
 
 If a healthy server already occupies the configured endpoint but is not the process owned by this ManagedRuntime, startup fails.
 
-This prevents AstrumWeaver from silently taking over a developer llama-server instance.
+This prevents TSUMGI from silently taking over a developer llama-server instance.
 
 ## Failure cleanup
 

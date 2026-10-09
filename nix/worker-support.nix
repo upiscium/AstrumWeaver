@@ -10,7 +10,7 @@ buildEnv {
     integration
   ];
   meta = {
-    description = "AstrumWeaver Worker runtime support closure";
+    description = "TSUMGI Worker runtime support closure";
     license = lib.licenses.bsd3;
     platforms = lib.platforms.linux;
   };

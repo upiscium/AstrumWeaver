@@ -24,7 +24,7 @@ Do not paste them into a public Issue, PR, or chat.
 The generated evidence contains only:
 
 - date
-- AstrumWeaver git revision
+- TSUMGI git revision
 - deployment path: `nixos` or `systemd`
 - generic profile class
 - GPU count
@@ -77,9 +77,9 @@ The validation job is pinned by the locally supplied GPU UUID set, so another Wo
 Before running:
 
 - the Linux node already exists
-- GPU passthrough/device exposure is already configured outside AstrumWeaver
+- GPU passthrough/device exposure is already configured outside TSUMGI
 - `nvidia-smi` works
-- AstrumWeaver Worker package/service is installed
+- TSUMGI Worker package/service is installed
 - Control + PostgreSQL are already operational
 - Worker token is configured in the Worker service environment
 - the chosen validation capability is advertised by this Worker
@@ -184,13 +184,13 @@ Review the generated Markdown before committing it.
 A successful file looks structurally like:
 
 ```md
-# AstrumWeaver v0.1 Hardware E2E Evidence
+# TSUMGI v0.1 Hardware E2E Evidence
 
 | Field | Result |
 | --- | --- |
 | Evidence version | v0.1 |
 | Date (UTC) | 2026-... |
-| AstrumWeaver revision | ... |
+| TSUMGI revision | ... |
 | Deployment path | nixos |
 | Profile class | modern-single |
 | GPU count | 1 |

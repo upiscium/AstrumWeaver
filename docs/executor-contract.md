@@ -2,7 +2,7 @@
 
 ## 1. Purpose
 
-AstrumWeaver separates scheduling from workload execution.
+TSUMGI separates scheduling from workload execution.
 
 The Control Plane reasons about:
 

@@ -1,6 +1,6 @@
 # Existing-Node Deployment
 
-AstrumWeaver deploys onto an already-created Linux node. VM/LXC/bare-metal creation and GPU passthrough remain outside the project boundary.
+TSUMGI deploys onto an already-created Linux node. VM/LXC/bare-metal creation and GPU passthrough remain outside the project boundary.
 
 ## Separation of responsibilities
 
@@ -14,7 +14,7 @@ infrastructure owner
   ├─ installs the operating system
   └─ makes the required NVIDIA GPU visible
            ↓
-AstrumWeaver setup
+TSUMGI setup
   ├─ validates prerequisites
   ├─ installs role configuration
   ├─ installs systemd integration
@@ -22,7 +22,7 @@ AstrumWeaver setup
   └─ optionally enables/starts the role service
 ```
 
-AstrumWeaver setup never invokes `qm create`, `pct create`, or equivalent infrastructure creation.
+TSUMGI setup never invokes `qm create`, `pct create`, or equivalent infrastructure creation.
 
 ## Package/runtime prerequisite
 
@@ -33,7 +33,7 @@ The packaged role executable must already be available on the target node:
 - `astrumweaver-control`
 - `astrumweaver-worker`
 
-The Nix flake provides immutable AstrumWeaver Control/Worker daemon packages and integration assets; see [Nix Packaging and NixOS Modules](nix.md).
+The Nix flake provides immutable TSUMGI Control/Worker daemon packages and integration assets; see [Nix Packaging and NixOS Modules](nix.md).
 
 Keeping these concerns separate allows the same setup contract to work with a Nix package, a release artifact, or another reviewed packaging mechanism.
 
@@ -442,7 +442,7 @@ A Proxmox VM is eligible when, before setup:
 - the role executable is installed
 - for a GPU worker, guest `nvidia-smi` reports exactly the intended UUID set
 
-No Proxmox API access is required by AstrumWeaver.
+No Proxmox API access is required by TSUMGI.
 
 ## Existing Proxmox LXC
 
@@ -452,9 +452,9 @@ A Proxmox LXC is eligible when, before setup:
 - NVIDIA device mapping is already configured by the operator
 - driver/userspace compatibility is already resolved
 - `nvidia-smi` works inside the container
-- the AstrumWeaver service account can access the devices
+- the TSUMGI service account can access the devices
 
-AstrumWeaver does not alter LXC privilege mode, cgroup device rules, bind mounts, or host drivers.
+TSUMGI does not alter LXC privilege mode, cgroup device rules, bind mounts, or host drivers.
 
 ## Secrets
 

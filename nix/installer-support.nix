@@ -148,7 +148,7 @@ EOF
       -o "$out/bin/astrumweaver-setup-tui" "$TMPDIR/astrumweaver-setup-tui.c"
   '';
   meta = {
-    description = "AstrumWeaver first-run installer and Control/Worker bootstrap closure";
+    description = "TSUMGI first-run installer and Control/Worker bootstrap closure";
     license = lib.licenses.bsd3;
     platforms = lib.platforms.linux;
   };

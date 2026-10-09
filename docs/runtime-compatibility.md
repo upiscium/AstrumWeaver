@@ -3,16 +3,16 @@
 This document is the human-readable view of the canonical machine-readable
 matrix at [`acceptance/runtime-providers-v0.1.toml`](../acceptance/runtime-providers-v0.1.toml).
 
-The matrix describes **AstrumWeaver v0.x provider contract behavior**. It is
+The matrix describes **TSUMGI v0.x provider contract behavior**. It is
 not a universal certification of every upstream runtime version, GPU model,
 driver, model architecture, quantization, or performance characteristic.
 
 ## Status vocabulary
 
-- **validated** — AstrumWeaver has automated contract coverage for this claim.
+- **validated** — TSUMGI has automated contract coverage for this claim.
 - **supported, unvalidated** — the provider does not reject the case, but
-  AstrumWeaver does not publish a validation claim for that axis.
-- **unsupported** — the AstrumWeaver v0.x provider deliberately rejects the
+  TSUMGI does not publish a validation claim for that axis.
+- **unsupported** — the TSUMGI v0.x provider deliberately rejects the
   case.
 - **integrated** — the provider participates in the reviewed NixOS or generic
   systemd RuntimeProvider deployment path. This does not mean every upstream
@@ -39,17 +39,17 @@ All five first-class providers expose the generic `llm.chat` and
 
 ### Ollama
 
-Ollama is the general/easy local-serving path. AstrumWeaver can validate
+Ollama is the general/easy local-serving path. TSUMGI can validate
 single-GPU execution, explicit multi-GPU spread, VRAM-only planning, and the
 automatic CPU/GPU hybrid behavior exposed by Ollama.
 
-AstrumWeaver does **not** infer that arbitrary heterogeneous GPU combinations
+TSUMGI does **not** infer that arbitrary heterogeneous GPU combinations
 are validated merely because Ollama can be asked to spread across multiple
 visible GPUs.
 
 ### llama.cpp
 
-llama.cpp is the primary generic GGUF provider. AstrumWeaver validates:
+llama.cpp is the primary generic GGUF provider. TSUMGI validates:
 
 - single-GPU execution;
 - multi-GPU layer/row/tensor split policy;
@@ -69,7 +69,7 @@ an advisory compatibility reason.
 vLLM is the GPU-resident/high-throughput provider. Multi-GPU v0.x is
 deliberately homogeneous-only.
 
-For a multi-GPU claim, AstrumWeaver requires `WorkerSpec.accelerators` to
+For a multi-GPU claim, TSUMGI requires `WorkerSpec.accelerators` to
 provide one auditable record per Worker-owned GPU and requires:
 
 - equal per-device VRAM;
@@ -85,11 +85,11 @@ llama.cpp-style offload replacement.
 
 ### FreeToken
 
-AstrumWeaver v0.x intentionally scopes FreeToken to **single-GPU MoE/offload**
+TSUMGI v0.x intentionally scopes FreeToken to **single-GPU MoE/offload**
 workloads.
 
 The provider accepts Hugging Face/safetensors references and local FTW
-checkpoints. Dense-model, multi-GPU, and VRAM-only rejection are AstrumWeaver
+checkpoints. Dense-model, multi-GPU, and VRAM-only rejection are TSUMGI
 provider-scope decisions; they are not claims that upstream FreeToken can
 never support those cases.
 
@@ -103,7 +103,7 @@ evidence is known, the provider requires NVIDIA compute capability 8.0 or
 newer.
 
 Single-GPU and multi-GPU autosplit/tensor-parallel contracts are validated.
-AstrumWeaver does not currently publish a heterogeneous-GPU validation claim
+TSUMGI does not currently publish a heterogeneous-GPU validation claim
 for ExLlamaV3.
 
 ## Lifecycle and deployment
@@ -136,7 +136,7 @@ It additionally proves that:
 
 ## Deployment boundary
 
-NixOS and generic systemd integration means AstrumWeaver can persist and
+NixOS and generic systemd integration means TSUMGI can persist and
 activate the reviewed RuntimeProvider contract on an already GPU-ready node.
 
 It does not install or replace the NVIDIA host driver, provision a VM/LXC,

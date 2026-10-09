@@ -70,7 +70,7 @@ stdenvNoCC.mkDerivation {
   '';
 
   meta = {
-    description = "AstrumWeaver existing-node setup and systemd integration assets";
+    description = "TSUMGI existing-node setup and systemd integration assets";
     license = lib.licenses.bsd3;
     platforms = lib.platforms.linux;
   };

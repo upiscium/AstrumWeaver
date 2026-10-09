@@ -1,6 +1,6 @@
 # Getting Started
 
-This guide takes a new AstrumWeaver installation from **nothing running** to a
+This guide takes a new TSUMGI installation from **nothing running** to a
 verified Control + Worker + completed job.
 
 If you have not installed the packages/services yet, start with
@@ -26,7 +26,7 @@ or ExLlamaV3 separately.
 
 This gives a clean answer to:
 
-> Is AstrumWeaver itself installed and able to schedule work?
+> Is TSUMGI itself installed and able to schedule work?
 
 ## 1. Check prerequisites
 
@@ -172,7 +172,7 @@ export ASTRUMWEAVER_CLIENT_TOKEN='REPLACE_WITH_CLIENT_TOKEN'
 ```
 
 If Control explicitly uses `client_auth = "none"`, do not set a Client token
-for AstrumWeaver. The submit/read/cancel requests below should omit the
+for TSUMGI. The submit/read/cancel requests below should omit the
 `Authorization` header instead.
 
 Submit:
@@ -186,7 +186,7 @@ response="$(
       "protocol_version": "v1",
       "capability": "debug.echo",
       "payload": {
-        "message": "hello from AstrumWeaver"
+        "message": "hello from TSUMGI"
       },
       "requirements": {},
       "priority": 0,
@@ -233,13 +233,13 @@ succeeded
 and the result should contain the submitted payload under the structured echo
 output.
 
-If this succeeds, the basic AstrumWeaver installation is working end to end.
+If this succeeds, the basic TSUMGI installation is working end to end.
 
 ## 4. Move from smoke test to a RuntimeProvider
 
 Only after the `debug.echo` path succeeds, choose the model/runtime policy.
 
-AstrumWeaver currently has first-class providers for:
+TSUMGI currently has first-class providers for:
 
 - Ollama
 - llama.cpp
@@ -255,7 +255,7 @@ Read:
 
 The important rule is:
 
-> Runtime selection is explicit. AstrumWeaver does not silently substitute a
+> Runtime selection is explicit. TSUMGI does not silently substitute a
 > different provider when your selected provider is incompatible.
 
 ### NixOS
@@ -312,7 +312,7 @@ argv hooks; see [Interactive Worker/runtime Setup TUI](setup-tui.md) and the
 If a Worker owns only some GPUs visible on the host, do not disable the
 exact-set checks.
 
-AstrumWeaver supports a reviewed systemd device-cgroup isolation path and then
+TSUMGI supports a reviewed systemd device-cgroup isolation path and then
 runs the existing exact GPU-set check inside the restricted Worker service.
 
 Read:

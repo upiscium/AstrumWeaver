@@ -213,7 +213,7 @@ PY
     esac
   '';
   meta = {
-    description = "AstrumWeaver generic-systemd RuntimeBackend Nix profile manager";
+    description = "TSUMGI generic-systemd RuntimeBackend Nix profile manager";
     license = lib.licenses.bsd3;
     platforms = lib.platforms.linux;
   };

@@ -1,6 +1,6 @@
 # Ollama Runtime Provider
 
-AstrumWeaver supports Ollama as a first-class Worker-local RuntimeProvider.
+TSUMGI supports Ollama as a first-class Worker-local RuntimeProvider.
 
 Ollama is intended as the easy/general-purpose local serving option. It is not required by the Control Plane and is not a fallback target when the operator explicitly selects another runtime.
 
@@ -84,7 +84,7 @@ CUDA_VISIBLE_DEVICES=<exact Worker GPU UUID set>
 
 GPU UUIDs are used rather than CUDA ordinals.
 
-This preserves the existing AstrumWeaver accelerator identity contract.
+This preserves the existing TSUMGI accelerator identity contract.
 
 The provider also sets:
 
@@ -97,7 +97,7 @@ OLLAMA_NO_CLOUD=true
 
 by default.
 
-The one-request/one-loaded-model defaults align with the current AstrumWeaver Worker concurrency contract and make residency/ownership easier to reason about.
+The one-request/one-loaded-model defaults align with the current TSUMGI Worker concurrency contract and make residency/ownership easier to reason about.
 
 ## Single GPU
 
@@ -126,7 +126,7 @@ Ollama controls its own CPU/GPU offload placement, so compatibility returns a no
 
 For operators who need exact layer/offload control, llama.cpp is the intended RuntimeProvider.
 
-AstrumWeaver does not silently switch the selected runtime.
+TSUMGI does not silently switch the selected runtime.
 
 ## Multi GPU
 
@@ -137,7 +137,7 @@ For an explicit `multi_gpu` execution demand:
 
 Ollama therefore receives an explicit request to spread scheduling across the selected GPU set.
 
-The current `/api/ps` response reports total VRAM residency but not a per-device split. AstrumWeaver intentionally does not infer per-GPU placement from total `size_vram`.
+The current `/api/ps` response reports total VRAM residency but not a per-device split. TSUMGI intentionally does not infer per-GPU placement from total `size_vram`.
 
 ## Model identity
 
@@ -175,7 +175,7 @@ The generic job payload supplies Ollama chat fields such as:
 }
 ```
 
-AstrumWeaver injects the Worker-bound model, disables streaming for the universal terminal JobExecutor contract, and preserves the configured keep-alive policy.
+TSUMGI injects the Worker-bound model, disables streaming for the universal terminal JobExecutor contract, and preserves the configured keep-alive policy.
 
 ### text.generate
 
@@ -255,7 +255,7 @@ The first implementation deliberately does not claim:
 - a per-GPU residency breakdown from Ollama's API
 - exact layer-level CPU/GPU offload control
 - concurrent multi-model serving
-- more than one concurrent AstrumWeaver job
+- more than one concurrent TSUMGI job
 - remote/shared Ollama daemon ownership
 
 These can be extended later without adding Ollama-specific logic to Control.

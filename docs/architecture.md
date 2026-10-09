@@ -1,14 +1,14 @@
-# AstrumWeaver Architecture
+# TSUMGI Architecture
 
 ## 1. Purpose
 
-AstrumWeaver is a deployment-agnostic compute fabric. It schedules capability-based jobs across pre-existing heterogeneous compute nodes while keeping resource identity, job ownership, and failure recovery explicit.
+TSUMGI is a deployment-agnostic compute fabric. It schedules capability-based jobs across pre-existing heterogeneous compute nodes while keeping resource identity, job ownership, and failure recovery explicit.
 
 The project begins GPU-first, but the core contracts must remain usable for future accelerator or CPU-backed workers.
 
 ## 2. Trust and responsibility boundary
 
-AstrumWeaver begins **inside an already-provisioned Linux node**.
+TSUMGI begins **inside an already-provisioned Linux node**.
 
 The infrastructure layer is responsible for creating that node and making the required resources visible to it.
 
@@ -27,7 +27,7 @@ The infrastructure layer is responsible for creating that node and making the re
                       │ node satisfies host contract
                       ▼
 ┌────────────────────────────────────────────┐
-│ AstrumWeaver                               │
+│ TSUMGI                               │
 │                                            │
 │ service install/configuration              │
 │ worker registration                       │
@@ -38,7 +38,7 @@ The infrastructure layer is responsible for creating that node and making the re
 └────────────────────────────────────────────┘
 ```
 
-AstrumWeaver must not need credentials for the hypervisor merely to operate a worker.
+TSUMGI must not need credentials for the hypervisor merely to operate a worker.
 
 ## 3. Core logical roles
 
@@ -102,7 +102,7 @@ A Runtime Provider manages a concrete local model-serving runtime such as Ollama
 
 It is Worker-local and sits above the generic JobExecutor boundary.
 
-Runtime selection is an operator decision. AstrumWeaver may report compatibility and recommendations, but an explicit provider choice must never be silently substituted.
+Runtime selection is an operator decision. TSUMGI may report compatibility and recommendations, but an explicit provider choice must never be silently substituted.
 
 Runtime Providers own runtime package/process/model preparation and expose a generic JobExecutor to the Worker. Control remains runtime-agnostic.
 
@@ -114,7 +114,7 @@ Gateway, artifact, dataset, or capture services may exist where the use case req
 
 ## 4. Deployment model
 
-AstrumWeaver supports deployment onto a node that already exists.
+TSUMGI supports deployment onto a node that already exists.
 
 The deployment mechanism may differ by host:
 
@@ -122,7 +122,7 @@ The deployment mechanism may differ by host:
 - Nix package plus systemd integration
 - systemd-oriented setup script on another supported Linux distribution
 
-The deployment path may install AstrumWeaver software and service configuration. It must not create the VM/LXC/host itself.
+The deployment path may install TSUMGI software and service configuration. It must not create the VM/LXC/host itself.
 
 ## 5. Proxmox compatibility model
 
@@ -132,7 +132,7 @@ Proxmox is treated as one possible infrastructure provider.
 
 A VM may participate when the required GPU/device has already been passed through and the guest satisfies the same worker host contract as any other Linux node.
 
-AstrumWeaver does not configure:
+TSUMGI does not configure:
 
 - IOMMU
 - VFIO binding
@@ -144,14 +144,14 @@ AstrumWeaver does not configure:
 
 An LXC may participate when the host/operator has already exposed the required device nodes and userspace/driver compatibility is correct.
 
-AstrumWeaver does not configure:
+TSUMGI does not configure:
 
 - Proxmox cgroup/device passthrough
 - LXC mount entries
 - host NVIDIA driver installation
 - container privilege model
 
-From AstrumWeaver's perspective, the acceptance criterion is the guest-visible host contract, not how Proxmox achieved it.
+From TSUMGI's perspective, the acceptance criterion is the guest-visible host contract, not how Proxmox achieved it.
 
 ### No Proxmox identity in the scheduling model
 
@@ -163,7 +163,7 @@ Worker identity and accelerator identity must remain portable if the same Linux 
 
 Accelerators must be identified by stable vendor/device identities where available.
 
-For NVIDIA GPUs, AstrumWeaver uses the GPU UUID reported by the guest-visible NVIDIA stack. Device ordinals such as `/dev/nvidia0` are not stable identity.
+For NVIDIA GPUs, TSUMGI uses the GPU UUID reported by the guest-visible NVIDIA stack. Device ordinals such as `/dev/nvidia0` are not stable identity.
 
 A pinned worker must fail closed if its observed accelerator identity differs from its configured identity.
 
@@ -185,7 +185,7 @@ Documentation should use placeholders or standards-reserved example values.
 
 ## 8. Non-goals
 
-AstrumWeaver v0.1 is not:
+TSUMGI v0.1 is not:
 
 - a Proxmox provisioner
 - a Kubernetes replacement

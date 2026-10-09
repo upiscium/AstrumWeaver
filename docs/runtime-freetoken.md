@@ -1,11 +1,11 @@
 # FreeToken Runtime Provider
 
-AstrumWeaver supports FreeToken as the first-class provider for RAM-heavy,
+TSUMGI supports FreeToken as the first-class provider for RAM-heavy,
 VRAM-constrained Mixture-of-Experts workloads on a single NVIDIA GPU.
 
-This is intentionally an AstrumWeaver v0.x product scope, not a claim about
+This is intentionally a TSUMGI v0.x product scope, not a claim about
 the complete upstream FreeToken feature set. Upstream FreeToken can also serve
-dense models; AstrumWeaver currently reserves its FreeToken provider for the
+dense models; TSUMGI currently reserves its FreeToken provider for the
 MoE/offload role so runtime selection remains predictable.
 
 ## Scope
@@ -40,7 +40,7 @@ Its accelerated installation is published as:
 freetoken[accel]
 \`\`\`
 
-AstrumWeaver therefore rejects non-x86_64 hosts in this provider.
+TSUMGI therefore rejects non-x86_64 hosts in this provider.
 
 Driver/toolkit suitability remains part of host/runtime preflight. The
 provider does not mutate the host NVIDIA driver to satisfy FreeToken.
@@ -73,11 +73,11 @@ and verifies runtime state through:
 /v1/stats
 \`\`\`
 
-Streaming is disabled at the generic AstrumWeaver JobExecutor boundary.
+Streaming is disabled at the generic TSUMGI JobExecutor boundary.
 
 ## Model topology
 
-AstrumWeaver v0.x requires:
+TSUMGI v0.x requires:
 
 \`\`\`text
 model_topology = moe
@@ -89,7 +89,7 @@ A dense-model demand is rejected with:
 model-topology-outside-provider-scope
 \`\`\`
 
-The diagnostic explicitly states that this is an AstrumWeaver provider scope
+The diagnostic explicitly states that this is a TSUMGI provider scope
 restriction, not an upstream FreeToken limitation.
 
 ## Model formats
@@ -139,7 +139,7 @@ A multi-GPU Worker therefore fails compatibility with:
 single-gpu-required
 \`\`\`
 
-This preserves the AstrumWeaver invariant that a Worker is one exclusive
+This preserves the TSUMGI invariant that a Worker is one exclusive
 scheduler-visible compute unit.
 
 ## Residency policy
@@ -157,7 +157,7 @@ auto
 Upstream FreeToken currently resolves MoE auto mode toward offload, with hybrid
 selection available when its bandwidth profile recommends it.
 
-AstrumWeaver does not reproduce FreeToken's hardware auto-tuning algorithm.
+TSUMGI does not reproduce FreeToken's hardware auto-tuning algorithm.
 
 ### prefer_vram
 
@@ -317,7 +317,7 @@ Raw provider responses remain available in \`JobResult.outputs\`.
 
 ## Cancellation
 
-The executor tracks each in-flight HTTP request task by AstrumWeaver job ID.
+The executor tracks each in-flight HTTP request task by TSUMGI job ID.
 
 \`cancel(job_id)\` cancels that local request task.
 
@@ -351,7 +351,7 @@ from \`/v1/stats\`.
 The first provider deliberately does not claim:
 
 - multi-GPU FreeToken execution
-- dense-model execution through AstrumWeaver
+- dense-model execution through TSUMGI
 - \`vram_only\` execution
 - automatic derivation of required host RAM from checkpoint size
 - GPU-driver installation or replacement
@@ -359,7 +359,7 @@ The first provider deliberately does not claim:
 - exact host-memory residency bytes
 - runtime cache rebuild control through \`/v1/cache/rebuild\`
 - multimodal capability routing
-- Anthropic or Responses API as separate AstrumWeaver capabilities
+- Anthropic or Responses API as separate TSUMGI capabilities
 
 These can be added later as provider-local extensions without changing the
 Control-plane scheduling model.

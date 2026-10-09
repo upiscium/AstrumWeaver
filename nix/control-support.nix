@@ -25,7 +25,7 @@ buildEnv {
     integration
   ];
   meta = {
-    description = "AstrumWeaver Control Plane runtime support closure";
+    description = "TSUMGI Control Plane runtime support closure";
     license = lib.licenses.bsd3;
     platforms = lib.platforms.linux;
   };

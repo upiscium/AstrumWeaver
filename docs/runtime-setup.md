@@ -1,6 +1,6 @@
 # Runtime Setup Backend
 
-AstrumWeaver uses one deterministic setup backend for both automation and the interactive TUI.
+TSUMGI uses one deterministic setup backend for both automation and the interactive TUI.
 
 Concrete RuntimeProviders do **not** execute package-manager, filesystem, service-manager, or model-download commands directly.
 
@@ -259,7 +259,7 @@ verifiers and the recovery boundary for older Worker-writable state.
 
 The generic systemd implementation is `SystemdSetupDriver`. It materializes
 reviewed runtime manifests/configuration. For the first-party llama.cpp path it
-uses the packaged AstrumWeaver Nix runtime-profile manager, bound to the same
+uses the packaged TSUMGI Nix runtime-profile manager, bound to the same
 candidate as the installer, and verifies that dedicated profile rather than an
 ambient executable lookup. Other package/model mutation remains delegated only
 to explicit operator-configured argv commands. The driver never guesses a
@@ -275,7 +275,7 @@ assumed to exist on non-NixOS systems. The driver discovers the host's
 `libcuda.so.1` through the dynamic-linker cache, validates it as a readable
 regular library, and places only that SONAME behind the canonical
 `/etc/astrumweaver/runtime/nvidia-driver` bridge. Runtime Worker units set
-`LD_LIBRARY_PATH` to that narrow directory only. AstrumWeaver deliberately
+`LD_LIBRARY_PATH` to that narrow directory only. TSUMGI deliberately
 does not add a general FHS library directory such as
 `/usr/lib/x86_64-linux-gnu`, because doing so could override the Nix closure's
 glibc, OpenSSL, or other ordinary runtime libraries. Missing or unrecognized
@@ -329,7 +329,7 @@ therefore available in the owning Worker journal:
 journalctl -u astrumweaver-worker.service -b
 ```
 
-AstrumWeaver does not copy raw provider logs into SetupPlan, structured apply
+TSUMGI does not copy raw provider logs into SetupPlan, structured apply
 evidence, or public acceptance evidence, and does not serialize the child
 environment for diagnostics. If an owned runtime child exits before its
 health endpoint becomes ready, provider startup fails immediately and points

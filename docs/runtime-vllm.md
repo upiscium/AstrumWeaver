@@ -1,6 +1,6 @@
 # vLLM Runtime Provider
 
-AstrumWeaver supports vLLM as the primary GPU-resident/high-throughput RuntimeProvider.
+TSUMGI supports vLLM as the primary GPU-resident/high-throughput RuntimeProvider.
 
 Its role is deliberately narrower than llama.cpp:
 
@@ -58,7 +58,7 @@ Qwen/Qwen3-8B
 
 is treated as an explicitly selected remote model and produces a reviewed model-download action in SetupPlan.
 
-AstrumWeaver does not download it merely because vLLM is compatible.
+TSUMGI does not download it merely because vLLM is compatible.
 
 ## Local server
 
@@ -90,7 +90,7 @@ Current vLLM supports:
 --device-ids <physical GPU IDs or UUIDs>
 ```
 
-AstrumWeaver therefore passes the exact Worker GPU UUID set directly to vLLM.
+TSUMGI therefore passes the exact Worker GPU UUID set directly to vLLM.
 
 Unlike the llama.cpp provider, it does not rewrite these GPUs into local CUDA ordinals and does not set `CUDA_VISIBLE_DEVICES`.
 
@@ -121,7 +121,7 @@ The default is:
 
 The provider rejects a TP size that uses only part of the Worker GPU set.
 
-This matches the AstrumWeaver Worker model: a multi-GPU Worker is one exclusive compute unit rather than a bag of independently schedulable devices.
+This matches the TSUMGI Worker model: a multi-GPU Worker is one exclusive compute unit rather than a bag of independently schedulable devices.
 
 ## Homogeneous GPU requirement
 
@@ -195,7 +195,7 @@ For `vram_only`:
 
 vLLM startup itself remains the final fail-closed memory test.
 
-AstrumWeaver does not silently enable CPU offload when a `vram_only` model fails to fit.
+TSUMGI does not silently enable CPU offload when a `vram_only` model fails to fit.
 
 ## prefer_vram
 
@@ -215,7 +215,7 @@ The first vLLM hybrid mode supports explicit UVA weight offload through:
 
 A `cpu_gpu_hybrid` demand is incompatible unless a positive offload budget is explicitly configured.
 
-vLLM documents this value as CPU offload capacity **per GPU**, so the AstrumWeaver preflight treats total host RAM demand as approximately:
+vLLM documents this value as CPU offload capacity **per GPU**, so the TSUMGI preflight treats total host RAM demand as approximately:
 
 ```text
 cpu_offload_gb * gpu_count

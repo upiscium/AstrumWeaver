@@ -1,5 +1,5 @@
 {
-  description = "AstrumWeaver deployment-agnostic heterogeneous compute fabric";
+  description = "TSUMGI deployment-agnostic heterogeneous compute fabric";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
