@@ -183,6 +183,9 @@ def _require_owned_loopback_listener(port: int, process_group: int) -> None:
         raise SmokeError("owned_listener_not_ready")
     # A listener may bind only loopback. The -p PID information is required;
     # a hidden/missing owner cannot be trusted for sending private fixture data.
+    # Every visible process owning any loopback listener on this port must
+    # belong to our new-session group. Accepting a *single* matching PID
+    # would miss another listener sharing the port through SO_REUSEPORT.
     for line in lines:
         if f"127.0.0.1:{port}" not in line:
             raise SmokeError("unexpected_listener_bind_address")
@@ -191,11 +194,11 @@ def _require_owned_loopback_listener(port: int, process_group: int) -> None:
             raise SmokeError("listener_ownership_unverified")
         for pid in pids:
             try:
-                if os.getpgid(int(pid)) == process_group:
-                    return
-            except (OSError, ValueError):
-                continue
-    raise SmokeError("isolated_loopback_port_owned_by_other_process")
+                owner_group = os.getpgid(int(pid))
+            except (OSError, ValueError) as exc:
+                raise SmokeError("listener_ownership_unverified") from exc
+            if owner_group != process_group:
+                raise SmokeError("isolated_loopback_port_owned_by_other_process")
 
 
 def _request_json(base: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:

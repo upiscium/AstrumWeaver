@@ -376,3 +376,23 @@ def test_native_http_never_uses_ambient_proxy_or_redirects(monkeypatch):
         server.shutdown()
         server.server_close()
         thread.join(timeout=3)
+
+
+def test_native_http_listener_rejects_mixed_owners(monkeypatch):
+    """SO_REUSEPORT-style multiple owners must all be in our owned process group."""
+    output = (
+        'LISTEN 0 10 127.0.0.1:18311 0.0.0.0:* users:(("owned",pid=421,fd=4))\n'
+        'LISTEN 0 10 127.0.0.1:18311 0.0.0.0:* users:(("foreign",pid=422,fd=4))\n'
+    )
+    monkeypatch.setattr(
+        smoke.subprocess, "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout=output),
+    )
+    monkeypatch.setattr(
+        smoke.os, "getpgid",
+        lambda pid: 731 if pid == 421 else 732,
+    )
+    with pytest.raises(smoke.SmokeError, match="isolated_loopback_port_owned_by_other_process"):
+        smoke._require_owned_loopback_listener(18311, 731)
+    monkeypatch.setattr(smoke.os, "getpgid", lambda pid: 731)
+    smoke._require_owned_loopback_listener(18311, 731)

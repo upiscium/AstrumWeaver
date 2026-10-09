@@ -129,8 +129,8 @@ The probe performs:
 2. streaming GGUF SHA-256 verification **before starting a subprocess**;
 3. temporary loopback llama-server (`--offline --no-webui`, 4096 context,
    concurrency 1, all GPU layers, `--fit off`);
-4. confirmation that the loopback listener belongs to the **owned
-   subprocess group before any HTTP request**, then `/health` and
+4. confirmation that **all** loopback listeners on the selected port
+   belong to the owned subprocess group before any HTTP request, then `/health` and
    `/v1/models` text-input/native-decisions output validation;
    the native HTTP client ignores ambient proxies, rejects redirects
    and limits JSON responses to 1 MiB;
