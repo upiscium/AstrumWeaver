@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, replace
 import hashlib
+import os
+import stat
 import json
 import re
 from pathlib import Path
@@ -28,6 +30,7 @@ from .llama_cpp import LlamaCppProvider, LlamaCppProviderConfig, LlamaCppSplitMo
 DUAL_LLAMA_CPP_PROVIDER_ID = "llama-cpp-dual"
 _DUAL_CAPABILITIES = frozenset({"text.embed", "decision.system_one"})
 _SHA256 = re.compile(r"^[a-f0-9]{64}$")
+_NIX_STORE_OUTPUT = re.compile(r"^/nix/store/[a-z0-9]{32}-[A-Za-z0-9+._-]+$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,7 +99,7 @@ class DualLlamaCppProviderConfig:
             exe = Path(cfg.executable)
             package = Path(cfg.package_reference)
             if (not exe.is_absolute() or exe.name != "astrumweaver-llama-server"
-                or not str(package).startswith("/nix/store/")
+                or _NIX_STORE_OUTPUT.fullmatch(str(package)) is None
                 or exe != package / "bin" / "astrumweaver-llama-server"):
                 raise ValueError("dual runtime must use an exact Nix-packaged credential-isolating launcher")
         if self.embedding_model.model_ref == self.decision_model.model_ref:
@@ -199,10 +202,16 @@ class DualLlamaCppManagedRuntime(ManagedRuntime):
     @staticmethod
     def _check_pinned_model(model: DualModelPin) -> None:
         path = Path(model.model_ref)
-        if not path.is_file():
-            raise RuntimeError("prepared dual model is missing")
         h = hashlib.sha256()
-        with path.open("rb") as handle:
+        # Verify the opened inode, not a pathname after a separate is_file().
+        # Root-owned deployment storage still remains an operator trust boundary.
+        try:
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        except OSError as exc:
+            raise RuntimeError("prepared dual model cannot be opened safely") from exc
+        with os.fdopen(fd, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise RuntimeError("prepared dual model must be a regular file")
             for chunk in iter(lambda: handle.read(16 * 1024 * 1024), b""):
                 h.update(chunk)
         if h.hexdigest() != model.sha256:
@@ -218,6 +227,11 @@ class DualLlamaCppManagedRuntime(ManagedRuntime):
             await self._decision.start()
             if not (await self.health()).ready:
                 raise RuntimeError("both resident runtimes did not become jointly ready")
+            # Model files must not change between preflight and server load.
+            # This closes ordinary operator/download races; privileged hostile
+            # mutation of trusted model storage is outside Worker authority.
+            for pin in self._pins:
+                await asyncio.to_thread(self._check_pinned_model, pin)
         except BaseException:
             # A partially started child must not remain resident or advertised.
             await self._stop_both()

@@ -27,7 +27,7 @@ def setup_pair(tmp_path: Path) -> tuple[DualLlamaCppProvider, RuntimeCompatibili
     decision = tmp_path / "decision.gguf"
     embed.write_bytes(b"pinned-embedding-blob")
     decision.write_bytes(b"pinned-decision-blob")
-    package = "/nix/store/pinned-test-llama"
+    package = "/nix/store/" + "0" * 32 + "-pinned-test-llama"
     executable = package + "/bin/astrumweaver-llama-server"
     config = DualLlamaCppProviderConfig(
         embedding_model={
@@ -94,7 +94,9 @@ def test_dual_provider_binding_and_runtime_manifest_round_trip(tmp_path):
     assert intent.provider_id == DUAL_LLAMA_CPP_PROVIDER_ID
     assert intent.model_ref == provider.config.bundle_model_ref
     assert intent.configuration["embedding_sha256"] != intent.configuration["decision_sha256"]
-    assert intent.package_references == ("/nix/store/pinned-test-llama",)
+    assert intent.package_references == (
+        "/nix/store/" + "0" * 32 + "-pinned-test-llama",
+    )
     deployment = RuntimeDeploymentSpec(
         provider_id=provider.info.provider_id,
         provider_config=vars_config(provider.config),
@@ -336,14 +338,14 @@ def test_worker_advertises_only_exact_dual_bundle_model_identity(tmp_path):
                 ServingContract(
                     deployment_revision=ident.revision,
                     capability="text.embed",
-                    operation_schema="embedding-request-v1",
+                    operation_schema="openai-embeddings-v1",
                     validation_evidence_sha256="sha256:" + "d" * 64,
                     semantic_revision="sha256:" + "e" * 64,
                 ),
                 ServingContract(
                     deployment_revision=ident.revision,
                     capability="decision.system_one",
-                    operation_schema="decision-request-v1",
+                    operation_schema="astrumweaver-decisions-v1",
                     validation_evidence_sha256="sha256:" + "f" * 64,
                     semantic_revision="sha256:" + "d" * 64,
                 ),
@@ -356,6 +358,27 @@ def test_worker_advertises_only_exact_dual_bundle_model_identity(tmp_path):
     assert len(active.contracts) == 2
     assert active.deployment_revision == identity.revision
     assert active.runtime_instance.epoch
+
+    from astrumweaver.worker.daemon import _require_dual_serving_manifest
+    with pytest.raises(RuntimeError, match="reviewed serving manifest"):
+        _require_dual_serving_manifest(deployment, None)
+    _require_dual_serving_manifest(deployment, declaration(identity))
+
+    # The declaration permits different operation schemas on one capability,
+    # but one dual Worker must never accept hidden/extra contracts.
+    valid = declaration(identity)
+    extra_contract = replace(
+        valid.contracts[0],
+        operation_schema="unexpected-embedding-operation-v2",
+        semantic_revision="sha256:" + "9" * 64,
+    )
+    with pytest.raises(RuntimeError, match="pinned child semantics"):
+        _build_serving_advertisement(
+            ServingDeploymentDeclaration(
+                deployment=identity, contracts=valid.contracts+(extra_contract,),
+            ),
+            spec=ctx.worker, runtime_deployment=deployment,
+        )
 
     wrong = replace(identity, model_artifact_sha256="sha256:" + "0" * 64)
     with pytest.raises(RuntimeError, match="does not bind both pinned models"):
@@ -525,3 +548,44 @@ def test_dual_gateway_catalogs_bind_distinct_child_semantics(tmp_path):
         )
     with pytest.raises(ValueError,match="pinned per-capability semantics"):
         replace(composite,decision_semantics_id="not-a-digest")
+
+@pytest.mark.asyncio
+async def test_pinned_model_replaced_during_child_start_fails_closed(tmp_path):
+    managed, embedding, decision = managed_pair(tmp_path)
+    source = tmp_path / "decision.gguf"
+    original_start = decision.start
+    async def replace_during_start():
+        await original_start()
+        source.write_bytes(b"modified while model starts")
+    decision.start = replace_during_start
+    with pytest.raises(RuntimeError, match="digest mismatch"):
+        await managed.start()
+    assert embedding.stops == decision.stops == 1
+    assert not (await managed.health()).ready
+
+
+@pytest.mark.asyncio
+async def test_pinned_model_symlink_not_followed(tmp_path):
+    managed, embedding, decision = managed_pair(tmp_path)
+    model = tmp_path / "decision.gguf"
+    alternate = tmp_path / "regular-duplicate.gguf"
+    alternate.write_bytes(model.read_bytes())
+    model.unlink()
+    model.symlink_to(alternate)
+    with pytest.raises(RuntimeError, match="cannot be opened safely"):
+        await managed.start()
+    assert embedding.stops == decision.stops == 1
+    assert not (await managed.health()).ready
+
+
+def test_nix_output_with_traversal_not_admitted(tmp_path):
+    provider, _ = setup_pair(tmp_path)
+    from dataclasses import replace
+    cfg = provider.config
+    invalid = "/nix/store/"+"z"*32+"-loader/.."
+    with pytest.raises(ValueError, match="credential-isolating launcher"):
+        replace(cfg, decision_provider=replace(
+            cfg.decision_provider,
+            package_reference=invalid,
+            executable=invalid+"/bin/astrumweaver-llama-server",
+        ))

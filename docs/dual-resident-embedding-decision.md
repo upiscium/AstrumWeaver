@@ -52,8 +52,15 @@ aliases are used on the distinct ports.
 
 ## Lifecycle and fail-closed rules
 
-Both exact GGUF SHA-256s are checked before any model process starts. Both
-children must pass owned health and model alias checks before Worker admission.
+Both exact GGUF SHA-256s are checked before any model process starts and
+rechecked after both children are ready. Opened file descriptors are hashed
+without following symlinks; accepted launchers must be pinned top-level Nix
+store outputs. The model storage remains a trusted operator resource: a
+host-privileged adversary can still rewrite it and is outside this Worker
+threat model. Both children must pass owned health and model alias checks
+before Worker admission. A dual Worker must have a reviewed serving manifest
+with exactly two contracts (one embedding operation and one decision operation)
+and the matching pinned semantic IDs; extra contracts fail closed.
 If one child fails during startup, stop both. If either child dies/degrades
 after startup, the whole Worker runtime becomes unavailable and the existing
 supervisor fences claims/readiness. Stop/release attempt **both** children,

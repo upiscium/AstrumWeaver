@@ -19,6 +19,8 @@ from ..serving import (
     ServingDeploymentDeclaration,
     WorkerServingAdvertisement,
 )
+from ..gateway.embedding import EMBEDDING_OPERATION_SCHEMA
+from ..gateway.decision import DECISION_OPERATION_SCHEMA
 from ..runtime.providers.dual_llama_cpp import (
     DUAL_LLAMA_CPP_PROVIDER_ID, DualLlamaCppProviderConfig,
 )
@@ -93,14 +95,15 @@ def _build_serving_advertisement(
         frozen = DualLlamaCppProviderConfig(**dict(runtime_deployment.provider_config))
         if declaration.deployment.model_artifact_sha256 != "sha256:" + frozen.bundle_sha256:
             raise RuntimeError("dual serving declaration does not bind both pinned models")
-        observed_contracts = {
-            contract.capability: contract.semantic_revision
+        observed_contracts = [
+            (contract.capability, contract.operation_schema, contract.semantic_revision)
             for contract in declaration.contracts
+        ]
+        expected_contracts = {
+            ("text.embed", EMBEDDING_OPERATION_SCHEMA, frozen.embedding_space_id),
+            ("decision.system_one", DECISION_OPERATION_SCHEMA, frozen.decision_semantics_id),
         }
-        if observed_contracts != {
-            "text.embed": frozen.embedding_space_id,
-            "decision.system_one": frozen.decision_semantics_id,
-        }:
+        if len(observed_contracts) != 2 or set(observed_contracts) != expected_contracts:
             raise RuntimeError("dual serving contracts do not match pinned child semantics")
     contract_capabilities = frozenset(
         contract.capability for contract in declaration.contracts
@@ -189,6 +192,15 @@ def _run_gpu_preflight(
     )
 
 
+def _require_dual_serving_manifest(
+    deployment: RuntimeDeploymentSpec,
+    declaration: ServingDeploymentDeclaration | None,
+) -> None:
+    if (getattr(deployment, "provider_id", None) == DUAL_LLAMA_CPP_PROVIDER_ID
+            and declaration is None):
+        raise RuntimeError("dual runtime requires a reviewed serving manifest")
+
+
 def _require_runtime_concurrency(
     deployment: RuntimeDeploymentSpec,
     max_concurrency: int,
@@ -258,6 +270,7 @@ async def run_worker(
             _require_runtime_concurrency(
                 deployment, int(worker_section.get("max_concurrency", 1)),
             )
+            _require_dual_serving_manifest(deployment, serving_declaration)
             managed_runtime = managed_runtime_from_deployment(
                 deployment,
                 worker=spec,
