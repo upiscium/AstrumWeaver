@@ -222,7 +222,7 @@ class DecisionGatewayProfile:
                 "invalid_profile",
                 "decision profile uses an unsupported operation schema",
             )
-        if self.resolved.deployment.provider_id != "llama-cpp":
+        if self.resolved.deployment.provider_id not in {"llama-cpp", "llama-cpp-dual"}:
             raise DecisionGatewayError(
                 "invalid_profile",
                 "decision profile must bind the reviewed llama.cpp provider",

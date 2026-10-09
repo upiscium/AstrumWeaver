@@ -93,6 +93,15 @@ def _build_serving_advertisement(
         frozen = DualLlamaCppProviderConfig(**dict(runtime_deployment.provider_config))
         if declaration.deployment.model_artifact_sha256 != "sha256:" + frozen.bundle_sha256:
             raise RuntimeError("dual serving declaration does not bind both pinned models")
+        observed_contracts = {
+            contract.capability: contract.semantic_revision
+            for contract in declaration.contracts
+        }
+        if observed_contracts != {
+            "text.embed": frozen.embedding_space_id,
+            "decision.system_one": frozen.decision_semantics_id,
+        }:
+            raise RuntimeError("dual serving contracts do not match pinned child semantics")
     contract_capabilities = frozenset(
         contract.capability for contract in declaration.contracts
     )

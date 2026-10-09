@@ -54,8 +54,16 @@ class DualLlamaCppProviderConfig:
     embedding_provider: LlamaCppProviderConfig | Mapping[str, Any]
     decision_provider: LlamaCppProviderConfig | Mapping[str, Any]
     required_total_vram_mb: int
+    embedding_space_id: str
+    decision_semantics_id: str
 
     def __post_init__(self) -> None:
+        for name in ("embedding_space_id", "decision_semantics_id"):
+            value = getattr(self, name)
+            if type(value) is not str or not value.startswith("sha256:") or not _SHA256.fullmatch(value[7:]):
+                raise ValueError("dual runtime requires exact pinned per-capability semantics")
+        if self.embedding_space_id == self.decision_semantics_id:
+            raise ValueError("dual role semantics must remain distinct")
         for attr in ("embedding_model", "decision_model"):
             value = getattr(self, attr)
             if isinstance(value, Mapping):
@@ -343,6 +351,8 @@ class DualLlamaCppProvider:
                 "embedding_sha256": self.config.embedding_model.sha256,
                 "decision_sha256": self.config.decision_model.sha256,
                 "required_total_vram_mb": self.config.required_total_vram_mb,
+                "embedding_space_id": self.config.embedding_space_id,
+                "decision_semantics_id": self.config.decision_semantics_id,
             },
             model_preparation=ModelPreparationPolicy.REFERENCE_ONLY,
             model_ref=self.config.bundle_model_ref, requires_privilege=True,

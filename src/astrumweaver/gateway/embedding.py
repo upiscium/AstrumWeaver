@@ -215,7 +215,7 @@ class EmbeddingGatewayProfile:
                 "invalid_profile",
                 "embedding profile uses an unsupported operation schema",
             )
-        if self.resolved.deployment.provider_id != "llama-cpp":
+        if self.resolved.deployment.provider_id not in {"llama-cpp", "llama-cpp-dual"}:
             raise EmbeddingGatewayError(
                 "invalid_profile",
                 "embedding profile must bind the reviewed llama.cpp provider",
@@ -228,11 +228,16 @@ class EmbeddingGatewayProfile:
             )
         expected = {
             "deployment_revision": deployment.revision,
-            "model_artifact_sha256": deployment.model_artifact_sha256,
-            "quantization": deployment.quantization,
             "tokenizer_artifact_sha256": deployment.tokenizer_artifact_sha256,
             "adapter_id": adapter_id,
         }
+        if deployment.provider_id == "llama-cpp":
+            # Single model: parent deployment identifies the same GGUF and
+            # quantization as the embedding space. In a composite deployment
+            # parent identifies the bundle; the space instead identifies the
+            # embedding child, pinned by the Worker composite runtime.
+            expected["model_artifact_sha256"] = deployment.model_artifact_sha256
+            expected["quantization"] = deployment.quantization
         for name, value in expected.items():
             if getattr(self.space, name) != value:
                 raise EmbeddingGatewayError(

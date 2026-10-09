@@ -28,7 +28,11 @@ compact separators and exactly:
 
 RuntimeDeploymentSpec provider_config holds `embedding_model`,
 `decision_model`, `embedding_provider`, `decision_provider` and
-`required_total_vram_mb`. Model entries have `model_ref` (absolute prepared
+`required_total_vram_mb`, plus pinned `embedding_space_id` and `decision_semantics_id`. These child semantic digests must
+equal the reviewed ServingContract.semantic_revision fields; a mismatch
+prevents the Worker from advertising either capability.
+
+Model entries have `model_ref` (absolute prepared
 GGUF), `sha256` (lowercase 64-hex digest) and `estimated_size_mb`. Provider
 entries are standard LlamaCppProviderConfig JSON using pinned Nix wrapper paths;
 embedding must enable `embeddings=true,pooling=last`, decision must enable

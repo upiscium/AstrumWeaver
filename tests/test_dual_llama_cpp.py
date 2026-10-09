@@ -56,6 +56,8 @@ def setup_pair(tmp_path: Path) -> tuple[DualLlamaCppProvider, RuntimeCompatibili
             "gpu_layers": "all", "fit": False, "split_mode": "none",
         },
         required_total_vram_mb=4096,
+        embedding_space_id="sha256:" + "e" * 64,
+        decision_semantics_id="sha256:" + "d" * 64,
     )
     provider = DualLlamaCppProvider(config)
     context = RuntimeCompatibilityContext(
@@ -343,7 +345,7 @@ def test_worker_advertises_only_exact_dual_bundle_model_identity(tmp_path):
                     capability="decision.system_one",
                     operation_schema="decision-request-v1",
                     validation_evidence_sha256="sha256:" + "f" * 64,
-                    semantic_revision="sha256:" + "1" * 64,
+                    semantic_revision="sha256:" + "d" * 64,
                 ),
             ),
         )
@@ -399,3 +401,127 @@ async def test_dual_release_and_stop_both_attempted_on_child_failures(tmp_path):
     with pytest.raises(RuntimeError, match="joint runtime cleanup failed"):
         await managed.stop()
     assert decision.stops == 1
+
+
+def test_dual_gateway_catalogs_bind_distinct_child_semantics(tmp_path):
+    from dataclasses import replace
+    from astrumweaver.gateway.embedding import (
+        EMBEDDING_OPERATION_SCHEMA, LLAMA_CPP_EMBEDDING_ADAPTER,
+        EmbeddingGatewayProfile, EmbeddingSpaceIdentity, text_policy_digest,
+    )
+    from astrumweaver.gateway.decision import (
+        DECISION_OPERATION_SCHEMA, DECISION_SCORE_KIND, LLAMA_CPP_SCORE_SEMANTICS,
+        LLAMA_CPP_SYSTEM_ONE_ADAPTER, DecisionGatewayProfile, DecisionSemanticsIdentity,
+    )
+    from astrumweaver.serving import DeploymentIdentity, LogicalServingProfile, ServingContract
+
+    provider, ctx = setup_pair(tmp_path)
+    cfg = provider.config
+    dep = DeploymentIdentity(
+        provider_id=provider.info.provider_id,
+        runtime_artifact_sha256="sha256:" + "a" * 64,
+        adapter_artifact_sha256="sha256:" + "b" * 64,
+        model_artifact_sha256="sha256:" + cfg.bundle_sha256,
+        execution_config_sha256="sha256:" + "c" * 64,
+        quantization="composite-q8-q4",
+        tokenizer_artifact_sha256="sha256:" + "7" * 64,
+    )
+    space = EmbeddingSpaceIdentity(
+        deployment_revision=dep.revision,
+        model_artifact_sha256="sha256:" + cfg.embedding_model.sha256,
+        quantization="Q8_0",  # the embedding child, NOT the bundle
+        tokenizer_artifact_sha256=dep.tokenizer_artifact_sha256,
+        pooling="last", normalization="l2", dimensions=1024,
+        query_policy_id="synthetic-query-v1",
+        query_preprocess_sha256=text_policy_digest(""),
+        document_policy_id="synthetic-document-v1",
+        document_preprocess_sha256=text_policy_digest(""),
+        adapter_id=LLAMA_CPP_EMBEDDING_ADAPTER,
+    )
+    assert space.model_artifact_sha256 != dep.model_artifact_sha256
+    semantics = DecisionSemanticsIdentity(
+        deployment_revision=dep.revision,
+        adapter_id=LLAMA_CPP_SYSTEM_ONE_ADAPTER,
+        score_kind=DECISION_SCORE_KIND,
+        provider_score_semantics=LLAMA_CPP_SCORE_SEMANTICS,
+        calibration_status="uncalibrated",
+        calibration_reference_sha256=None, abstain_below=0.6,
+    )
+    emb_features=frozenset({"float","pooling-last","normalization-l2"})
+    dec_features=frozenset({"native-decision-head","choice-probabilities",
+                            "multi-token-choice-labels","provider-temperature-softmax"})
+    emb_contract=ServingContract(
+        deployment_revision=dep.revision,
+        capability="text.embed", operation_schema=EMBEDDING_OPERATION_SCHEMA,
+        validation_evidence_sha256="sha256:" + "2"*64,
+        features=emb_features,
+        limits={"item_tokens":128,"item_bytes":1024,"batch_items":4,
+                "batch_bytes":4096,"aggregate_tokens":256,"request_bytes":8192},
+        semantic_revision=space.embedding_space_id,
+    )
+    dec_contract=ServingContract(
+        deployment_revision=dep.revision,
+        capability="decision.system_one", operation_schema=DECISION_OPERATION_SCHEMA,
+        validation_evidence_sha256="sha256:" + "3"*64,
+        features=dec_features,
+        limits={"state_bytes":1024,"question_bytes":512,"choice_count":4,
+                "choice_id_bytes":64,"choice_label_bytes":128,"state_tokens":128,
+                "question_tokens":64,"choice_label_tokens":64,
+                "aggregate_tokens":256,"request_bytes":4096},
+        semantic_revision=semantics.decision_semantics_id,
+    )
+    eprofile=LogicalServingProfile(
+        profile_id="dual-embed-v1",deployment_revision=dep.revision,
+        serving_contract_revision=emb_contract.revision,
+        capability="text.embed",operation_schema=EMBEDDING_OPERATION_SCHEMA,
+        required_features=emb_features,
+    )
+    dprofile=LogicalServingProfile(
+        profile_id="dual-systemone-v1",deployment_revision=dep.revision,
+        serving_contract_revision=dec_contract.revision,
+        capability="decision.system_one",operation_schema=DECISION_OPERATION_SCHEMA,
+        required_features=dec_features,
+    )
+    embed = EmbeddingGatewayProfile.from_dict({
+        "adapter_id":LLAMA_CPP_EMBEDDING_ADAPTER,
+        "deployment":dep.to_dict(),"contract":emb_contract.to_dict(),
+        "profile":eprofile.to_dict(),"space":space.to_dict(),
+        "query_prefix":"","document_prefix":"",
+    })
+    dec = DecisionGatewayProfile.from_dict({
+        "adapter_id":LLAMA_CPP_SYSTEM_ONE_ADAPTER,
+        "deployment":dep.to_dict(),"contract":dec_contract.to_dict(),
+        "profile":dprofile.to_dict(),"semantics":semantics.to_dict(),
+    })
+    assert embed.embedding_space_id == space.embedding_space_id
+    assert dec.decision_semantics_id == semantics.decision_semantics_id
+    composite = replace(cfg,
+        embedding_space_id=space.embedding_space_id,
+        decision_semantics_id=semantics.decision_semantics_id,
+    )
+    runtime = RuntimeDeploymentSpec(
+        provider_id=provider.info.provider_id,
+        provider_config=vars_config(composite),
+        demand=ctx.demand,setup_intent=None,
+    )
+    from astrumweaver.serving import ServingDeploymentDeclaration
+    from astrumweaver.worker.daemon import _build_serving_advertisement
+    declaration = ServingDeploymentDeclaration(
+        deployment=dep, contracts=(emb_contract,dec_contract),
+    )
+    advert = _build_serving_advertisement(
+        declaration,spec=ctx.worker,runtime_deployment=runtime,
+    )
+    assert len(advert.contracts)==2
+
+    # Changing one gateway semantic identity without changing the reviewed
+    # runtime must not advertise a partially compatible pair.
+    tampered=replace(emb_contract,semantic_revision="sha256:"+"f"*64)
+    with pytest.raises(RuntimeError,match="pinned child semantics"):
+        _build_serving_advertisement(
+            ServingDeploymentDeclaration(
+                deployment=dep,contracts=(tampered,dec_contract),
+            ),spec=ctx.worker,runtime_deployment=runtime,
+        )
+    with pytest.raises(ValueError,match="pinned per-capability semantics"):
+        replace(composite,decision_semantics_id="not-a-digest")
