@@ -62,11 +62,11 @@ Private mode-0600 E2E JSON evidence SHA-256:
 Raw GPU UUIDs, host identity, internal ports, authentication material,
 prompts, unredacted tool payloads and model outputs are not published.
 
-The prior detailed child-death/serving-fencing test remains separate
-(`durable-e2e-v1.md`). This hardening revision was not independently
-subjected to another child-death stress run; its fail-closed behavior is
-also covered by focused regression tests. The exact hardening worktree
-passed **944 tests / 48 skips** before publication.
+The earlier child-death/serving-fencing test is in
+(`durable-e2e-v1.md`). A **separate exact-head revalidation** of the same
+single-child failure condition, with a fresh disposable PostgreSQL database,
+is reported in `hardened-child-failure-v1.md`. The exact hardening
+worktree passed **944 tests / 48 skips** before publication.
 
 **Disposition: exact-head functional GPU+durable Control/Worker E2E PASS.**
 Independent human correctness/security review, production deployment
