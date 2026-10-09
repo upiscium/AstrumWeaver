@@ -1,6 +1,6 @@
 # Runtime Providers and Execution Demand
 
-AstrumWeaver separates **what the operator wants to run** from **which runtime implements it**.
+TSUMGI separates **what the operator wants to run** from **which runtime implements it**.
 
 The runtime layer lives entirely on the Worker side:
 
@@ -38,13 +38,13 @@ Example intent:
 provider = "llama-cpp"
 ```
 
-If llama.cpp is incompatible with the selected Worker/model/execution policy, AstrumWeaver fails with structured incompatibility reasons.
+If llama.cpp is incompatible with the selected Worker/model/execution policy, TSUMGI fails with structured incompatibility reasons.
 
 It does **not** silently replace llama.cpp with vLLM, Ollama, or another provider.
 
 ### `recommend`
 
-AstrumWeaver evaluates installed providers and returns compatible candidates plus incompatibility reasons.
+TSUMGI evaluates installed providers and returns compatible candidates plus incompatibility reasons.
 
 It does not finalize a provider.
 
@@ -259,7 +259,7 @@ convert
 
 A provider may request one of these in setup intent, but **download/convert is still subject to SetupPlan review and explicit application**.
 
-AstrumWeaver must not download arbitrary models merely because a provider supports them.
+TSUMGI must not download arbitrary models merely because a provider supports them.
 
 ## Intended first-class providers
 

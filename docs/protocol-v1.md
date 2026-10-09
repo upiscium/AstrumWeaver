@@ -1,6 +1,6 @@
 # Control / Worker Protocol v1
 
-AstrumWeaver v1 uses an HTTP/JSON protocol between the Control Plane, clients, and Workers.
+TSUMGI v1 uses an HTTP/JSON protocol between the Control Plane, clients, and Workers.
 
 The protocol is workload-agnostic. Control understands capabilities, resource requirements, durable job state, and generic results; it does not understand LLM-, image-, TTS-, or application-specific payload semantics.
 
@@ -62,7 +62,7 @@ write fenced terminal results.
 
 #### `client_auth = "none"`
 
-The Client job endpoints do not require an AstrumWeaver bearer token:
+The Client job endpoints do not require a TSUMGI bearer token:
 
 ```text
 POST /v1/jobs
@@ -116,7 +116,7 @@ For traffic that leaves a trusted host/network boundary, deploy TLS using a revi
 
 Bearer tokens must not be sent over an untrusted plaintext network.
 
-AstrumWeaver does not configure Proxmox networking or TLS infrastructure itself.
+TSUMGI does not configure Proxmox networking or TLS infrastructure itself.
 
 ## Control endpoints
 
@@ -134,7 +134,7 @@ Unauthenticated process-liveness endpoint.
 GET /v1/ready
 ```
 
-Readiness requires PostgreSQL to be reachable, the AstrumWeaver control tables to exist, and every SQL migration packaged with the running Control binary to be recorded in `schema_migrations`. A Control binary whose required migration set has not been applied returns 503 rather than advertising Ready.
+Readiness requires PostgreSQL to be reachable, the TSUMGI control tables to exist, and every SQL migration packaged with the running Control binary to be recorded in `schema_migrations`. A Control binary whose required migration set has not been applied returns 503 rather than advertising Ready.
 
 ### Client job operations
 
@@ -145,7 +145,7 @@ POST /v1/jobs/{job_id}/cancel
 ```
 
 These require Client authority only when `control.client_auth = "bearer"`.
-They are unauthenticated by AstrumWeaver when `client_auth = "none"`.
+They are unauthenticated by TSUMGI when `client_auth = "none"`.
 
 ### Worker registration/lifecycle
 

@@ -1,6 +1,6 @@
 # Deployment Profiles and v0.1 Acceptance
 
-AstrumWeaver does not provision infrastructure. These profiles describe useful starting points for an already-provisioned Linux node; they are not hidden scheduler requirements.
+TSUMGI does not provision infrastructure. These profiles describe useful starting points for an already-provisioned Linux node; they are not hidden scheduler requirements.
 
 The canonical machine-readable examples live under `profiles/v0.1/`. The v0.1 acceptance manifest lives at `acceptance/v0.1.toml`.
 
@@ -10,7 +10,7 @@ The canonical machine-readable examples live under `profiles/v0.1/`. The v0.1 ac
 
 **Minimum** means the smallest resource envelope this project is prepared to document as a practical starting point for that role.
 
-It is operational guidance, not an automatic admission gate unless the same property is also represented by an explicit AstrumWeaver contract such as:
+It is operational guidance, not an automatic admission gate unless the same property is also represented by an explicit TSUMGI contract such as:
 
 - `gpu_count`
 - `total_vram_mb`
@@ -33,7 +33,7 @@ Recommendations are deliberately conservative and workload-neutral. Executor-spe
 
 v0.1 distinguishes validation scope:
 
-- `ci-contract`: the AstrumWeaver software contract/behavior is exercised in public CI using synthetic/example identities and resources.
+- `ci-contract`: the TSUMGI software contract/behavior is exercised in public CI using synthetic/example identities and resources.
 - `hardware-e2e`: the complete profile has been exercised on physical/virtual hardware and the evidence is intentionally publishable.
 
 A `ci-contract` validation is **not** a performance benchmark, CUDA compatibility certification, or proof that every executor will run on that hardware shape.
@@ -239,7 +239,7 @@ It does **not** mean:
 - every NVIDIA generation is supported
 - every executor supports every GPU
 - a recommendation is a hard minimum
-- AstrumWeaver has provisioned or certified the VM/LXC
+- TSUMGI has provisioned or certified the VM/LXC
 - a private Home Lab topology has been disclosed or tested by public CI
 - throughput/latency targets have been benchmarked
 
@@ -249,7 +249,7 @@ A site may record its own hardware-e2e validation without changing the generic p
 
 Every profile assumes the node already exists.
 
-AstrumWeaver does not own:
+TSUMGI does not own:
 
 - VM/LXC creation
 - Proxmox VMID/CTID allocation

@@ -1,10 +1,10 @@
 # Nix Packaging and NixOS Modules
 
-AstrumWeaver provides a pinned Nix flake for reproducible packaging and NixOS host integration.
+TSUMGI provides a pinned Nix flake for reproducible packaging and NixOS host integration.
 
 ## Runtime boundary
 
-AstrumWeaver now ships real long-running entrypoints:
+TSUMGI now ships real long-running entrypoints:
 
 - `astrumweaver-control`
 - `astrumweaver-worker`
@@ -27,13 +27,13 @@ packages.x86_64-linux.default
 
 ### astrumweaver
 
-The immutable Python package containing the provider-neutral AstrumWeaver domain/runtime library.
+The immutable Python package containing the provider-neutral TSUMGI domain/runtime library.
 
 ### control
 
 Control Plane support closure containing:
 
-- AstrumWeaver Python package
+- TSUMGI Python package
 - psycopg
 - PostgreSQL migration assets
 - existing-node integration/setup assets
@@ -44,7 +44,7 @@ It includes the packaged `astrumweaver-control` and `astrumweaver-migrate` entry
 
 Worker support closure containing:
 
-- AstrumWeaver Python package
+- TSUMGI Python package
 - GPU preflight/setup integration assets
 
 It includes the packaged `astrumweaver-worker` entrypoint.
@@ -53,7 +53,7 @@ It includes the packaged `astrumweaver-worker` entrypoint.
 
 Combined generic-systemd first-run closure containing:
 
-- AstrumWeaver Control + Worker entrypoints
+- TSUMGI Control + Worker entrypoints
 - psycopg and PostgreSQL migration assets
 - host integration/setup wrappers
 - `astrumweaver-setup-tui`
@@ -103,7 +103,7 @@ A consuming flake may import it with:
 
 ```nix
 {
-  inputs.astrumweaver.url = "github:upiscium/AstrumWeaver";
+  inputs.astrumweaver.url = "github:upiscium/TSUMGI";
 
   outputs = { nixpkgs, astrumweaver, ... }: {
     nixosConfigurations.example = nixpkgs.lib.nixosSystem {
@@ -371,7 +371,7 @@ accepted. Literal `${...}` in model/configuration data stays literal; it is not
 Nix code. Secrets remain in the separately protected environment files, never
 in the generated module or Nix store.
 
-A generated snippet must be imported together with the AstrumWeaver NixOS
+A generated snippet must be imported together with the TSUMGI NixOS
 module. It is not a complete host configuration: retain the documented host,
 network, PostgreSQL, NVIDIA and GPU-exposure prerequisites and your normal
 `nixos-rebuild` review/apply boundary.
@@ -384,7 +384,7 @@ nix run --no-update-lock-file .#check-generated-nixos
 
 Run this on a checkout of the candidate revision. The app supplies its pinned
 Python dependencies and Nix; the evaluator uses this checkout's locked nixpkgs
-and AstrumWeaver modules, without updating the lock file. It writes disposable
+and TSUMGI modules, without updating the lock file. It writes disposable
 fixtures through the **production first-run renderer**, then evaluates the
 actual generated files for Control (default bearer and explicit none), smoke
 CPU/GPU Worker, RuntimeProvider Worker, and combined roles. It forces relevant

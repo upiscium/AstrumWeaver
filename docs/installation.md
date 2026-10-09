@@ -1,12 +1,12 @@
 # Installation
 
-This page answers one question: **how do I put AstrumWeaver on a machine?**
+This page answers one question: **how do I put TSUMGI on a machine?**
 
 If this is your first installation, read [Getting Started](getting-started.md)
 after this page. It walks through a minimal Control + Worker deployment and a
 real `debug.echo` job.
 
-> AstrumWeaver is still pre-v1. The supported installation paths are currently
+> TSUMGI is still pre-v1. The supported installation paths are currently
 > intentionally narrow.
 
 ## Supported installation paths
@@ -18,7 +18,7 @@ real `debug.echo` job.
 | pip-only deployment | Python package only | Not a complete host installation |
 | Docker/Kubernetes | — | Not currently provided |
 
-AstrumWeaver does not install an operating system, PostgreSQL server, NVIDIA
+TSUMGI does not install an operating system, PostgreSQL server, NVIDIA
 host driver, VM/LXC, PCI passthrough, or hypervisor configuration.
 
 ## Before installing
@@ -35,7 +35,7 @@ For a GPU Worker, the host must already have a functioning NVIDIA driver and:
 nvidia-smi
 ```
 
-must work before AstrumWeaver installation.
+must work before TSUMGI installation.
 
 For Control, prepare:
 
@@ -53,7 +53,7 @@ client_auth = "bearer" # or "none"
 If the setting is omitted, Control defaults to `bearer`, preserving the
 existing secure behavior. In bearer mode the Client and Worker tokens must be
 different. In `none` mode, Client submit/read/cancel endpoints have no
-AstrumWeaver bearer requirement, so protect them with the intended network,
+TSUMGI bearer requirement, so protect them with the intended network,
 VPN, reverse proxy, or upstream authentication boundary.
 
 A convenient way to create bearer tokens is:
@@ -67,15 +67,15 @@ Keep them outside the repository.
 
 ## PostgreSQL prerequisite
 
-**For AstrumWeaver v0.1, use PostgreSQL 17.x.** The repository CI currently
+**For TSUMGI v0.1, use PostgreSQL 17.x.** The repository CI currently
 runs the durable Control integration tests against PostgreSQL 17, so PostgreSQL
 17 is the validated and recommended major version. Within that major version,
 use the latest available PostgreSQL 17 minor release.
 
 Other PostgreSQL major versions may work, but they are not currently covered by
-AstrumWeaver CI and should be treated as unvalidated rather than supported.
+TSUMGI CI and should be treated as unvalidated rather than supported.
 
-AstrumWeaver does not provision PostgreSQL. You may use an existing local,
+TSUMGI does not provision PostgreSQL. You may use an existing local,
 remote, or managed PostgreSQL 17 instance.
 
 For a simple local PostgreSQL installation where you have the usual
@@ -96,7 +96,7 @@ This is only a database bootstrap example. PostgreSQL authentication,
 backups, TLS, HA, and network policy remain deployment/operator
 responsibilities.
 
-AstrumWeaver schema creation/upgrades are separate: run
+TSUMGI schema creation/upgrades are separate: run
 `astrumweaver-migrate`, or explicitly enable the NixOS
 `migrateOnStart` option described below.
 
@@ -185,13 +185,13 @@ and [Worker unit template](../systemd/astrumweaver-worker.service.in).
 
 ## Option A — NixOS
 
-Add AstrumWeaver as a flake input:
+Add TSUMGI as a flake input:
 
 ```nix
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    astrumweaver.url = "github:upiscium/AstrumWeaver";
+    astrumweaver.url = "github:upiscium/TSUMGI";
   };
 
   outputs = { self, nixpkgs, astrumweaver, ... }: {
@@ -235,7 +235,7 @@ Minimal Control module:
 ```
 
 Create the local protected configuration directory if this is the first
-AstrumWeaver service on the host:
+TSUMGI service on the host:
 
 ```sh
 sudo install -d -m 0750 /etc/astrumweaver
@@ -267,7 +267,7 @@ sudo chmod 600 /etc/astrumweaver/control.env
 ### Minimal Worker
 
 For the first smoke test, use the built-in `debug.echo` executor. It avoids
-mixing AstrumWeaver installation problems with model-runtime problems.
+mixing TSUMGI installation problems with model-runtime problems.
 
 ```nix
 {
@@ -324,7 +324,7 @@ Do not configure both `executorFactory` and `runtime.enable = true`.
 This path does **not** require a source checkout.
 
 It assumes the host already has Nix with the `nix-command` and `flakes`
-features available. AstrumWeaver does not bootstrap Nix itself.
+features available. TSUMGI does not bootstrap Nix itself.
 
 ### Recommended: first-run TUI
 
@@ -334,7 +334,7 @@ Install the combined first-run package:
 NIX_BIN="$(command -v nix)"
 sudo "$NIX_BIN" profile add \
   --profile /nix/var/nix/profiles/astrumweaver-installer \
-  github:upiscium/AstrumWeaver#installer
+  github:upiscium/TSUMGI#installer
 ```
 
 Then run:
@@ -429,7 +429,7 @@ packaged runtime-profile manager to reconcile:
 /nix/var/nix/profiles/astrumweaver-runtime-llama-cpp
 ```
 
-against the exact AstrumWeaver candidate that provided the TUI. That candidate
+against the exact TSUMGI candidate that provided the TUI. That candidate
 exports:
 
 ```text
@@ -461,7 +461,7 @@ sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-runtime-profi
   status llama-cpp
 ```
 
-After intentionally upgrading the AstrumWeaver installer profile to a newer
+After intentionally upgrading the TSUMGI installer profile to a newer
 candidate, explicitly move the runtime profile to that same candidate with:
 
 ```sh
@@ -480,11 +480,11 @@ sudo /nix/var/nix/profiles/astrumweaver-installer/bin/astrumweaver-runtime-profi
 Rollback is deliberately operator-owned. A newer TUI still expects its own
 candidate; applying that newer reviewed SetupPlan again will reconcile the
 runtime profile forward. If you intentionally keep a rolled-back runtime,
-keep the corresponding AstrumWeaver candidate/runtime contract aligned as
+keep the corresponding TSUMGI candidate/runtime contract aligned as
 well.
 
 Do not add unrelated packages to the
-`astrumweaver-runtime-llama-cpp` profile. AstrumWeaver owns that profile as a
+`astrumweaver-runtime-llama-cpp` profile. TSUMGI owns that profile as a
 single-runtime boundary.
 
 The `ASTRUMWEAVER_RUNTIME_INSTALLERS_JSON` and
@@ -499,7 +499,7 @@ Nix RuntimeBackend. They are not the normal llama.cpp installation path.
 NIX_BIN="$(command -v nix)"
 sudo "$NIX_BIN" profile add \
   --profile /nix/var/nix/profiles/astrumweaver-control \
-  github:upiscium/AstrumWeaver#control
+  github:upiscium/TSUMGI#control
 ```
 
 The profile contains:
@@ -561,7 +561,7 @@ Install the Worker package:
 NIX_BIN="$(command -v nix)"
 sudo "$NIX_BIN" profile add \
   --profile /nix/var/nix/profiles/astrumweaver-worker \
-  github:upiscium/AstrumWeaver#worker
+  github:upiscium/TSUMGI#worker
 ```
 
 Check it:

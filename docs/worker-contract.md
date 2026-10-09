@@ -172,7 +172,7 @@ worker advertised capabilities/resources
 generic matcher
 ```
 
-This keeps the control plane usable for workload types that did not exist when AstrumWeaver was first implemented.
+This keeps the control plane usable for workload types that did not exist when TSUMGI was first implemented.
 
 ## 10. Runtime liveness
 

@@ -1,6 +1,6 @@
 # Borrowable GPU Worker
 
-AstrumWeaver can use a GPU inside an existing development Linux node without permanently dedicating that node to the compute fabric.
+TSUMGI can use a GPU inside an existing development Linux node without permanently dedicating that node to the compute fabric.
 
 The ownership model is explicit:
 
@@ -16,11 +16,11 @@ This is an **exclusive ownership handoff**, not concurrent GPU sharing.
 
 ## Safety model
 
-AstrumWeaver does not attempt to partition VRAM or coordinate arbitrary development processes.
+TSUMGI does not attempt to partition VRAM or coordinate arbitrary development processes.
 
 The mode switch succeeds only when the relevant transition can be verified:
 
-### AstrumWeaver → development
+### TSUMGI → development
 
 1. request `DRAINING` without terminating the Worker
 2. stop local job claiming immediately
@@ -31,11 +31,11 @@ The mode switch succeeds only when the relevant transition can be verified:
 7. verify no NVIDIA C/G process context remains on those GPUs
 8. return success to the operator
 
-The default drain timeout is **unbounded**. AstrumWeaver therefore does not force a long-running job merely because an operator requested development mode.
+The default drain timeout is **unbounded**. TSUMGI therefore does not force a long-running job merely because an operator requested development mode.
 
 A finite drain timeout may be configured. Expiry fails the mode switch and leaves the Worker service running/draining; it does not forcibly stop the job.
 
-### development → AstrumWeaver
+### development → TSUMGI
 
 1. verify the exact configured GPU UUID set
 2. reject the transition if an existing development/unrelated GPU process is present
@@ -96,7 +96,7 @@ sudo astrumweaver-worker-mode development \
   --service astrumweaver-worker.service
 ```
 
-Return the GPU to AstrumWeaver:
+Return the GPU to TSUMGI:
 
 ```sh
 sudo astrumweaver-worker-mode astrumweaver \
@@ -174,19 +174,19 @@ Borrowable mode requires the Worker health endpoint to remain local (`127.0.0.1`
 After a successful transition to `development`:
 
 - `astrumweaver-worker.service` is inactive
-- no AstrumWeaver job can be claimed on that Worker
+- no TSUMGI job can be claimed on that Worker
 - exact GPU identity was observed
 - no GPU process context was present at the handoff boundary
 
 After the command returns, the development environment may start using the GPU.
 
-AstrumWeaver cannot prevent an unrelated local process from racing the handoff after verification. Operators should therefore treat `astrumweaver-gpu-mode` as the ownership boundary and avoid launching development GPU processes concurrently with a transition.
+TSUMGI cannot prevent an unrelated local process from racing the handoff after verification. Operators should therefore treat `astrumweaver-gpu-mode` as the ownership boundary and avoid launching development GPU processes concurrently with a transition.
 
 ## Non-goals
 
 Borrowable Worker mode does not provide:
 
-- concurrent AstrumWeaver/development GPU sharing
+- concurrent TSUMGI/development GPU sharing
 - MIG or VRAM partitioning
 - forced termination of arbitrary GPU processes
 - automatic killing of development workloads

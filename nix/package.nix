@@ -42,8 +42,8 @@ python312Packages.buildPythonPackage {
   doCheck = false;
 
   meta = {
-    description = "Deployment-agnostic compute fabric for heterogeneous compute nodes";
-    homepage = "https://github.com/upiscium/AstrumWeaver";
+    description = "TSUMGI deployment-agnostic compute fabric for heterogeneous compute nodes";
+    homepage = "https://github.com/upiscium/TSUMGI";
     license = lib.licenses.bsd3;
     platforms = lib.platforms.linux;
   };

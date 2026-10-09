@@ -1,6 +1,6 @@
 # Host Prerequisite Contract
 
-This document defines what an existing node must provide before AstrumWeaver may install or start a service on it.
+This document defines what an existing node must provide before TSUMGI may install or start a service on it.
 
 The contract is intentionally virtualization-agnostic. A compliant node may be a Proxmox VM, a Proxmox LXC, another Linux VM, a cloud instance, or bare metal.
 
@@ -14,15 +14,15 @@ Recommended sizing is not a hidden hard requirement. Resource-specific jobs are 
 
 ## 2. Common node requirements
 
-A node running an AstrumWeaver service MUST provide:
+A node running a TSUMGI service MUST provide:
 
 - a supported Linux userspace
 - a functioning service manager for the selected deployment path; v0.1 systemd integrations require systemd
 - reliable local filesystem semantics for service state
-- network connectivity to every AstrumWeaver service endpoint required by that role
+- network connectivity to every TSUMGI service endpoint required by that role
 - reasonably synchronized system time
 - protected delivery of credentials/secrets outside the public repository
-- a stable hostname or operator-selected AstrumWeaver service identity; it need not match hypervisor inventory
+- a stable hostname or operator-selected TSUMGI service identity; it need not match hypervisor inventory
 
 A node SHOULD provide:
 
@@ -31,7 +31,7 @@ A node SHOULD provide:
 - sufficient free disk for package/runtime updates
 - DNS resolution where configured endpoints use DNS names
 
-AstrumWeaver MUST NOT infer site configuration from:
+TSUMGI MUST NOT infer site configuration from:
 
 - default routes
 - interface names
@@ -46,9 +46,9 @@ A Control Plane node MUST provide:
 - no GPU requirement
 - connectivity to its durable state backend
 - persistent state for any local control-plane data
-- an identity/credential configuration accepted by AstrumWeaver
+- an identity/credential configuration accepted by TSUMGI
 
-Where PostgreSQL is the selected durable backend, the database may be co-located or remote. AstrumWeaver must not require the Control Plane setup path to create the VM/container hosting that database.
+Where PostgreSQL is the selected durable backend, the database may be co-located or remote. TSUMGI must not require the Control Plane setup path to create the VM/container hosting that database.
 
 A Control Plane SHOULD have enough CPU/RAM to handle scheduler/API concurrency without swapping under normal load. Concrete minimum/recommended/validated profiles belong in deployment-profile documentation rather than this safety contract.
 
@@ -99,11 +99,11 @@ the deployment MUST fail closed. A systemd `DevicePolicy=closed` setting or
 
 ## 6. Proxmox deployment notes
 
-These notes are guidance only. They are not a dependency of AstrumWeaver.
+These notes are guidance only. They are not a dependency of TSUMGI.
 
 ### Proxmox VM
 
-Before AstrumWeaver setup:
+Before TSUMGI setup:
 
 - the VM already exists
 - required PCI passthrough is already configured by the operator/infrastructure layer
@@ -111,11 +111,11 @@ Before AstrumWeaver setup:
 - the guest NVIDIA driver is already installed where required
 - `nvidia-smi` inside the guest reports exactly the intended device set
 
-AstrumWeaver does not inspect or mutate Proxmox `hostpci`, IOMMU, machine, firmware, bridge, or storage configuration.
+TSUMGI does not inspect or mutate Proxmox `hostpci`, IOMMU, machine, firmware, bridge, or storage configuration.
 
 ### Proxmox LXC
 
-Before AstrumWeaver setup:
+Before TSUMGI setup:
 
 - the container already exists
 - the operator has already configured the required device passthrough/mounts
@@ -124,14 +124,14 @@ Before AstrumWeaver setup:
   device set
 - if the container exposes a broader GPU inventory, the parent/container
   boundary must actually deny unselected physical device access; if it does
-  not, AstrumWeaver requires the operator to narrow GPU exposure externally
-- the AstrumWeaver service account can access the required GPU device nodes
+  not, TSUMGI requires the operator to narrow GPU exposure externally
+- the TSUMGI service account can access the required GPU device nodes
 
-AstrumWeaver does not change LXC privilege mode, device cgroup rules, mount entries, or the Proxmox host driver.
+TSUMGI does not change LXC privilege mode, device cgroup rules, mount entries, or the Proxmox host driver.
 
 ### Portability requirement
 
-The same AstrumWeaver Worker configuration model should remain valid if an operator later recreates the node on another hypervisor, provided the worker resource identities and capabilities are intentionally revalidated.
+The same TSUMGI Worker configuration model should remain valid if an operator later recreates the node on another hypervisor, provided the worker resource identities and capabilities are intentionally revalidated.
 
 ## 7. Secret and configuration requirements
 
@@ -153,7 +153,7 @@ existing Linux node
     ↓
 host prerequisites verified
     ↓
-AstrumWeaver package installed
+TSUMGI package installed
     ↓
 non-secret config + protected credentials installed
     ↓
@@ -166,7 +166,7 @@ worker registration
 ONLINE / ready
 ```
 
-VM/LXC creation, OS installation, networking, PCI passthrough, and GPU driver setup all occur before this sequence and remain outside AstrumWeaver.
+VM/LXC creation, OS installation, networking, PCI passthrough, and GPU driver setup all occur before this sequence and remain outside TSUMGI.
 
 ## 9. Out of scope for this contract
 

@@ -1,12 +1,12 @@
 # ExLlamaV3 Runtime Provider
 
-AstrumWeaver uses ExLlamaV3 for quantized, VRAM-focused local inference on
+TSUMGI uses ExLlamaV3 for quantized, VRAM-focused local inference on
 consumer NVIDIA GPUs.
 
 The provider intentionally uses
 [TabbyAPI](https://github.com/theroyallab/tabbyAPI) as its serving surface.
 ExLlamaV3 upstream names TabbyAPI as the official and recommended API backend,
-so AstrumWeaver does not maintain a second custom HTTP server around the
+so TSUMGI does not maintain a second custom HTTP server around the
 ExLlamaV3 library.
 
 ## Scope
@@ -33,7 +33,7 @@ The provider does not claim:
 - VM/LXC or passthrough configuration
 
 ExLlamaV3 itself has broader functionality, including CPU MoE offload and
-unquantized model support. Those features are outside this AstrumWeaver v0.x
+unquantized model support. Those features are outside this TSUMGI v0.x
 provider role so runtime selection stays predictable.
 
 ## Serving backend
@@ -49,7 +49,7 @@ POST /v1/chat/completions
 POST /v1/completions
 ```
 
-Authentication is disabled only because AstrumWeaver binds the managed endpoint
+Authentication is disabled only because TSUMGI binds the managed endpoint
 to loopback and sets an empty browser-origin allowlist. Exposing that endpoint
 outside the Worker would require a separate authentication design.
 
@@ -87,7 +87,7 @@ Those paths are deployment inputs, not hidden installation actions.
 Current TabbyAPI explicitly checks that every selected GPU is NVIDIA compute
 capability 8.0 (Ampere) or newer and rejects ROCm.
 
-AstrumWeaver therefore understands the optional Worker label:
+TSUMGI therefore understands the optional Worker label:
 
 ```text
 gpu.compute_capability.min = 8.6
@@ -153,7 +153,7 @@ For `single_gpu`:
 
 ## Multi GPU
 
-All Worker-owned GPUs participate. AstrumWeaver does not silently use a subset.
+All Worker-owned GPUs participate. TSUMGI does not silently use a subset.
 
 Two modes are supported.
 
@@ -198,7 +198,7 @@ If the known model estimate already exceeds total Worker VRAM, compatibility
 fails before startup.
 
 A model-size fit does not prove enough space remains for KV cache and runtime
-overhead. AstrumWeaver therefore emits an advisory rather than inventing an
+overhead. TSUMGI therefore emits an advisory rather than inventing an
 exact overhead formula. Operators should express hard requirements through the
 generic VRAM minimum fields.
 
@@ -210,7 +210,7 @@ Supported and is the general-purpose ExLlamaV3 path.
 
 Outside the v0.x ExLlamaV3 provider scope.
 
-For RAM-heavy execution, AstrumWeaver should surface providers whose declared
+For RAM-heavy execution, TSUMGI should surface providers whose declared
 role matches the request, especially llama.cpp or FreeToken. Explicit
 ExLlamaV3 selection still fails rather than silently substituting another
 runtime.
@@ -291,5 +291,5 @@ The provider reports reviewed placement metadata:
 - cache mode
 
 TabbyAPI does not expose a provider-neutral measurement that proves exact model
-accelerator residency for this contract, so AstrumWeaver does not invent
+accelerator residency for this contract, so TSUMGI does not invent
 `accelerator_memory_bytes`.

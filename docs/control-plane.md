@@ -1,6 +1,6 @@
 # Durable Control Plane
 
-AstrumWeaver's Control Plane owns durable scheduling state. Workload-specific execution remains behind the Worker/Executor boundary.
+TSUMGI's Control Plane owns durable scheduling state. Workload-specific execution remains behind the Worker/Executor boundary.
 
 ## Durable entities
 
@@ -165,7 +165,7 @@ The old LLM-specific model-profile and Ollama assumptions are intentionally abse
 
 ## Lock ordering
 
-Whenever a transaction touches both a job and a worker, AstrumWeaver uses the lock order:
+Whenever a transaction touches both a job and a worker, TSUMGI uses the lock order:
 
 job -> worker
 
