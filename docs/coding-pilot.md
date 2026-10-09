@@ -164,9 +164,11 @@ pinned correctness checker rejected the final answer. It is retained as a model
 quality failure rather than rerun away.
 
 The test-addition and scoped-fix runs each changed only their one permitted path
-and passed their independent checker. Direct-remote remains explicitly
-`NOT_RUN`; observed remote usage and electrical cost remain UNKNOWN. The
-coding adapter disposition is therefore `experimental`, not accepted.
+and passed their independent checker. At the time this first historical record
+was captured, the direct-remote lane was explicitly `NOT_RUN` and remote
+usage/electrical cost were UNKNOWN. This historical record is intentionally
+preserved unchanged; see [the later genuine direct-remote observation](../validation/coding-pilot/direct-remote-v1.md), recorded separately on
+2026-10-09. The coding disposition remains `experimental`, not accepted.
 
 ## Recorder
 
