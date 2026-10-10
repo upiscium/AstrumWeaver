@@ -16,10 +16,25 @@ bypass is introduced. Job execution dispatches by exact capability:
 - `text.embed` → Qwen3-Embedding-0.6B Q8_0, `--embeddings --pooling last`
 - `decision.system_one` → LiquidAI d1-3B Q4_K_M, native decision head
 
-Each child has a distinct, credential-free **loopback port**, pinned prepared
-GGUF artifact SHA-256, an absolute Nix-store `astrumweaver-llama-server`
-wrapper, full GPU offload (`fit=off`), offline mode and no web UI. This wrapper
-prevents inherited Worker/Client bearer and cloud tokens reaching llama-server.
+Each child uses a distinct **loopback port without embedded URL credentials**,
+pinned GGUF artifact SHA-256, an absolute Nix-store
+`astrumweaver-llama-server` wrapper, full GPU offload (`fit=off`), offline
+mode and no web UI.
+
+**Loopback alone is not authorization.** Each native child has its own
+random ephemeral bearer token, stored in a Worker-owned mode-0700 temporary
+directory as a mode-0600 API-key file. The pinned native server receives
+only the **key-file pathname** through its CLI option (`--api-key-file`),
+not the secret in process argv or the Control/runtime/serving manifests.
+`HttpLlamaCppApi` sends that child's token in `Authorization: Bearer`
+for every Worker-to-child call. An unprivileged local account without
+access to the private key file cannot use the model inference endpoints
+even if it can connect to the loopback socket. Every Worker instance
+generates fresh distinct tokens, removed after both owned native children
+are released. Production must use a dedicated Worker service UID rather
+than share the same UID with untrusted local accounts.
+The pinned wrapper invokes the native inference process with `env -i`,
+without inherited Worker/Client bearer or cloud credentials.
 Operator-approved composite model identity is:
 
 `dual-sha256:<digest>` where digest = SHA-256 over JSON with sorted keys,

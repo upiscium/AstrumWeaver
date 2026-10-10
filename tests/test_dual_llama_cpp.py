@@ -702,3 +702,58 @@ async def test_replaced_file_in_untrusted_mutable_directory_fails_before_load(tm
         assert embedding.stops == decision.stops == 1
     finally:
         tmp_path.chmod(old_mode)
+
+
+@pytest.mark.asyncio
+async def test_composite_subprocesses_require_distinct_private_bearer_files(tmp_path):
+    import stat
+    provider, ctx = setup_pair(tmp_path)
+    deployment = RuntimeDeploymentSpec(
+        provider_id=provider.info.provider_id,
+        provider_config=vars_config(provider.config),
+        demand=ctx.demand,
+        setup_intent=provider.setup_intent(ctx),
+    )
+    runtime = managed_runtime_from_deployment(
+        deployment, worker=ctx.worker, host=ctx.host,
+    )
+    children = (runtime._embedding, runtime._decision)
+    keys = []
+    secret_dir = runtime._private_auth_files.name
+    assert stat.S_IMODE(Path(secret_dir).stat().st_mode) == 0o700
+    for child in children:
+        file = Path(child.process.api_key_file)
+        assert file.is_file()
+        assert file.parent == Path(secret_dir)
+        assert stat.S_IMODE(file.stat().st_mode) == 0o600
+        token = file.read_text().strip()
+        assert len(token) >= 48
+        auth = child.api._client.headers["authorization"]
+        assert auth == "Bearer " + token
+        args = child.process.command()
+        assert args[args.index("--api-key-file") + 1] == str(file)
+        assert token not in " ".join(args)
+        keys.append(token)
+    assert keys[0] != keys[1]
+    assert "private_auth_files" not in deployment.to_dict()
+    await runtime.release()
+    assert not Path(secret_dir).exists()
+    assert all(not Path(child.process.api_key_file).exists() for child in children)
+
+
+@pytest.mark.asyncio
+async def test_native_http_client_bearer_header_is_scoped_to_private_child():
+    import httpx
+    from astrumweaver.runtime.providers.llama_cpp import HttpLlamaCppApi
+    observed=[]
+    def handler(req: httpx.Request):
+        observed.append(req.headers.get("authorization"))
+        return httpx.Response(200,json={"ready":True})
+    api=HttpLlamaCppApi(
+        "http://127.0.0.1:18700",
+        api_key="opaque-test-token",
+        transport=httpx.MockTransport(handler),
+    )
+    assert await api.health() is True
+    assert observed==["Bearer opaque-test-token"]
+    await api.close()

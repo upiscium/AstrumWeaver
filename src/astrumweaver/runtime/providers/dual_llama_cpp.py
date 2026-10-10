@@ -10,7 +10,9 @@ import asyncio
 from dataclasses import dataclass, replace
 import hashlib
 import os
+import secrets
 import stat
+import tempfile
 import json
 import re
 from pathlib import Path
@@ -24,7 +26,10 @@ from ..contracts import (
     RuntimeCompatibility, RuntimeCompatibilityContext, RuntimeHealth,
     RuntimeHealthState, RuntimeProviderInfo, RuntimeSetupIntent,
 )
-from .llama_cpp import LlamaCppProvider, LlamaCppProviderConfig, LlamaCppSplitMode
+from .llama_cpp import (
+    HttpLlamaCppApi, LlamaCppProvider, LlamaCppProviderConfig,
+    LlamaCppSplitMode, LlamaCppSubprocessController,
+)
 
 
 DUAL_LLAMA_CPP_PROVIDER_ID = "llama-cpp-dual"
@@ -200,7 +205,9 @@ class DualLlamaCppManagedRuntime(ManagedRuntime):
         self, embedding: ManagedRuntime, decision: ManagedRuntime,
         embedding_pin: DualModelPin, decision_pin: DualModelPin,
         trusted_model_owner_uid: int = 0,
+        private_auth_files: tempfile.TemporaryDirectory[str] | None = None,
     ) -> None:
+        self._private_auth_files = private_auth_files
         self._embedding = embedding
         self._decision = decision
         self._pins = (embedding_pin, decision_pin)
@@ -350,6 +357,9 @@ class DualLlamaCppManagedRuntime(ManagedRuntime):
         )
         if any(isinstance(x, BaseException) for x in results):
             raise RuntimeError("joint runtime release failed")
+        if self._private_auth_files is not None:
+            self._private_auth_files.cleanup()
+            self._private_auth_files = None
         self._released = True
 
 
@@ -370,14 +380,32 @@ class DualLlamaCppProvider:
 
     def _child(
         self, context: RuntimeCompatibilityContext, role: str,
+        *, api_key: str | None = None, api_key_file: str | None = None,
     ) -> tuple[LlamaCppProvider, RuntimeCompatibilityContext]:
         model = (
             self.config.embedding_model if role == "embedding" else self.config.decision_model
         )
-        provider = LlamaCppProvider(
+        child_config = (
             self.config.embedding_provider if role == "embedding"
             else self.config.decision_provider
         )
+        if (api_key is None) != (api_key_file is None):
+            raise ValueError("private inference authentication must be complete")
+        if api_key is not None:
+            # Never serialize ephemeral bearer secrets into the runtime manifest.
+            provider = LlamaCppProvider(
+                child_config,
+                api_factory=lambda url: HttpLlamaCppApi(
+                    url, timeout_seconds=child_config.request_timeout_seconds,
+                    api_key=api_key,
+                ),
+                process_factory=lambda **kwargs: LlamaCppSubprocessController(
+                    **kwargs, api_key_file=api_key_file,
+                ),
+            )
+        else:
+            # Compatibility and setup inspection do not materialize GPU servers.
+            provider = LlamaCppProvider(child_config)
         demand = ExecutionDemand(
             model=ModelDemand(
                 model_ref=model.model_ref, model_format="gguf",
@@ -449,24 +477,52 @@ class DualLlamaCppProvider:
         expected = self.setup_intent(context)
         if setup != expected:
             raise RuntimeError("dual runtime setup intent does not match frozen model identity")
-        embedding_provider, embed_context = self._child(context, "embedding")
-        decision_provider, decision_context = self._child(context, "decision")
-        embedding_setup = embedding_provider.setup_intent(embed_context)
-        decision_setup = decision_provider.setup_intent(decision_context)
-        embedding_setup = replace(
-            embedding_setup, configuration={
-                **embedding_setup.configuration, "model_alias": "tsumgi-embed-v1",
-            },
-        )
-        decision_setup = replace(
-            decision_setup, configuration={
-                **decision_setup.configuration, "model_alias": "tsumgi-decision-v1",
-            },
-        )
-        embedding = embedding_provider.create_runtime(embed_context, embedding_setup)
-        decision = decision_provider.create_runtime(decision_context, decision_setup)
-        return DualLlamaCppManagedRuntime(
-            embedding, decision,
-            self.config.embedding_model, self.config.decision_model,
-            trusted_model_owner_uid=self.config.trusted_model_owner_uid,
-        )
+        # Only the Worker service UID can enter this ephemeral 0700 directory.
+        # Key values never appear in a subprocess command line, environment,
+        # reviewed manifest, or the Control serving advertisement.
+        owned_auth = tempfile.TemporaryDirectory(prefix="tsumgi-dual-llama-auth-")
+        try:
+            def key_for(role: str) -> tuple[str, str]:
+                value = secrets.token_urlsafe(48)
+                path = Path(owned_auth.name) / (role + ".key")
+                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+                fd = os.open(path, flags, 0o600)
+                with os.fdopen(fd, "w", encoding="ascii") as handle:
+                    handle.write(value + "\n")
+                return value, str(path)
+
+            embed_key, embed_file = key_for("embedding")
+            decision_key, decision_file = key_for("decision")
+            embedding_provider, embed_context = self._child(
+                context, "embedding", api_key=embed_key, api_key_file=embed_file,
+            )
+            decision_provider, decision_context = self._child(
+                context, "decision", api_key=decision_key, api_key_file=decision_file,
+            )
+            embedding_setup = embedding_provider.setup_intent(embed_context)
+            decision_setup = decision_provider.setup_intent(decision_context)
+        except BaseException:
+            owned_auth.cleanup()
+            raise
+        try:
+            embedding_setup = replace(
+                embedding_setup, configuration={
+                    **embedding_setup.configuration, "model_alias": "tsumgi-embed-v1",
+                },
+            )
+            decision_setup = replace(
+                decision_setup, configuration={
+                    **decision_setup.configuration, "model_alias": "tsumgi-decision-v1",
+                },
+            )
+            embedding = embedding_provider.create_runtime(embed_context, embedding_setup)
+            decision = decision_provider.create_runtime(decision_context, decision_setup)
+            return DualLlamaCppManagedRuntime(
+                embedding, decision,
+                self.config.embedding_model, self.config.decision_model,
+                trusted_model_owner_uid=self.config.trusted_model_owner_uid,
+                private_auth_files=owned_auth,
+            )
+        except BaseException:
+            owned_auth.cleanup()
+            raise

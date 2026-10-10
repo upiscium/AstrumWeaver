@@ -302,11 +302,15 @@ class HttpLlamaCppApi:
         *,
         timeout_seconds: float = 300.0,
         transport: httpx.AsyncBaseTransport | None = None,
+        api_key: str | None = None,
     ) -> None:
+        if api_key is not None and (not isinstance(api_key, str) or not api_key):
+            raise ValueError("llama.cpp client API key must be nonempty")
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
             timeout=timeout_seconds,
             transport=transport,
+            headers=(None if api_key is None else {"Authorization": "Bearer " + api_key}),
         )
 
     async def health(self) -> bool:
@@ -489,7 +493,11 @@ class LlamaCppSubprocessController:
         chat_template_file: str | None = None,
         embeddings: bool = False,
         pooling: str | None = None,
+        api_key_file: str | None = None,
     ) -> None:
+        if api_key_file is not None and not Path(api_key_file).is_absolute():
+            raise ValueError("llama.cpp API-key file must be absolute")
+        self.api_key_file = api_key_file
         self.executable = executable
         self.base_url = base_url
         self.model_ref = model_ref
@@ -537,6 +545,8 @@ class LlamaCppSubprocessController:
             args.append("--no-webui")
         if self.offline:
             args.append("--offline")
+        if self.api_key_file is not None:
+            args.extend(["--api-key-file", self.api_key_file])
         if self.jinja:
             args.append("--jinja")
         if self.chat_template_file is not None:
