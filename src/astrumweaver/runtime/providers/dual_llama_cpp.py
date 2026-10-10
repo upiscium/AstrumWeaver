@@ -59,8 +59,15 @@ class DualLlamaCppProviderConfig:
     required_total_vram_mb: int
     embedding_space_id: str
     decision_semantics_id: str
+    # Zero is the safe production default: installed model bytes are owned
+    # by root, not the Worker/Downloader identity. Test-only fixtures may
+    # explicitly name their own trusted deployment owner.
+    trusted_model_owner_uid: int = 0
 
     def __post_init__(self) -> None:
+        if (type(self.trusted_model_owner_uid) is not int
+                or self.trusted_model_owner_uid < 0):
+            raise ValueError("trusted_model_owner_uid must be a nonnegative integer")
         for name in ("embedding_space_id", "decision_semantics_id"):
             value = getattr(self, name)
             if type(value) is not str or not value.startswith("sha256:") or not _SHA256.fullmatch(value[7:]):
@@ -192,26 +199,73 @@ class DualLlamaCppManagedRuntime(ManagedRuntime):
     def __init__(
         self, embedding: ManagedRuntime, decision: ManagedRuntime,
         embedding_pin: DualModelPin, decision_pin: DualModelPin,
+        trusted_model_owner_uid: int = 0,
     ) -> None:
         self._embedding = embedding
         self._decision = decision
         self._pins = (embedding_pin, decision_pin)
+        self._trusted_model_owner_uid = trusted_model_owner_uid
         self._executor = DualLlamaCppExecutor(embedding, decision)
         self._released = False
 
     @staticmethod
-    def _check_pinned_model(model: DualModelPin) -> None:
+    def _check_pinned_model(
+        model: DualModelPin, *, trusted_owner_uid: int = 0,
+    ) -> None:
+        """Require a trusted, non-substitutable pathname as well as exact bytes.
+
+        Checking SHA-256 on an fd before/after subprocess startup alone does
+        not bind the fd to the child's later --model pathname. Instead require
+        that no actor outside the reviewed file owner (root by default) can
+        rename or mutate any entry on the path. A root-owned sticky directory
+        such as /tmp is safe only for a trusted-owned child entry.
+        """
         path = Path(model.model_ref)
+        if ".." in path.parts:
+            raise RuntimeError("prepared dual model path may not traverse parents")
+        # lstat every component, rejecting symlinks and non-directory
+        # ancestors. A statically trusted owner is a necessary precondition
+        # before the child can safely resolve the path independently.
+        current = Path(path.anchor)
+        nodes = [current]
+        for part in path.parts[1:]:
+            current = current / part
+            nodes.append(current)
+        for idx, node in enumerate(nodes):
+            try:
+                info = node.lstat()
+            except OSError as exc:
+                raise RuntimeError("prepared dual model path cannot be inspected") from exc
+            final = idx == len(nodes) - 1
+            if info.st_uid not in (0, trusted_owner_uid):
+                raise RuntimeError("prepared dual model path has untrusted owner")
+            if final:
+                if not stat.S_ISREG(info.st_mode):
+                    raise RuntimeError("prepared dual model must be a regular file")
+                if info.st_uid != trusted_owner_uid:
+                    raise RuntimeError("prepared dual model file owner is not pinned")
+            elif not stat.S_ISDIR(info.st_mode):
+                raise RuntimeError("prepared dual model ancestor must be a real directory")
+            writable_by_others = info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+            # Sticky, root-owned /tmp prevents another UID from renaming an
+            # entry owned by the trusted uid. Nonsticky writable parents fail.
+            trusted_sticky = (
+                not final and info.st_uid == 0 and
+                bool(info.st_mode & stat.S_ISVTX)
+            )
+            if writable_by_others and not trusted_sticky:
+                raise RuntimeError("prepared dual model path permits untrusted writes")
         h = hashlib.sha256()
-        # Verify the opened inode, not a pathname after a separate is_file().
-        # Root-owned deployment storage still remains an operator trust boundary.
         try:
             fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         except OSError as exc:
             raise RuntimeError("prepared dual model cannot be opened safely") from exc
         with os.fdopen(fd, "rb") as handle:
-            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-                raise RuntimeError("prepared dual model must be a regular file")
+            info = os.fstat(handle.fileno())
+            if (not stat.S_ISREG(info.st_mode)
+                    or info.st_uid != trusted_owner_uid
+                    or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
+                raise RuntimeError("prepared dual model inode is untrusted")
             for chunk in iter(lambda: handle.read(16 * 1024 * 1024), b""):
                 h.update(chunk)
         if h.hexdigest() != model.sha256:
@@ -222,7 +276,10 @@ class DualLlamaCppManagedRuntime(ManagedRuntime):
             raise RuntimeError("released dual runtime cannot be restarted")
         try:
             for pin in self._pins:
-                await asyncio.to_thread(self._check_pinned_model, pin)
+                await asyncio.to_thread(
+                    self._check_pinned_model, pin,
+                    trusted_owner_uid=self._trusted_model_owner_uid,
+                )
             await self._embedding.start()
             await self._decision.start()
             if not (await self.health()).ready:
@@ -231,10 +288,21 @@ class DualLlamaCppManagedRuntime(ManagedRuntime):
             # This closes ordinary operator/download races; privileged hostile
             # mutation of trusted model storage is outside Worker authority.
             for pin in self._pins:
-                await asyncio.to_thread(self._check_pinned_model, pin)
-        except BaseException:
-            # A partially started child must not remain resident or advertised.
-            await self._stop_both()
+                await asyncio.to_thread(
+                    self._check_pinned_model, pin,
+                    trusted_owner_uid=self._trusted_model_owner_uid,
+                )
+        except BaseException as startup_failure:
+            # Preserve the primary failure/cancellation even if one owned
+            # child also fails to stop. A failed cleanup still makes startup
+            # fail closed; the note retains its failure type for diagnosis.
+            try:
+                await self._stop_both()
+            except BaseException as cleanup_failure:
+                startup_failure.add_note(
+                    "dual runtime startup cleanup also failed: "
+                    + type(cleanup_failure).__name__
+                )
             raise
 
     async def _stop_both(self) -> None:
@@ -367,6 +435,7 @@ class DualLlamaCppProvider:
                 "required_total_vram_mb": self.config.required_total_vram_mb,
                 "embedding_space_id": self.config.embedding_space_id,
                 "decision_semantics_id": self.config.decision_semantics_id,
+                "trusted_model_owner_uid": self.config.trusted_model_owner_uid,
             },
             model_preparation=ModelPreparationPolicy.REFERENCE_ONLY,
             model_ref=self.config.bundle_model_ref, requires_privilege=True,
@@ -399,4 +468,5 @@ class DualLlamaCppProvider:
         return DualLlamaCppManagedRuntime(
             embedding, decision,
             self.config.embedding_model, self.config.decision_model,
+            trusted_model_owner_uid=self.config.trusted_model_owner_uid,
         )

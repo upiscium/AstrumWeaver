@@ -1,7 +1,9 @@
 """Fail-closed, single-GPU two-resident-model provider contracts (#122)."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import os
 from pathlib import Path
 
 import pytest
@@ -58,6 +60,7 @@ def setup_pair(tmp_path: Path) -> tuple[DualLlamaCppProvider, RuntimeCompatibili
         required_total_vram_mb=4096,
         embedding_space_id="sha256:" + "e" * 64,
         decision_semantics_id="sha256:" + "d" * 64,
+        trusted_model_owner_uid=os.getuid(),
     )
     provider = DualLlamaCppProvider(config)
     context = RuntimeCompatibilityContext(
@@ -240,6 +243,7 @@ def managed_pair(tmp_path):
     decision = FakeRuntime("decision.system_one")
     managed = DualLlamaCppManagedRuntime(
         embedding, decision, provider.config.embedding_model, provider.config.decision_model,
+        trusted_model_owner_uid=os.getuid(),
     )
     return managed, embedding, decision
 
@@ -572,7 +576,7 @@ async def test_pinned_model_symlink_not_followed(tmp_path):
     alternate.write_bytes(model.read_bytes())
     model.unlink()
     model.symlink_to(alternate)
-    with pytest.raises(RuntimeError, match="cannot be opened safely"):
+    with pytest.raises(RuntimeError, match="regular file"):
         await managed.start()
     assert embedding.stops == decision.stops == 1
     assert not (await managed.health()).ready
@@ -589,3 +593,112 @@ def test_nix_output_with_traversal_not_admitted(tmp_path):
             package_reference=invalid,
             executable=invalid+"/bin/astrumweaver-llama-server",
         ))
+
+
+@pytest.mark.asyncio
+async def test_start_failure_preserves_cause_when_both_cleanup_paths_fail(tmp_path):
+    managed, embedding, decision = managed_pair(tmp_path)
+    async def broken_start():
+        raise RuntimeError("original-model-startup-error")
+    async def broken_stop():
+        raise RuntimeError("owned-child-cleanup-error")
+    decision.start = broken_start
+    embedding.stop = broken_stop
+    decision.stop = broken_stop
+    with pytest.raises(RuntimeError, match="original-model-startup-error") as observed:
+        await managed.start()
+    assert any("cleanup also failed" in note for note in observed.value.__notes__)
+    assert any("RuntimeError" in note for note in observed.value.__notes__)
+    assert not (await managed.health()).ready
+
+
+@pytest.mark.asyncio
+async def test_startup_cancellation_not_masked_by_cleanup_error(tmp_path):
+    managed, embedding, decision = managed_pair(tmp_path)
+    async def cancelled_start():
+        raise asyncio.CancelledError("original-requested-cancel")
+    async def failed_stop():
+        raise RuntimeError("cleanup-still-failed")
+    decision.start = cancelled_start
+    embedding.stop = failed_stop
+    with pytest.raises(asyncio.CancelledError, match="original-requested-cancel") as observed:
+        await managed.start()
+    assert any("cleanup also failed" in note for note in observed.value.__notes__)
+    assert decision.stops == 1
+    assert not (await managed.health()).ready
+
+
+def test_model_file_must_not_be_group_or_world_writable(tmp_path):
+    provider, _ = setup_pair(tmp_path)
+    path = tmp_path / "embed.gguf"
+    path.chmod(0o666)
+    with pytest.raises(RuntimeError, match="untrusted writes"):
+        DualLlamaCppManagedRuntime._check_pinned_model(
+            provider.config.embedding_model,
+            trusted_owner_uid=os.getuid(),
+        )
+
+
+def test_model_parent_must_not_allow_untrusted_rename(tmp_path):
+    provider, _ = setup_pair(tmp_path)
+    old_mode = tmp_path.stat().st_mode & 0o7777
+    try:
+        tmp_path.chmod(0o777)
+        with pytest.raises(RuntimeError, match="untrusted writes"):
+            DualLlamaCppManagedRuntime._check_pinned_model(
+                provider.config.embedding_model,
+                trusted_owner_uid=os.getuid(),
+            )
+    finally:
+        tmp_path.chmod(old_mode)
+
+
+def test_model_parent_symlink_or_unauthorized_owner_is_rejected(tmp_path):
+    from dataclasses import replace
+    provider, _ = setup_pair(tmp_path)
+    model = provider.config.embedding_model
+    subdir = tmp_path / "safe"
+    subdir.mkdir(mode=0o700)
+    renamed = subdir / "embed.gguf"
+    renamed.write_bytes((tmp_path/"embed.gguf").read_bytes())
+    link = tmp_path / "alias"
+    link.symlink_to(subdir, target_is_directory=True)
+    symlink_pin = replace(model, model_ref=str(link/"embed.gguf"))
+    with pytest.raises(RuntimeError, match="real directory"):
+        DualLlamaCppManagedRuntime._check_pinned_model(
+            symlink_pin, trusted_owner_uid=os.getuid()
+        )
+    wrong_uid = os.getuid() + 10000
+    with pytest.raises(RuntimeError, match="untrusted owner|owner is not pinned"):
+        DualLlamaCppManagedRuntime._check_pinned_model(
+            model, trusted_owner_uid=wrong_uid
+        )
+
+
+def test_model_trust_owner_is_explicit_and_roundtrips(tmp_path):
+    from dataclasses import replace
+    provider, _ = setup_pair(tmp_path)
+    config = provider.config
+    assert config.trusted_model_owner_uid == os.getuid()
+    with pytest.raises(ValueError, match="trusted_model_owner_uid"):
+        replace(config, trusted_model_owner_uid=True)
+    with pytest.raises(ValueError, match="trusted_model_owner_uid"):
+        replace(config, trusted_model_owner_uid=-1)
+    DualLlamaCppManagedRuntime._check_pinned_model(
+        config.embedding_model, trusted_owner_uid=config.trusted_model_owner_uid,
+    )
+
+
+@pytest.mark.asyncio
+async def test_replaced_file_in_untrusted_mutable_directory_fails_before_load(tmp_path):
+    managed, embedding, decision = managed_pair(tmp_path)
+    old_mode = tmp_path.stat().st_mode & 0o7777
+    try:
+        tmp_path.chmod(0o777)
+        with pytest.raises(RuntimeError, match="untrusted writes"):
+            await managed.start()
+        assert embedding.health_state is RuntimeHealthState.STOPPED
+        assert decision.health_state is RuntimeHealthState.STOPPED
+        assert embedding.stops == decision.stops == 1
+    finally:
+        tmp_path.chmod(old_mode)

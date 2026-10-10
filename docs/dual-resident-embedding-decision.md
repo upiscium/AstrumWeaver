@@ -53,15 +53,46 @@ aliases are used on the distinct ports.
 ## Lifecycle and fail-closed rules
 
 Both exact GGUF SHA-256s are checked before any model process starts and
-rechecked after both children are ready. Opened file descriptors are hashed
-without following symlinks; accepted launchers must be pinned top-level Nix
-store outputs. The model storage remains a trusted operator resource: a
-host-privileged adversary can still rewrite it and is outside this Worker
-threat model. Both children must pass owned health and model alias checks
-before Worker admission. A dual Worker must have a reviewed serving manifest
+rechecked after both children are ready. Hashing alone cannot bind the
+verified inode to the later llama.cpp pathname; a privileged writer could
+replace and restore that path between verification and load.
+
+To close that risk against **other local Unix identities**, startup requires
+a *trusted, non-substitutable filesystem path*: the GGUF is a regular file
+owned by the explicitly reviewed `trusted_model_owner_uid` (default **0**),
+not group/world writable, and has no symlink in any path component. Every
+ancestor must be a real directory owned by root or that trusted owner, with
+no group/world write privilege. Root-owned sticky directories (e.g. `/tmp`
+in isolated tests) are an explicit exception because an unrelated UID
+cannot rename an entry belonging to the trusted owner. These constraints
+are revalidated before and after native model load. An untrusted account
+cannot rename or modify the model pathname between the checks. Production
+models should use root-owned, mode-0755/0700 directories and mode-0644/0444
+GGUF files on a trusted local filesystem. A model downloaded into a writable
+shared directory is **not** admitted: copy it into operator-owned model
+storage and review its digest before Worker startup.
+
+A compromise of root, of the configured trusted owner, or of a remote
+filesystem server is outside this local Unix permission boundary. Such
+an actor may modify the path during loading despite both hash checks.
+For stronger defenses against same-UID or privileged mutation, integrate
+immutable filesystem enforcement or loader-pinned verified inodes in a
+future separately reviewed revision.
+
+The Nix-pinned launcher must additionally sanitize environment variables:
+the underlying native inference child is run via `env -i` and receives no
+Worker/Client bearer tokens (see `nix/decision-llama-driver-bridge.nix`).
+The trusted wrapper itself starts in the Worker's ambient environment and
+therefore remains within the operator trust boundary.
+
+Accepted launchers must be pinned top-level Nix store outputs. Both children
+must pass owned health and model alias checks before Worker admission. A dual Worker must have a reviewed serving manifest
 with exactly two contracts (one embedding operation and one decision operation)
 and the matching pinned semantic IDs; extra contracts fail closed.
-If one child fails during startup, stop both. If either child dies/degrades
+If one child fails during startup, stop both. Retain the original startup
+exception or cancellation if cleanup also fails, with a diagnostic note for
+the secondary cleanup failure; never announce the composite as ready.
+If either child dies/degrades
 after startup, the whole Worker runtime becomes unavailable and the existing
 supervisor fences claims/readiness. Stop/release attempt **both** children,
 even if the other fails. The existing generic Control claim/lease/deadline,
