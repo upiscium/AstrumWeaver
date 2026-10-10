@@ -27,7 +27,13 @@ directory as a mode-0600 API-key file. The pinned native server receives
 only the **key-file pathname** through its CLI option (`--api-key-file`),
 not the secret in process argv or the Control/runtime/serving manifests.
 `HttpLlamaCppApi` sends that child's token in `Authorization: Bearer`
-for every Worker-to-child call. An unprivileged local account without
+for every Worker-to-child call. For bearer-protected child requests the
+Worker-side HTTP client disables environment-derived proxy settings
+(`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`) and redirects; an inherited
+proxy cannot receive the child's bearer or inference data. This also applies
+when `NO_PROXY` is absent. Unauthenticated legacy single-model clients
+retain their existing proxy-environment behavior for compatibility.
+An unprivileged local account without
 access to the private key file cannot use the model inference endpoints
 even if it can connect to the loopback socket. Every Worker instance
 generates fresh distinct tokens, removed after both owned native children

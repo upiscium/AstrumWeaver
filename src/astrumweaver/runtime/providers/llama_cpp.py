@@ -311,6 +311,12 @@ class HttpLlamaCppApi:
             timeout=timeout_seconds,
             transport=transport,
             headers=(None if api_key is None else {"Authorization": "Bearer " + api_key}),
+            # The composite native child uses a secret bearer. Never allow
+            # inherited HTTP_PROXY/HTTPS_PROXY/ALL_PROXY to receive that secret
+            # or unredacted inference traffic. Preserve unauthenticated legacy
+            # clients' existing environment-proxy behavior.
+            trust_env=api_key is None,
+            follow_redirects=False,
         )
 
     async def health(self) -> bool:
