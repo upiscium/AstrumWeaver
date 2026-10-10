@@ -68,6 +68,21 @@ The parent collates **both actual child outputs**, preserving differences
 and any unknowns. A prompt asking for only one finding proves the wiring
 but **does not satisfy a complete independent review gate**.
 
+## Broad-diff timeout fallback
+
+When a large full-diff task times out or returns no completed `task` output,
+it is **NOT** a review. Split the same frozen PR HEAD into non-overlapping,
+reviewable boundaries (for example, composite Runtime lifecycle, Worker and
+Gateway contracts, native inference authentication and threat model). Launch
+each as a separate read-only `plan → task(subagent_type=reviewer)` operation,
+record which changed paths/behaviors each completed child actually examined,
+and preserve failed runs as incomplete diagnostics. A split review is only
+as comprehensive as the union of its explicitly inspected scopes; unreviewed
+files and test execution stay NOT_RUN. The security reviewer remains a
+separate role, and a code change after the review requires fresh delta
+coverage. Never reclassify a timeout, a running child or a primary-only
+summary as an approval.
+
 ## Evidence required to count a role run
 
 - Primary OpenCode JSON transcript includes a `task` invocation with

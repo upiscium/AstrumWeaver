@@ -214,6 +214,12 @@ class DualLlamaCppManagedRuntime(ManagedRuntime):
         self._trusted_model_owner_uid = trusted_model_owner_uid
         self._executor = DualLlamaCppExecutor(embedding, decision)
         self._released = False
+        # Public callers can overlap lifecycle operations. Keep composite
+        # ownership serialized and invalidate pending starts on shutdown.
+        self._lifecycle_lock = asyncio.Lock()
+        self._lifecycle_epoch = 0
+        self._starting_task: asyncio.Task[None] | None = None
+        self._owned_stopped = True
 
     @staticmethod
     def _check_pinned_model(
@@ -279,6 +285,28 @@ class DualLlamaCppManagedRuntime(ManagedRuntime):
             raise RuntimeError("prepared dual model digest mismatch")
 
     async def start(self) -> None:
+        generation = self._lifecycle_epoch
+        async with self._lifecycle_lock:
+            if generation != self._lifecycle_epoch:
+                raise RuntimeError("dual runtime start invalidated by concurrent shutdown")
+            if self._released:
+                raise RuntimeError("released dual runtime cannot be restarted")
+            self._starting_task = asyncio.current_task()
+            try:
+                await self._start_serial()
+            finally:
+                self._starting_task = None
+
+    def _invalidate_pending_start(self) -> None:
+        # Invalidate start requests already queued before a stop/release. The
+        # active start handles its own fail-closed child cleanup on cancellation.
+        self._lifecycle_epoch += 1
+        starting = self._starting_task
+        current = asyncio.current_task()
+        if starting is not None and starting is not current and not starting.done():
+            starting.cancel()
+
+    async def _start_serial(self) -> None:
         if self._released:
             raise RuntimeError("released dual runtime cannot be restarted")
         try:
@@ -287,6 +315,7 @@ class DualLlamaCppManagedRuntime(ManagedRuntime):
                     self._check_pinned_model, pin,
                     trusted_owner_uid=self._trusted_model_owner_uid,
                 )
+            self._owned_stopped = False
             await self._embedding.start()
             await self._decision.start()
             if not (await self.health()).ready:
@@ -318,9 +347,12 @@ class DualLlamaCppManagedRuntime(ManagedRuntime):
         )
         if any(isinstance(x, BaseException) for x in results):
             raise RuntimeError("joint runtime cleanup failed")
+        self._owned_stopped = True
 
     async def stop(self) -> None:
-        await self._stop_both()
+        self._invalidate_pending_start()
+        async with self._lifecycle_lock:
+            await self._stop_both()
 
     async def health(self) -> RuntimeHealth:
         results = await asyncio.gather(
@@ -350,18 +382,24 @@ class DualLlamaCppManagedRuntime(ManagedRuntime):
         return self._executor
 
     async def release(self) -> None:
-        if self._released:
-            return
-        results = await asyncio.gather(
-            self._embedding.release(), self._decision.release(), return_exceptions=True,
-        )
-        if any(isinstance(x, BaseException) for x in results):
-            raise RuntimeError("joint runtime release failed")
-        if self._private_auth_files is not None:
-            self._private_auth_files.cleanup()
-            self._private_auth_files = None
-        self._released = True
-
+        self._invalidate_pending_start()
+        async with self._lifecycle_lock:
+            if self._released:
+                return
+            # Direct or overlapping release must not close native API clients
+            # while a child is still alive. Existing stop-then-release callers
+            # avoid a duplicate stop through the owned-stopped latch.
+            if not self._owned_stopped:
+                await self._stop_both()
+            results = await asyncio.gather(
+                self._embedding.release(), self._decision.release(), return_exceptions=True,
+            )
+            if any(isinstance(x, BaseException) for x in results):
+                raise RuntimeError("joint runtime release failed")
+            if self._private_auth_files is not None:
+                self._private_auth_files.cleanup()
+                self._private_auth_files = None
+            self._released = True
 
 class DualLlamaCppProvider:
     def __init__(self, config: DualLlamaCppProviderConfig | None = None) -> None:
